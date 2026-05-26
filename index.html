@@ -299,6 +299,16 @@
   .crew-mode .sidebar{display:none!important;}
   .crew-mode .cv-lock-btn{display:none!important;}
   .crew-mode #jc-value-group{display:none!important;}
+  /* PIN login */
+  @keyframes pin-shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-9px)}40%{transform:translateX(9px)}60%{transform:translateX(-6px)}80%{transform:translateX(6px)}}
+  .pin-dot{width:14px;height:14px;border-radius:50%;border:2px solid var(--border2);background:transparent;transition:all .15s;}
+  .pin-dot.filled{background:var(--accent);border-color:var(--accent);}
+  .pin-key{aspect-ratio:1;border-radius:var(--radius-sm);border:1px solid var(--border2);background:var(--surface2);color:var(--text);font-size:20px;font-weight:600;cursor:pointer;transition:background .1s;display:flex;align-items:center;justify-content:center;}
+  .pin-key:hover{background:var(--surface3);}
+  .pin-key:active{background:var(--border2);}
+  .pin-key.accent{background:var(--accent);color:#1a1a1a;border-color:var(--accent);}
+  .pin-key.accent:hover{filter:brightness(1.1);}
+  .pin-key.danger{background:var(--surface2);color:var(--red);}
   /* Mobile — bottom-sheet modals + full-width calendar */
   @media(max-width:520px){
     .modal-overlay{padding:0;align-items:flex-end;}
@@ -315,6 +325,37 @@
 </style>
 </head>
 <body>
+
+<!-- ══ PIN LOGIN SCREEN ══════════════════════════════════════════════════════ -->
+<div id="login-screen" style="display:none;position:fixed;inset:0;z-index:99999;background:var(--bg);align-items:center;justify-content:center;">
+  <div id="login-card" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:36px 26px 28px;width:100%;max-width:290px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,.5);">
+    <div style="font-size:11px;letter-spacing:2.5px;text-transform:uppercase;color:var(--text3);font-family:'DM Mono',monospace;margin-bottom:6px;">FloorPro</div>
+    <div style="font-size:26px;font-weight:800;letter-spacing:-.5px;margin-bottom:2px;">CRM</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:28px;">Enter your PIN to continue</div>
+    <div style="display:flex;justify-content:center;gap:14px;margin-bottom:6px;">
+      <div class="pin-dot" id="pd0"></div>
+      <div class="pin-dot" id="pd1"></div>
+      <div class="pin-dot" id="pd2"></div>
+      <div class="pin-dot" id="pd3"></div>
+    </div>
+    <div id="pin-error" style="display:none;color:#ef4444;font-size:12px;margin:8px 0 2px;">Incorrect PIN — try again.</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:20px;">
+      <button class="pin-key" onclick="pinKey(1)">1</button>
+      <button class="pin-key" onclick="pinKey(2)">2</button>
+      <button class="pin-key" onclick="pinKey(3)">3</button>
+      <button class="pin-key" onclick="pinKey(4)">4</button>
+      <button class="pin-key" onclick="pinKey(5)">5</button>
+      <button class="pin-key" onclick="pinKey(6)">6</button>
+      <button class="pin-key" onclick="pinKey(7)">7</button>
+      <button class="pin-key" onclick="pinKey(8)">8</button>
+      <button class="pin-key" onclick="pinKey(9)">9</button>
+      <button class="pin-key danger" onclick="pinDel()">⌫</button>
+      <button class="pin-key" onclick="pinKey(0)">0</button>
+      <button class="pin-key accent" onclick="pinSubmit()">↵</button>
+    </div>
+  </div>
+</div>
+
 <div class="app">
 
   <!-- SIDEBAR -->
@@ -369,6 +410,10 @@
       <button class="nav-item" onclick="showPage('holidays')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><circle cx="12" cy="16" r="2"/></svg>
         <span>Holidays</span>
+      </button>
+      <button class="nav-item" onclick="showPage('pinsettings')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+        <span>Security</span>
       </button>
       <div class="nav-label" style="margin-top:8px;">Crew</div>
       <button class="nav-item" onclick="showPage('crewview')">
@@ -680,6 +725,42 @@
           Checked holidays will be blocked on the schedule for <strong>all crew members</strong> and the smart scheduler will skip them automatically. Uncheck any holiday you want to work on.
         </div>
         <div id="holiday-list" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px;"></div>
+      </div>
+    </div>
+
+    <!-- SECURITY / PIN SETTINGS PAGE -->
+    <div class="page" id="page-pinsettings">
+      <div class="topbar">
+        <div class="page-title">Security</div>
+      </div>
+      <div class="content" style="max-width:500px;">
+        <div class="jobs-block" style="padding:0;margin-bottom:16px;">
+          <div style="padding:14px 18px;border-bottom:1px solid var(--border);">
+            <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);">PIN Settings</div>
+          </div>
+          <div style="padding:20px 18px;display:flex;flex-direction:column;gap:16px;">
+            <div class="form-group" style="margin:0;">
+              <label class="form-label">Crew PIN <span style="color:var(--text3);font-weight:400;">(4–6 digits — share with your crew)</span></label>
+              <input class="form-input" id="pin-new-crew" type="password" inputmode="numeric" maxlength="6" placeholder="Enter new crew PIN" style="width:200px;font-size:18px;letter-spacing:4px;font-family:'DM Mono',monospace;"/>
+            </div>
+            <div class="form-group" style="margin:0;">
+              <label class="form-label">Admin PIN <span style="color:var(--text3);font-weight:400;">(keep this private — full access)</span></label>
+              <input class="form-input" id="pin-new-admin" type="password" inputmode="numeric" maxlength="6" placeholder="Enter new admin PIN" style="width:200px;font-size:18px;letter-spacing:4px;font-family:'DM Mono',monospace;"/>
+            </div>
+            <div>
+              <button class="btn btn-primary" onclick="pinSaveSettings()">Save PINs</button>
+            </div>
+          </div>
+        </div>
+        <div class="jobs-block" style="padding:0;">
+          <div style="padding:14px 18px;border-bottom:1px solid var(--border);">
+            <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);">Session</div>
+          </div>
+          <div style="padding:16px 18px;">
+            <p style="font-size:13px;color:var(--text2);margin-bottom:12px;">Sessions last 7 days. Crew members will be prompted for their PIN again after a week, or when they sign out manually.</p>
+            <button class="btn btn-ghost" onclick="pinLogout()" style="color:var(--red);border-color:var(--red);">Sign Out</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -2052,19 +2133,22 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.getElementById('pto-start').value=today;
   document.getElementById('pto-end').value=today;
   document.getElementById('pto-slot-date').value=today;
-  // Render dashboard immediately then load from Supabase
+  // Render dashboard immediately
   renderDashboard();
-  // Apply crew mode immediately so sidebar hides before data loads
-  cvCheckMode();
-  loadAllFromSupabase().then(()=>{
-    // Crew devices always land on Crew View, no matter what
-    if(localStorage.getItem('fpRole')==='crew'){showPage('crewview');return;}
-    // Restore last viewed page for manager devices
-    try{
-      const last=localStorage.getItem('fpLastPage');
-      if(last&&last!=='dashboard'&&document.getElementById('page-'+last)) showPage(last);
-    }catch(e){}
-  });
+  // Check for a valid login session
+  const _initRole = checkLoginSession();
+  if(_initRole){
+    // Returning user with valid session — apply role and load data
+    if(_initRole==='crew'){ localStorage.setItem('fpRole','crew'); } else { localStorage.removeItem('fpRole'); }
+    cvCheckMode();
+    loadAllFromSupabase().then(()=>{
+      if(_initRole==='crew'){showPage('crewview');return;}
+      try{ const last=localStorage.getItem('fpLastPage'); if(last&&last!=='dashboard'&&document.getElementById('page-'+last)) showPage(last); }catch(e){}
+    });
+  } else {
+    // No valid session — show PIN login screen
+    showLoginScreen();
+  }
 });
 
 function goStep3(){
@@ -3053,11 +3137,9 @@ function cvLockDevice(){
 }
 
 function cvUnlock(){
+  localStorage.removeItem(_pinAuthKey());
   localStorage.removeItem('fpRole');
-  document.body.classList.remove('crew-mode');
-  const ml=document.getElementById('cv-manager-link');
-  if(ml) ml.style.display='none';
-  renderCrewView(); // re-render to show lock button again
+  showLoginScreen();
 }
 
 // ── CREW VIEW — mobile-friendly month calendar ─────────────────────────────
@@ -3764,12 +3846,116 @@ function renderMaterialCalc(){
   calcUpdateSummary();
 }
 
+// ── PIN AUTH ─────────────────────────────────────────────────────────────────
+let CREW_PIN='1234', ADMIN_PIN='5678', _pinBuf='';
+
+function _pinAuthKey(){ return 'fpAuth_v1'; }
+
+function checkLoginSession(){
+  try{
+    const a=JSON.parse(localStorage.getItem(_pinAuthKey())||'{}');
+    if(a.expiry&&a.expiry>Date.now()&&(a.role==='crew'||a.role==='admin')) return a.role;
+  }catch(e){}
+  return null;
+}
+
+function _saveSession(role){
+  localStorage.setItem(_pinAuthKey(),JSON.stringify({role,expiry:Date.now()+7*24*60*60*1000}));
+}
+
+async function showLoginScreen(){
+  _pinBuf=''; _pinRender();
+  document.getElementById('pin-error').style.display='none';
+  const ls=document.getElementById('login-screen');
+  ls.style.display='flex';
+  try{
+    const cp=await sb.getKV('crew_pin'), ap=await sb.getKV('admin_pin');
+    if(cp) CREW_PIN=String(cp).trim();
+    if(ap) ADMIN_PIN=String(ap).trim();
+  }catch(e){}
+}
+
+function _hideLoginScreen(){
+  document.getElementById('login-screen').style.display='none';
+}
+
+function _pinRender(){
+  for(let i=0;i<4;i++){
+    const d=document.getElementById('pd'+i);
+    if(d){ if(i<_pinBuf.length){d.classList.add('filled');}else{d.classList.remove('filled');} }
+  }
+}
+
+function pinKey(d){
+  if(_pinBuf.length>=6) return;
+  _pinBuf+=String(d); _pinRender();
+  if(_pinBuf.length>=4) setTimeout(pinSubmit,180);
+}
+
+function pinDel(){ if(_pinBuf.length){_pinBuf=_pinBuf.slice(0,-1);_pinRender();} }
+
+function pinSubmit(){
+  if(!_pinBuf) return;
+  if(_pinBuf===ADMIN_PIN){ _pinSuccess('admin'); }
+  else if(_pinBuf===CREW_PIN){ _pinSuccess('crew'); }
+  else { _pinFail(); }
+}
+
+function _pinSuccess(role){
+  _saveSession(role);
+  _hideLoginScreen();
+  if(role==='crew'){
+    localStorage.setItem('fpRole','crew');
+    cvCheckMode();
+  } else {
+    localStorage.removeItem('fpRole');
+    document.body.classList.remove('crew-mode');
+    const ml=document.getElementById('cv-manager-link');
+    if(ml) ml.style.display='none';
+  }
+  loadAllFromSupabase().then(()=>{
+    if(role==='crew'){showPage('crewview');return;}
+    try{ const last=localStorage.getItem('fpLastPage'); if(last&&last!=='dashboard'&&document.getElementById('page-'+last)) showPage(last); }catch(e){}
+  });
+}
+
+function _pinFail(){
+  _pinBuf=''; _pinRender();
+  const err=document.getElementById('pin-error');
+  err.style.display='block';
+  const card=document.getElementById('login-card');
+  card.style.animation='pin-shake .4s ease';
+  setTimeout(()=>{ card.style.animation=''; err.style.display='none'; },2000);
+}
+
+function pinLogout(){
+  if(!confirm('Sign out and return to the PIN screen?')) return;
+  localStorage.removeItem(_pinAuthKey());
+  localStorage.removeItem('fpRole');
+  document.body.classList.remove('crew-mode');
+  showLoginScreen();
+}
+
+async function pinSaveSettings(){
+  const nc=document.getElementById('pin-new-crew').value.trim();
+  const na=document.getElementById('pin-new-admin').value.trim();
+  if(nc.length<4||na.length<4){ showToast('PINs must be at least 4 digits.'); return; }
+  if(nc===na){ showToast('Crew and Admin PINs must be different.'); return; }
+  if(!/^\d+$/.test(nc)||!/^\d+$/.test(na)){ showToast('PINs must be numbers only.'); return; }
+  CREW_PIN=nc; ADMIN_PIN=na;
+  await sb.setKV('crew_pin',nc);
+  await sb.setKV('admin_pin',na);
+  document.getElementById('pin-new-crew').value='';
+  document.getElementById('pin-new-admin').value='';
+  showToast('✅ PINs updated successfully.');
+}
+
 function showPage(id){
   // Crew mode — block all navigation except Crew View
   if(localStorage.getItem('fpRole')==='crew'&&id!=='crewview') return;
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
-  const map={dashboard:0,pipeline:1,jobs:2,schedule:3,salesschedule:4,reference:5,installers:6,materials:7,materialcalc:8,jobtypes:9,holidays:10,crewview:11};
+  const map={dashboard:0,pipeline:1,jobs:2,schedule:3,salesschedule:4,reference:5,installers:6,materials:7,materialcalc:8,jobtypes:9,holidays:10,pinsettings:11,crewview:12};
   document.querySelectorAll('.nav-item').forEach((n,i)=>n.classList.toggle('active',i===map[id]));
   if(id==='dashboard') renderDashboard();
   if(id==='schedule') renderSchedule();
