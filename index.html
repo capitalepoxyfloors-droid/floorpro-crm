@@ -2798,9 +2798,13 @@ function jcRenderDayLogs(){
   const scheduled=jcWeekdays(job.startDate,job.endDate);
   const days=[...new Set([...scheduled,...job.extraDays])].sort();
   days.forEach((ds,idx)=>{
-    if(!job.dayLogs[ds]) job.dayLogs[ds]={crewPresent:'',task:'',materialsUsed:'',startTime:'',endTime:'',notes:''};
+    if(!job.dayLogs[ds]) job.dayLogs[ds]={crewPresent:[],task:'',materialsUsed:[],startTime:'',endTime:'',notes:''};
     const log=job.dayLogs[ds];
-    const filled=!!(log.crewPresent||log.task||log.materialsUsed);
+    _jcMigrateCrewPresent(log);
+    _jcMigrateMats(log);
+    const _crewFilled=log.crewPresent.some(c=>c.name);
+    const _matsFilled=log.materialsUsed.some(m=>m.name||m.qty);
+    const filled=!!(_crewFilled||log.task||_matsFilled);
     const key=ds.replace(/-/g,'');
     const sec=document.createElement('div');
     sec.style.cssText='margin-bottom:16px;background:var(--surface2);border:1px solid '+(filled?'var(--green)44':'var(--border2)')+';border-radius:var(--radius);overflow:hidden;';
@@ -2810,19 +2814,17 @@ function jcRenderDayLogs(){
         <div class="status-pill ${filled?'pill-active':'pill-complete'}" style="font-size:10px;">${filled?'✓ Logged':'Not yet filled in'}</div>
       </div>
       <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
-        <div class="form-row">
-          <div class="form-group" style="margin:0;">
-            <label class="form-label">Crew on Site</label>
-            <input class="form-input" placeholder="Who was on site" value="${(log.crewPresent||'').replace(/"/g,'&quot;')}" oninput="jcLogSet('${ds}','crewPresent',this.value)" style="font-size:13px;"/>
-          </div>
-          <div class="form-group" style="margin:0;">
-            <label class="form-label">Task Completed</label>
-            <input class="form-input" placeholder="What was done today" value="${(log.task||'').replace(/"/g,'&quot;')}" oninput="jcLogSet('${ds}','task',this.value)" style="font-size:13px;"/>
-          </div>
+        <div class="form-group" style="margin:0;">
+          <label class="form-label">Crew on Site</label>
+          ${jcDayCrewHtml(ds,log)}
+        </div>
+        <div class="form-group" style="margin:0;">
+          <label class="form-label">Task Completed</label>
+          <input class="form-input" placeholder="What was done today" value="${(log.task||'').replace(/"/g,'&quot;')}" oninput="jcLogSet('${ds}','task',this.value)" style="font-size:13px;"/>
         </div>
         <div class="form-group" style="margin:0;">
           <label class="form-label">Materials Actually Used</label>
-          <input class="form-input" placeholder="e.g. 4.5 Gal Medium Grey Base, 120 Lbs Cabin Fever Flake" value="${(log.materialsUsed||'').replace(/"/g,'&quot;')}" oninput="jcLogSet('${ds}','materialsUsed',this.value)" style="font-size:13px;"/>
+          ${jcDayMatsHtml(ds,log)}
         </div>
         <div class="form-row" style="margin:0;">
           <div class="form-group" style="margin:0;">
@@ -2949,6 +2951,170 @@ function jcLogSet(ds,field,val){
   if(!job.dayLogs[ds]) job.dayLogs[ds]={};
   job.dayLogs[ds][field]=val;
 }
+
+// ── DAILY LOG — CREW DROPDOWN ─────────────────────────────────────────────────
+function _jcMigrateCrewPresent(log){
+  if(typeof log.crewPresent==='string'){
+    const s=log.crewPresent.trim();
+    log.crewPresent=s?[{crewIdx:-1,name:s,burdenedRate:''}]:[];
+  }
+  if(!Array.isArray(log.crewPresent)) log.crewPresent=[];
+}
+
+function jcDayCrewHtml(ds,log){
+  const crew=log.crewPresent||[];
+  let rows='';
+  crew.forEach((c,i)=>{
+    rows+=`<div class="jc-crew-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+      <select class="form-input" style="flex:1;font-size:12px;padding:4px 6px;" onchange="jcLogPickCrewMember('${ds}',${i},this)">
+        <option value="custom"${c.crewIdx===-1?' selected':''}>— Custom —</option>
+        ${CREW_DATA.map((cd,ci)=>`<option value="${ci}"${c.crewIdx===ci?' selected':''}>${cd.full}</option>`).join('')}
+      </select>
+      ${c.crewIdx===-1?`<input class="form-input" placeholder="Name" value="${(c.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetCrew('${ds}',${i},'name',this.value)" style="flex:1;font-size:12px;padding:4px 6px;"/>`:``}
+      <button onclick="jcLogRemoveCrewMember('${ds}',${i})" style="background:none;border:none;cursor:pointer;color:var(--danger,#e74c3c);font-size:16px;padding:0 2px;line-height:1;" title="Remove">×</button>
+    </div>`;
+  });
+  return `<div id="jc-crew-${ds.replace(/-/g,'')}">`+
+    `<button onclick="jcLogAddCrewMember('${ds}')" style="font-size:12px;color:var(--primary);background:none;border:1px dashed var(--primary);border-radius:6px;padding:3px 10px;cursor:pointer;margin-bottom:6px;">+ Add Crew Member</button>`+
+    rows+
+  `</div>`;
+}
+
+function jcRenderDayCrew(ds){
+  const key=ds.replace(/-/g,'');
+  const el=document.getElementById('jc-crew-'+key);
+  if(!el) return;
+  const job=getJobRecord(_jcId); if(!job) return;
+  if(!job.dayLogs?.[ds]) return;
+  _jcMigrateCrewPresent(job.dayLogs[ds]);
+  el.outerHTML=jcDayCrewHtml(ds,job.dayLogs[ds]);
+}
+
+function jcLogAddCrewMember(ds){
+  const job=getJobRecord(_jcId); if(!job) return;
+  if(!job.dayLogs) job.dayLogs={};
+  if(!job.dayLogs[ds]) job.dayLogs[ds]={crewPresent:[],task:'',materialsUsed:[],startTime:'',endTime:'',notes:''};
+  _jcMigrateCrewPresent(job.dayLogs[ds]);
+  job.dayLogs[ds].crewPresent.push({crewIdx:-1,name:'',burdenedRate:''});
+  jcRenderDayCrew(ds);
+}
+
+function jcLogRemoveCrewMember(ds,idx){
+  const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
+  _jcMigrateCrewPresent(job.dayLogs[ds]);
+  job.dayLogs[ds].crewPresent.splice(idx,1);
+  jcRenderDayCrew(ds);
+}
+
+function jcLogPickCrewMember(ds,idx,sel){
+  const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
+  _jcMigrateCrewPresent(job.dayLogs[ds]);
+  const c=job.dayLogs[ds].crewPresent[idx]; if(!c) return;
+  const v=sel.value;
+  if(v==='custom'){
+    c.crewIdx=-1; c.name=''; c.burdenedRate='';
+  } else {
+    const ci=parseInt(v);
+    const cd=CREW_DATA[ci];
+    if(cd){ c.crewIdx=ci; c.name=cd.full; c.burdenedRate=calcBurdenForCrew(cd)||''; }
+  }
+  jcRenderDayCrew(ds);
+}
+
+function jcLogSetCrew(ds,idx,field,val){
+  const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
+  _jcMigrateCrewPresent(job.dayLogs[ds]);
+  const c=job.dayLogs[ds].crewPresent[idx]; if(!c) return;
+  c[field]=val;
+}
+
+// ── DAILY LOG — MATERIALS DROPDOWN ───────────────────────────────────────────
+function _jcMigrateMats(log){
+  // Convert old string field to array format
+  if(typeof log.materialsUsed==='string'){
+    const s=log.materialsUsed.trim();
+    log.materialsUsed=s?[{matIdx:-1,name:s,qty:'',usageUnit:''}]:[];
+  }
+  if(!Array.isArray(log.materialsUsed)) log.materialsUsed=[];
+  // Migrate old entries that used 'unit' instead of 'usageUnit'
+  log.materialsUsed.forEach(m=>{ if(m.unit!==undefined&&m.usageUnit===undefined){ m.usageUnit=m.unit; delete m.unit; } });
+}
+
+function jcDayMatsHtml(ds,log){
+  const mats=log.materialsUsed||[];
+  let rows='';
+  mats.forEach((m,i)=>{
+    const selVal=m.matIdx>=0?m.matIdx:'custom';
+    rows+=`<div class="jc-mat-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+      <select class="form-input" style="flex:1;font-size:12px;padding:4px 6px;" onchange="jcLogPickMaterial('${ds}',${i},this)">
+        <option value="custom"${m.matIdx===-1?' selected':''}>— Custom —</option>
+        ${MATERIALS.map((mat,mi)=>({mat,mi})).sort((a,b)=>a.mat.name.localeCompare(b.mat.name)).map(({mat,mi})=>`<option value="${mi}"${m.matIdx===mi?' selected':''}>${mat.name}</option>`).join('')}
+      </select>
+      ${m.matIdx===-1?`<input class="form-input" placeholder="Material name" value="${(m.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetMaterial('${ds}',${i},'name',this.value)" style="flex:1;font-size:12px;padding:4px 6px;"/>`:``}
+      <input class="form-input" type="number" min="0" step="any" placeholder="Qty" value="${m.qty||''}" oninput="jcLogSetMaterial('${ds}',${i},'qty',this.value)" style="width:65px;flex:none;font-size:12px;padding:4px 6px;" title="Amount actually used"/>
+      <input class="form-input" placeholder="Unit" value="${(m.usageUnit||'').replace(/"/g,'&quot;')}" oninput="jcLogSetMaterial('${ds}',${i},'usageUnit',this.value)" style="width:52px;flex:none;font-size:12px;padding:4px 6px;" title="e.g. Gal, Lbs, SF"/>
+      <button onclick="jcLogRemoveMat('${ds}',${i})" style="background:none;border:none;cursor:pointer;color:var(--danger,#e74c3c);font-size:16px;padding:0 2px;line-height:1;" title="Remove">×</button>
+    </div>`;
+  });
+  return `<div id="jc-mats-${ds.replace(/-/g,'')}">`+
+    `<button onclick="jcLogAddMat('${ds}')" style="font-size:12px;color:var(--primary);background:none;border:1px dashed var(--primary);border-radius:6px;padding:3px 10px;cursor:pointer;margin-bottom:6px;">+ Add Material</button>`+
+    rows+
+  `</div>`;
+}
+
+function jcRenderDayMats(ds){
+  const key=ds.replace(/-/g,'');
+  const el=document.getElementById('jc-mats-'+key);
+  if(!el) return;
+  const job=getJobRecord(_jcId); if(!job) return;
+  if(!job.dayLogs?.[ds]) return;
+  _jcMigrateMats(job.dayLogs[ds]);
+  el.outerHTML=jcDayMatsHtml(ds,job.dayLogs[ds]);
+}
+
+function jcLogAddMat(ds){
+  const job=getJobRecord(_jcId); if(!job) return;
+  if(!job.dayLogs) job.dayLogs={};
+  if(!job.dayLogs[ds]) job.dayLogs[ds]={crewPresent:'',task:'',materialsUsed:[],startTime:'',endTime:'',notes:''};
+  _jcMigrateMats(job.dayLogs[ds]);
+  job.dayLogs[ds].materialsUsed.push({matIdx:-1,name:'',qty:'',unit:''});
+  jcRenderDayMats(ds);
+}
+
+function jcLogRemoveMat(ds,idx){
+  const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
+  _jcMigrateMats(job.dayLogs[ds]);
+  job.dayLogs[ds].materialsUsed.splice(idx,1);
+  jcRenderDayMats(ds);
+}
+
+function jcLogPickMaterial(ds,idx,sel){
+  const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
+  _jcMigrateMats(job.dayLogs[ds]);
+  const m=job.dayLogs[ds].materialsUsed[idx]; if(!m) return;
+  const v=sel.value;
+  if(v==='custom'){
+    m.matIdx=-1; m.name=''; m.usageUnit='';
+  } else {
+    const mi=parseInt(v);
+    const mat=MATERIALS[mi];
+    if(mat){
+      m.matIdx=mi; m.name=mat.name;
+      // Strip leading quantity from unit (e.g. "15 Gal" → "Gal", "2 Gallon" → "Gallon")
+      const rawUnit=mat.unit||'';
+      m.usageUnit=rawUnit.replace(/^\d+\.?\d*\s*/,'').trim()||rawUnit;
+    }
+  }
+  jcRenderDayMats(ds);
+}
+
+function jcLogSetMaterial(ds,idx,field,val){
+  const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
+  _jcMigrateMats(job.dayLogs[ds]);
+  const m=job.dayLogs[ds].materialsUsed[idx]; if(!m) return;
+  m[field]=val;
+}
+
 function jcCalcHrs(s,e){
   const[sh,sm]=s.split(':').map(Number),[eh,em]=e.split(':').map(Number);
   const m=(eh*60+em)-(sh*60+sm); return m>0?(m/60).toFixed(1)+' hrs':'—';
