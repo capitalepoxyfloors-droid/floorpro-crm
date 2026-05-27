@@ -2836,6 +2836,11 @@ function jcRenderDayLogs(){
             <input class="form-input" type="text" inputmode="numeric" placeholder="3:30 PM" value="${log.endTime||''}" oninput="jcLogSet('${ds}','endTime',this.value)" onblur="fmtTimeInput(this,'${ds}','endTime')" style="font-size:13px;"/>
           </div>
         </div>
+        ${localStorage.getItem('fpRole')!=='crew'?`
+        <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;">
+          <span style="font-size:12px;color:var(--text3);">Time on site:</span>
+          <span id="jch-${key}" style="font-size:13px;font-weight:700;color:var(--accent);">${log.startTime&&log.endTime?jcCalcHrs(log.startTime,log.endTime):'—'}</span>
+        </div>`:``}
         <div class="form-group" style="margin:0;">
           <label class="form-label">Notes</label>
           <textarea class="form-textarea" placeholder="Anything worth noting — issues, decisions, next steps..." oninput="jcLogSet('${ds}','notes',this.value)" style="min-height:52px;font-size:13px;">${log.notes||''}</textarea>
@@ -2950,6 +2955,7 @@ function jcLogSet(ds,field,val){
   if(!job.dayLogs) job.dayLogs={};
   if(!job.dayLogs[ds]) job.dayLogs[ds]={};
   job.dayLogs[ds][field]=val;
+  if(field==='startTime'||field==='endTime') jcHours(ds.replace(/-/g,''),ds);
 }
 
 // ── DAILY LOG — CREW DROPDOWN ─────────────────────────────────────────────────
@@ -3116,8 +3122,20 @@ function jcLogSetMaterial(ds,idx,field,val){
 }
 
 function jcCalcHrs(s,e){
-  const[sh,sm]=s.split(':').map(Number),[eh,em]=e.split(':').map(Number);
-  const m=(eh*60+em)-(sh*60+sm); return m>0?(m/60).toFixed(1)+' hrs':'—';
+  function toMins(t){
+    if(!t) return null;
+    const m=t.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+    if(!m) return null;
+    let h=parseInt(m[1]), mn=parseInt(m[2]);
+    const ap=(m[3]||'').toUpperCase();
+    if(ap==='PM'&&h!==12) h+=12;
+    if(ap==='AM'&&h===12) h=0;
+    return h*60+mn;
+  }
+  const sm=toMins(s), em=toMins(e);
+  if(sm===null||em===null) return '—';
+  const diff=em-sm;
+  return diff>0?(diff/60).toFixed(1)+' hrs':'—';
 }
 function jcHours(key,ds){
   const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
@@ -4013,7 +4031,7 @@ function renderMaterialCalc(){
 }
 
 // ── PIN AUTH ─────────────────────────────────────────────────────────────────
-let CREW_PIN='1234', ADMIN_PIN='5678', _pinBuf='';
+let CREW_PIN='1234', ADMIN_PIN='0061', _pinBuf='';
 
 function _pinAuthKey(){ return 'fpAuth_v1'; }
 
