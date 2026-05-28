@@ -386,6 +386,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><path d="M8 14h.01M12 14h.01M16 14h.01"/></svg>
         <span>Sales Schedule</span>
       </button>
+      <button class="nav-item" onclick="showPage('jobcosting')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/><path d="M8 14h4M8 10h2"/></svg>
+        <span>Job Costing</span>
+      </button>
       <div class="nav-label" style="margin-top:8px;">Settings</div>
       <button class="nav-item" onclick="showPage('reference')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/><path d="M9 7h6M9 11h6M9 15h4"/></svg>
@@ -616,6 +620,16 @@
         <div class="jobs-block" id="sales-visit-list">
           <div style="padding:28px;text-align:center;color:var(--text3);font-size:13px;">No visits scheduled yet — tap + Add Visit to get started.</div>
         </div>
+      </div>
+    </div>
+
+    <!-- JOB COSTING PAGE -->
+    <div class="page" id="page-jobcosting">
+      <div class="topbar">
+        <div class="page-title">Job Costing</div>
+      </div>
+      <div class="content">
+        <div id="jc-cost-page-content"></div>
       </div>
     </div>
 
@@ -1111,7 +1125,7 @@
           </div>
         </div>
         <div class="form-group">
-          <label class="form-label">Health / Benefits ($/week)</label>
+          <label class="form-label">Health / Benefits ($/month)</label>
           <div style="position:relative;">
             <span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text2);font-weight:600;">$</span>
             <input class="form-input" id="ce-benefits" type="number" min="0" step="0.01" placeholder="0.00" style="padding-left:26px;" oninput="calcBurden()"/>
@@ -1283,6 +1297,11 @@ const sb = {
   },
   async delete(table,id){
     const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`,{method:'DELETE',headers:this.headers});
+    return res.ok;
+  },
+  async deleteWhere(table,filters){
+    const params=Object.entries(filters).map(([k,v])=>`${k}=eq.${v}`).join('&');
+    const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`,{method:'DELETE',headers:this.headers});
     return res.ok;
   },
   async upsert(table,data,onConflict='key'){
@@ -2368,7 +2387,12 @@ function seSlotToDate(w, d){
 
 async function seRemoveSlot(ci, w, d){
   const s=newSlots[ci]?.[w]?.[d];
-  if(s?.db_id) await sb.delete('scheduled_slots', s.db_id);
+  if(s?.db_id){
+    await sb.delete('scheduled_slots', s.db_id);
+  } else {
+    // Fallback: delete by column values for slots missing a db_id
+    await sb.deleteWhere('scheduled_slots',{crew_idx:ci,week_offset:w,day_idx:d});
+  }
   if(newSlots[ci]?.[w]) delete newSlots[ci][w][d];
 }
 
@@ -2498,6 +2522,30 @@ function jcBackfillSlotMap(job){
   if(changed) saveSlotJobMap();
 }
 
+// Remove schedule slots for crew members who are NOT in job.crewNames but still
+// have a slot matching this job's label — cleans up orphaned/stale slots.
+async function jcCleanOrphanedSlots(job){
+  if(!job||!job.startDate||!job.endDate) return;
+  const names=new Set((job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean));
+  const allDates=[...jcWeekdays(job.startDate,job.endDate),...(job.extraDays||[])];
+  let changed=false;
+  for(let ci=0;ci<CREW.length;ci++){
+    if(names.has(CREW[ci].full)) continue; // on the job — leave their slot alone
+    for(const ds of allDates){
+      const pos=cvDateToSlot(new Date(ds+'T00:00:00')); if(!pos) continue;
+      const{w,d}=pos;
+      const s=newSlots[ci]?.[w]?.[d];
+      if(!s||s.l!==job.customer) continue; // not this job
+      // Crew member has a slot for this job but isn't in crewNames — delete it
+      await seRemoveSlot(ci,w,d);
+      const key=jcSlotKey(ci,w,d);
+      delete SLOT_JOB_MAP[key];
+      changed=true;
+    }
+  }
+  if(changed){ await saveSlotJobMap(); renderSchedule(); }
+}
+
 // For every crew member listed in job.crewNames, check if they have actual schedule
 // slots for this job's dates. If not, create them automatically. This fixes jobs
 // where crewNames was set manually but slots were never saved (old workflow).
@@ -2545,9 +2593,11 @@ function openJobCard(jobId){
   _jcId=jobId;
   jcBackfillSlotMap(job);    // heal legacy slots missing from SLOT_JOB_MAP
   jcSyncCrewSlots(job);      // create any missing slots for crew listed in crewNames
-  // Hide pricing when opened from crew view page OR in locked crew mode
+  jcCleanOrphanedSlots(job); // remove slots for crew members no longer on this job
+  // Hide pricing + costing tab when opened from crew view page OR in locked crew mode
   const hideValue = document.getElementById('page-crewview')?.classList.contains('active') || localStorage.getItem('fpRole')==='crew';
   document.getElementById('jc-value-group').style.display = hideValue ? 'none' : '';
+  document.getElementById('jc-tab-costing').style.display = hideValue ? 'none' : '';
   // Header
   document.getElementById('jc-name').textContent=job.customer||'Unnamed Job';
   const meta=[];
@@ -2607,7 +2657,7 @@ async function jcToggleCrew(i){
   const adding=idx===-1;
   if(adding) names.push(name); else names.splice(idx,1);
   job.crewNames=names.join(', ');
-  saveJobRecords();
+  await saveJobRecords();
 
   // Build full weekday list for this job (scheduled days + any extra days)
   const allDates=job.startDate&&job.endDate?[...jcWeekdays(job.startDate,job.endDate)]:[];
@@ -2625,15 +2675,18 @@ async function jcToggleCrew(i){
       await sePlaceSlot(i,w,d,job.customer,job.jobType||'epoxy');
       SLOT_JOB_MAP[key]=job.id;
     } else {
-      // Only remove slots that belong to this job
-      if(SLOT_JOB_MAP[key]===job.id){
+      // Remove slots belonging to this job — check SLOT_JOB_MAP or matching label (orphaned slots)
+      const s=newSlots[i]?.[w]?.[d];
+      const inMap=SLOT_JOB_MAP[key]===job.id;
+      const orphaned=!SLOT_JOB_MAP[key]&&s?.l===job.customer;
+      if(inMap||orphaned){
         await seRemoveSlot(i,w,d);
         delete SLOT_JOB_MAP[key];
       }
     }
   }
 
-  saveSlotJobMap();
+  await saveSlotJobMap();
   jcRenderCrewPicker();
   // Refresh crew view calendar if it's open
   if(document.getElementById('page-crewview')?.classList.contains('active')) renderCrewView();
@@ -2644,10 +2697,11 @@ async function jcToggleCrew(i){
 }
 
 function jcTab(name){
-  ['info','materials','log'].forEach(t=>{
+  ['info','materials','log','costing'].forEach(t=>{
     document.getElementById('jc-pane-'+t).style.display=t===name?'':'none';
     document.getElementById('jc-tab-'+t).classList.toggle('active',t===name);
   });
+  if(name==='costing') renderJobCosting();
   if(name==='materials') jcRenderMaterials();
   if(name==='log'){
     jcRenderDayLogs();
@@ -2826,7 +2880,7 @@ function jcRenderDayLogs(){
           <label class="form-label">Materials Actually Used</label>
           ${jcDayMatsHtml(ds,log)}
         </div>
-        <div class="form-row" style="margin:0;">
+        <div id="jctr-${key}" class="form-row" style="margin:0;${log.fullDay?'opacity:0.35;':''}">
           <div class="form-group" style="margin:0;">
             <label class="form-label">Start Time</label>
             <input class="form-input" type="text" inputmode="numeric" placeholder="7:00 AM" value="${log.startTime||''}" oninput="jcLogSet('${ds}','startTime',this.value)" onblur="fmtTimeInput(this,'${ds}','startTime')" style="font-size:13px;"/>
@@ -2836,11 +2890,13 @@ function jcRenderDayLogs(){
             <input class="form-input" type="text" inputmode="numeric" placeholder="3:30 PM" value="${log.endTime||''}" oninput="jcLogSet('${ds}','endTime',this.value)" onblur="fmtTimeInput(this,'${ds}','endTime')" style="font-size:13px;"/>
           </div>
         </div>
-        ${localStorage.getItem('fpRole')!=='crew'?`
-        <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;">
-          <span style="font-size:12px;color:var(--text3);">Time on site:</span>
-          <span id="jch-${key}" style="font-size:13px;font-weight:700;color:var(--accent);">${log.startTime&&log.endTime?jcCalcHrs(log.startTime,log.endTime):'—'}</span>
-        </div>`:``}
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+          <button id="jcfd-${key}" onclick="jcToggleFullDay('${ds}')" style="font-size:12px;padding:3px 10px;border-radius:6px;border:1px solid var(--primary);cursor:pointer;transition:all .15s;background:${log.fullDay?'var(--primary)':'none'};color:${log.fullDay?'#fff':'var(--primary)'};">${log.fullDay?'✓ Full 8-hr Day':'Full 8-hr Day'}</button>
+          ${localStorage.getItem('fpRole')!=='crew'?`<div style="display:flex;align-items:center;gap:6px;">
+            <span style="font-size:12px;color:var(--text3);">Time on site:</span>
+            <span id="jch-${key}" style="font-size:13px;font-weight:700;color:var(--accent);">${log.fullDay?'8.0 hrs':(log.startTime&&log.endTime?jcCalcHrs(log.startTime,log.endTime):'—')}</span>
+          </div>`:``}
+        </div>
         <div class="form-group" style="margin:0;">
           <label class="form-label">Notes</label>
           <textarea class="form-textarea" placeholder="Anything worth noting — issues, decisions, next steps..." oninput="jcLogSet('${ds}','notes',this.value)" style="min-height:52px;font-size:13px;">${log.notes||''}</textarea>
@@ -3010,6 +3066,7 @@ function jcLogRemoveCrewMember(ds,idx){
   _jcMigrateCrewPresent(job.dayLogs[ds]);
   job.dayLogs[ds].crewPresent.splice(idx,1);
   jcRenderDayCrew(ds);
+  saveJobRecords();
 }
 
 function jcLogPickCrewMember(ds,idx,sel){
@@ -3025,6 +3082,7 @@ function jcLogPickCrewMember(ds,idx,sel){
     if(cd){ c.crewIdx=ci; c.name=cd.full; c.burdenedRate=calcBurdenForCrew(cd)||''; }
   }
   jcRenderDayCrew(ds);
+  saveJobRecords();
 }
 
 function jcLogSetCrew(ds,idx,field,val){
@@ -3137,10 +3195,431 @@ function jcCalcHrs(s,e){
   const diff=em-sm;
   return diff>0?(diff/60).toFixed(1)+' hrs':'—';
 }
+// Returns hours for a day log — 8 if fullDay flag is set, otherwise calculates from start/end times
+function jcGetLogHrs(log){
+  if(!log) return 0;
+  if(log.fullDay) return 8;
+  return parseFloat(jcCalcHrs(log.startTime,log.endTime))||0;
+}
+
+function jcToggleFullDay(ds){
+  const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
+  const log=job.dayLogs[ds];
+  log.fullDay=!log.fullDay;
+  const key=ds.replace(/-/g,'');
+  // Update the hours display
+  const el=document.getElementById('jch-'+key);
+  if(el) el.textContent=log.fullDay?'8.0 hrs':(log.startTime&&log.endTime?jcCalcHrs(log.startTime,log.endTime):'—');
+  // Update time input opacity
+  const timeRow=document.getElementById('jctr-'+key);
+  if(timeRow) timeRow.style.opacity=log.fullDay?'0.35':'1';
+  // Update button style
+  const btn=document.getElementById('jcfd-'+key);
+  if(btn){
+    btn.style.background=log.fullDay?'var(--primary)':'none';
+    btn.style.color=log.fullDay?'#fff':'var(--primary)';
+    btn.textContent=log.fullDay?'✓ Full 8-hr Day':'Full 8-hr Day';
+  }
+  saveJobRecords();
+}
+
+function jcSetConsumablesPct(val){
+  const job=getJobRecord(_jcId); if(!job) return;
+  job.consumablesPct=Math.max(0,parseFloat(val)||0);
+  saveJobRecords();
+  renderJobCosting();
+}
+
+function jcSetMileageOneWay(val){
+  const job=getJobRecord(_jcId); if(!job) return;
+  job.mileageOneWay=Math.max(0,parseFloat(val)||0);
+  saveJobRecords();
+  renderJobCosting();
+}
+
+function jcSetMileageRate(val){
+  const job=getJobRecord(_jcId); if(!job) return;
+  job.mileageRate=Math.max(0,parseFloat(val)||0);
+  saveJobRecords();
+  renderJobCosting();
+}
+
+async function jcCalcMileage(){
+  const job=getJobRecord(_jcId); if(!job) return;
+  if(!job.address){showToast('No job address set — add one on the Job Info tab.');return;}
+  const btn=document.getElementById('jc-mile-calc-btn');
+  if(btn){btn.textContent='Calculating…';btn.disabled=true;}
+
+  // Shop coords for 19 Highway 100, Linn MO 65051
+  const shopLat=38.4855, shopLng=-91.8517;
+
+  function haversineMiles(lat1,lng1,lat2,lng2){
+    const R=3958.8, toR=Math.PI/180;
+    const dLat=(lat2-lat1)*toR, dLng=(lng2-lng1)*toR;
+    const a=Math.sin(dLat/2)**2+Math.cos(lat1*toR)*Math.cos(lat2*toR)*Math.sin(dLng/2)**2;
+    return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+  }
+
+  try{
+    // Step 1: geocode job address via Photon (same API already used in this app)
+    const photonRes=await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(job.address)}&limit=3&lang=en`);
+    const photonData=await photonRes.json();
+    const feature=photonData?.features?.[0];
+    if(!feature) throw new Error('Address not found. Enter miles manually instead.');
+    const [jobLng,jobLat]=feature.geometry.coordinates;
+
+    // Step 2: driving distance via OSRM
+    let miles;
+    try{
+      const routeRes=await fetch(`https://router.project-osrm.org/route/v1/driving/${shopLng},${shopLat};${jobLng},${jobLat}?overview=false`);
+      const routeData=await routeRes.json();
+      if(routeData.code==='Ok'&&routeData.routes?.length){
+        miles=Math.round(routeData.routes[0].distance/1609.344*10)/10;
+      }
+    }catch(_){}
+
+    // Step 3: fall back to haversine × 1.35 road factor if OSRM failed
+    if(!miles){
+      const straight=haversineMiles(shopLat,shopLng,jobLat,jobLng);
+      miles=Math.round(straight*1.35*10)/10;
+      showToast(`Estimated distance: ${miles} mi (road routing unavailable — adjust if needed)`);
+    } else {
+      showToast(`Distance: ${miles} mi one way from shop`);
+    }
+
+    job.mileageOneWay=miles;
+    if(job.mileageRate===undefined) job.mileageRate=0.70;
+    await saveJobRecords();
+    renderJobCosting();
+  } catch(e){
+    showToast('Could not auto-calculate: '+e.message);
+  } finally {
+    const b=document.getElementById('jc-mile-calc-btn');
+    if(b){b.textContent='📍 Auto-Calculate';b.disabled=false;}
+  }
+}
+
 function jcHours(key,ds){
   const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
-  const{startTime,endTime}=job.dayLogs[ds];
-  const el=document.getElementById('jch-'+key); if(el) el.textContent=(startTime&&endTime)?jcCalcHrs(startTime,endTime):'—';
+  const log=job.dayLogs[ds];
+  const el=document.getElementById('jch-'+key); if(el) el.textContent=log.fullDay?'8.0 hrs':(log.startTime&&log.endTime?jcCalcHrs(log.startTime,log.endTime):'—');
+}
+
+// Returns the best available burdened rate for a daily-log crew entry.
+// Tries: stored burdenedRate → live CREW_DATA calculation → base hourly → 0
+function jcGetBurdenedRate(c){
+  const stored=parseFloat(c.burdenedRate);
+  if(stored>0) return stored;
+  if(c.crewIdx>=0&&CREW_DATA[c.crewIdx]){
+    const live=parseFloat(calcBurdenForCrew(CREW_DATA[c.crewIdx]));
+    if(live>0) return live;
+    const base=parseFloat(CREW_DATA[c.crewIdx].hourly);
+    if(base>0) return base;
+  }
+  return 0;
+}
+
+// ── JOB COSTING PAGE ──────────────────────────────────────────────────────────
+function renderJobCostingPage(){
+  const el=document.getElementById('jc-cost-page-content'); if(!el) return;
+  const fmt=n=>'$'+Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+
+  const jobs=JOB_RECORDS.filter(j=>j.status==='complete');
+
+  if(!jobs.length){
+    el.innerHTML=`<div style="text-align:center;padding:60px 20px;color:var(--text3);font-size:15px;">No completed jobs yet. Jobs appear here once they are marked as Complete.</div>`;
+    return;
+  }
+
+  // Calculate totals for each job
+  const rows=jobs.map(job=>{
+    const revenue=parseFloat(job.value)||0;
+    const logs=job.dayLogs||{};
+    const allDates=[...jcWeekdays(job.startDate||'',job.endDate||''),...(job.extraDays||[])];
+    let laborCost=0,matCost=0,totalHrs=0;
+
+    allDates.forEach(ds=>{
+      const log=logs[ds]; if(!log) return;
+      // Labor
+      {
+        const hrs=jcGetLogHrs(log);
+        if(hrs>0){
+          totalHrs+=hrs;
+          const seenDay=new Set();
+          (Array.isArray(log.crewPresent)?log.crewPresent:[]).forEach(c=>{
+            const effectiveName=(c.name||(c.crewIdx>=0&&CREW_DATA[c.crewIdx]?CREW_DATA[c.crewIdx].full:'')).trim();
+            if(!effectiveName) return;
+            if(seenDay.has(effectiveName.toLowerCase())) return;
+            seenDay.add(effectiveName.toLowerCase());
+            const rate=jcGetBurdenedRate(c);
+            laborCost+=hrs*rate;
+          });
+        }
+      }
+      // Materials
+      (Array.isArray(log.materialsUsed)?log.materialsUsed:[]).forEach(m=>{
+        if(!m.qty||m.matIdx<0||!MATERIALS[m.matIdx]) return;
+        const mat=MATERIALS[m.matIdx];
+        const pkgQty=parseFloat((mat.unit||'').match(/^(\d+\.?\d*)/)?.[1])||1;
+        const unitCost=(parseFloat(mat.price)||0)/pkgQty;
+        matCost+=(parseFloat(m.qty)||0)*unitCost;
+      });
+    });
+
+    laborCost=Math.round(laborCost*100)/100;
+    matCost=Math.round(matCost*100)/100;
+    const consPct=parseFloat(job.consumablesPct===undefined?10:job.consumablesPct)||0;
+    const consCost=Math.round(matCost*consPct/100*100)/100;
+    const mileOneWay=parseFloat(job.mileageOneWay)||0;
+    const mileRate=parseFloat(job.mileageRate!==undefined?job.mileageRate:0.70);
+    const wDays=allDates.filter(ds=>{const l=logs[ds];return l&&jcGetLogHrs(l)>0;}).length;
+    const mileCost=Math.round(mileOneWay*2*wDays*mileRate*100)/100;
+    const totalCost=Math.round((laborCost+matCost+consCost+mileCost)*100)/100;
+    const profit=Math.round((revenue-totalCost)*100)/100;
+    const margin=revenue>0?Math.round(profit/revenue*1000)/10:null;
+    return{job,revenue,laborCost,matCost,consCost,mileCost,totalCost,profit,margin,totalHrs:Math.round(totalHrs*10)/10};
+  });
+
+  // Summary bar
+  const totRev=rows.reduce((a,r)=>a+r.revenue,0);
+  const totLab=rows.reduce((a,r)=>a+r.laborCost,0);
+  const totMat=rows.reduce((a,r)=>a+r.matCost,0);
+  const totCons=rows.reduce((a,r)=>a+(r.consCost||0),0);
+  const totMile=rows.reduce((a,r)=>a+(r.mileCost||0),0);
+  const totProfit=Math.round((totRev-totLab-totMat-totCons-totMile)*100)/100;
+  const totMargin=totRev>0?Math.round(totProfit/totRev*1000)/10:null;
+  const totWorkDays=rows.reduce((a,r)=>{
+    const logs=r.job.dayLogs||{};
+    const allDates=[...jcWeekdays(r.job.startDate||'',r.job.endDate||''),...(r.job.extraDays||[])];
+    return a+allDates.filter(ds=>{const l=logs[ds];return l&&jcGetLogHrs(l)>0;}).length;
+  },0);
+  const profitPerDay=totWorkDays>0?Math.round(totProfit/totWorkDays*100)/100:null;
+
+  let html=`
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px;">
+    <div class="stat-card"><div class="stat-label">Total Revenue</div><div class="stat-value">${fmt(totRev)}</div></div>
+    <div class="stat-card"><div class="stat-label">Total Labor Cost</div><div class="stat-value" style="color:var(--red);">${fmt(totLab)}</div></div>
+    <div class="stat-card"><div class="stat-label">Profit Per Day</div><div class="stat-value" style="color:${profitPerDay===null?'var(--text3)':profitPerDay>=0?'var(--green)':'var(--red)'};">${profitPerDay!==null?fmt(profitPerDay):'—'}${totWorkDays>0?`<span style="font-size:13px;font-weight:500;color:var(--text3);margin-left:8px;">${totWorkDays}d</span>`:''}</div></div>
+    <div class="stat-card"><div class="stat-label">Gross Profit</div><div class="stat-value" style="color:${totProfit>=0?'var(--green)':'var(--red)'};">${fmt(totProfit)}${totMargin!==null?`<span style="font-size:13px;font-weight:500;color:var(--text3);margin-left:8px;">${totMargin}%</span>`:''}</div></div>
+  </div>
+  <div style="background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);overflow:hidden;">
+    <div style="display:grid;grid-template-columns:1.8fr 1fr 1fr 1fr 1fr 1fr;gap:0;padding:10px 16px;background:var(--surface2);border-bottom:1px solid var(--border2);font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;">
+      <div>Job</div><div style="text-align:right;">Revenue</div><div style="text-align:right;">Labor</div><div style="text-align:right;">Materials</div><div style="text-align:right;">Profit</div><div style="text-align:right;">Margin</div>
+    </div>`;
+
+  rows.forEach(({job,revenue,laborCost,matCost,profit,margin,totalHrs})=>{
+    const profitColor=profit>=0?'var(--green)':'var(--red)';
+    const statusColors={complete:'var(--green)',in_progress:'var(--accent)',scheduled:'var(--blue)',inprogress:'var(--accent)'};
+    const sc=statusColors[job.status]||'var(--text3)';
+    html+=`<div onclick="openJobCard(${job.id})" style="display:grid;grid-template-columns:1.8fr 1fr 1fr 1fr 1fr 1fr;gap:0;padding:12px 16px;border-bottom:1px solid var(--border2);cursor:pointer;transition:background .12s;" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
+      <div>
+        <div style="font-size:13px;font-weight:600;">${job.customer||'Unnamed'}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px;">${job.jobTypeLabel||job.jobType||''}${totalHrs>0?' · '+totalHrs+'h logged':''}</div>
+        <div style="margin-top:3px;"><span style="font-size:10px;font-family:'DM Mono',monospace;color:${sc};background:${sc}22;padding:1px 7px;border-radius:20px;">${(job.status||'').replace('_',' ').toUpperCase()}</span></div>
+      </div>
+      <div style="text-align:right;font-family:'DM Mono',monospace;font-size:13px;">${revenue>0?fmt(revenue):'<span style="color:var(--text3);">—</span>'}</div>
+      <div style="text-align:right;font-family:'DM Mono',monospace;font-size:13px;color:${laborCost>0?'var(--text)':'var(--text3)'};">${laborCost>0?fmt(laborCost):'—'}</div>
+      <div style="text-align:right;font-family:'DM Mono',monospace;font-size:13px;color:${matCost>0?'var(--text)':'var(--text3)'};">${matCost>0?fmt(matCost):'—'}</div>
+      <div style="text-align:right;font-family:'DM Mono',monospace;font-size:13px;font-weight:600;color:${revenue>0?profitColor:'var(--text3)'};">${revenue>0?fmt(profit):'—'}</div>
+      <div style="text-align:right;font-family:'DM Mono',monospace;font-size:13px;font-weight:600;color:${margin!==null?profitColor:'var(--text3)'};">${margin!==null?margin+'%':'—'}</div>
+    </div>`;
+  });
+
+  html+=`</div>`;
+  el.innerHTML=html;
+}
+
+// ── JOB COSTING (modal tab) ────────────────────────────────────────────────────
+function renderJobCosting(){
+  const job=getJobRecord(_jcId); if(!job) return;
+  const el=document.getElementById('jc-costing-content'); if(!el) return;
+
+  const revenue=parseFloat(job.value)||0;
+  const logs=job.dayLogs||{};
+
+  // ── LABOR ──
+  let totalLaborCost=0;
+  let totalHours=0;
+  const laborRows=[];
+  const allDates=[...jcWeekdays(job.startDate,job.endDate),...(job.extraDays||[])].sort();
+
+  allDates.forEach(ds=>{
+    const log=logs[ds]; if(!log) return;
+    const hrs=jcGetLogHrs(log);
+    if(hrs<=0) return;
+    const crew=Array.isArray(log.crewPresent)?log.crewPresent:[];
+    const seenThisDay=new Set();
+    crew.forEach(c=>{
+      // Fall back to CREW_DATA name if stored name is blank
+      const effectiveName=(c.name||(c.crewIdx>=0&&CREW_DATA[c.crewIdx]?CREW_DATA[c.crewIdx].full:'')).trim();
+      if(!effectiveName) return;
+      // Deduplicate by name — catches same person added as both custom + CREW_DATA entry
+      if(seenThisDay.has(effectiveName.toLowerCase())) return;
+      seenThisDay.add(effectiveName.toLowerCase());
+      const rate=jcGetBurdenedRate(c);
+      const cost=Math.round(hrs*rate*100)/100;
+      totalLaborCost+=cost;
+      totalHours+=hrs;
+      laborRows.push({ds,name:effectiveName,hrs,rate,cost});
+    });
+  });
+
+  // ── MATERIALS ──
+  let totalMatCost=0;
+  const matRows=[];
+  const matTotals={};
+
+  allDates.forEach(ds=>{
+    const log=logs[ds]; if(!log) return;
+    const mats=Array.isArray(log.materialsUsed)?log.materialsUsed:[];
+    mats.forEach(m=>{
+      if(!m.name||!m.qty) return;
+      const qty=parseFloat(m.qty)||0;
+      let unitCost=0, pkgNote='';
+      if(m.matIdx>=0&&MATERIALS[m.matIdx]){
+        const mat=MATERIALS[m.matIdx];
+        const pkgQty=parseFloat((mat.unit||'').match(/^(\d+\.?\d*)/)?.[1])||1;
+        unitCost=Math.round((parseFloat(mat.price)||0)/pkgQty*100)/100;
+        pkgNote=mat.unit?'$'+(parseFloat(mat.price)||0).toFixed(2)+'/'+mat.unit:'';
+      }
+      const cost=Math.round(qty*unitCost*100)/100;
+      totalMatCost+=cost;
+      const key=m.name;
+      if(!matTotals[key]) matTotals[key]={name:m.name,totalQty:0,unit:m.usageUnit||'',cost:0,unitCost,pkgNote};
+      matTotals[key].totalQty+=qty;
+      matTotals[key].cost+=cost;
+    });
+  });
+  Object.values(matTotals).forEach(r=>matRows.push(r));
+
+  // ── CONSUMABLES ──
+  if(job.consumablesPct===undefined) job.consumablesPct=10;
+  const consPct=parseFloat(job.consumablesPct)||0;
+  const consCost=Math.round(totalMatCost*consPct/100*100)/100;
+
+  // ── MILEAGE ──
+  const workDays=allDates.filter(ds=>{ const l=logs[ds]; return l&&jcGetLogHrs(l)>0; }).length;
+  const mileageOneWay=parseFloat(job.mileageOneWay)||0;
+  const irsRate=parseFloat(job.mileageRate!==undefined?job.mileageRate:0.70);
+  const totalMiles=Math.round(mileageOneWay*2*workDays*10)/10;
+  const mileageCost=Math.round(totalMiles*irsRate*100)/100;
+
+  // ── SUMMARY ──
+  const totalCost=Math.round((totalLaborCost+totalMatCost+consCost+mileageCost)*100)/100;
+  const grossProfit=Math.round((revenue-totalCost)*100)/100;
+  const margin=revenue>0?Math.round(grossProfit/revenue*1000)/10:0;
+  const profitColor=grossProfit>=0?'var(--green)':'var(--red)';
+  const fmt=n=>'$'+Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const fmtQ=n=>Math.round(n*100)/100;
+
+  const sec=(title,color='var(--text3)')=>`<div style="font-size:10px;font-family:'DM Mono',monospace;color:${color};text-transform:uppercase;letter-spacing:.8px;margin:18px 0 8px;padding-bottom:4px;border-bottom:1px solid var(--border2);">${title}</div>`;
+
+  let html='';
+
+  // Revenue
+  html+=sec('Revenue');
+  html+=`<div style="display:flex;justify-content:space-between;align-items:center;">
+    <span style="font-size:14px;color:var(--text2);">Contract Value</span>
+    <span style="font-size:18px;font-weight:700;font-family:'DM Mono',monospace;color:var(--accent);">${revenue>0?fmt(revenue):'Not set'}</span>
+  </div>`;
+
+  // Labor
+  html+=sec('Labor Cost');
+  if(laborRows.length===0){
+    html+=`<div style="font-size:13px;color:var(--text3);">No time entries yet — fill in start/end times in the Daily Log.</div>`;
+  } else {
+    // Group by day
+    const byDay={};
+    laborRows.forEach(r=>{ if(!byDay[r.ds]) byDay[r.ds]=[]; byDay[r.ds].push(r); });
+    Object.entries(byDay).forEach(([ds,rows])=>{
+      const dayHrs=rows.reduce((a,r)=>a+r.hrs,0);
+      const isFullDay=!!(logs[ds]&&logs[ds].fullDay);
+      html+=`<div style="display:flex;align-items:center;justify-content:space-between;margin:8px 0 4px;">
+        <span style="font-size:11px;font-weight:600;color:var(--text2);">${jcFmtDate(ds)} &nbsp;<span style="color:var(--text3);font-weight:400;">${dayHrs.toFixed(1)} hrs on site</span></span>
+        <span style="display:flex;align-items:center;gap:4px;">
+          ${isFullDay?`<span style="color:#22c55e;font-size:14px;font-weight:700;line-height:1;">✓</span>`:''}
+          <button onclick="jcToggleFullDay('${ds}');renderJobCosting();" style="font-size:10px;padding:3px 10px;border-radius:4px;border:1px solid var(--border2);cursor:pointer;background:var(--surface2);color:var(--text2);">8-hr day</button>
+        </span>
+      </div>`;
+      rows.forEach(r=>{
+        html+=`<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);padding:2px 0 2px 10px;">
+          <span>${r.name}${r.rate>0?' <span style="color:var(--text3);">× '+r.hrs.toFixed(1)+'h @ $'+r.rate.toFixed(2)+'/hr</span>':' <span style="color:var(--text3);">(no rate set)</span>'}</span>
+          <span style="font-family:'DM Mono',monospace;">${r.rate>0?fmt(r.cost):'—'}</span>
+        </div>`;
+      });
+    });
+    html+=`<div style="display:flex;justify-content:space-between;margin-top:8px;padding-top:6px;border-top:1px solid var(--border2);font-weight:600;">
+      <span style="font-size:13px;">Total Labor &nbsp;<span style="font-size:11px;font-weight:400;color:var(--text3);">${totalHours.toFixed(1)} hrs total</span></span>
+      <span style="font-family:'DM Mono',monospace;">${fmt(totalLaborCost)}</span>
+    </div>`;
+  }
+
+  // Materials
+  html+=sec('Material Cost');
+  if(matRows.length===0){
+    html+=`<div style="font-size:13px;color:var(--text3);">No materials logged yet — add them in the Daily Log.</div>`;
+  } else {
+    matRows.forEach(r=>{
+      html+=`<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);padding:3px 0;">
+        <span>${r.name} &nbsp;<span style="color:var(--text3);">${fmtQ(r.totalQty)} ${r.unit}${r.unitCost>0?' @ $'+r.unitCost.toFixed(2)+'/'+r.unit:''}${r.pkgNote?' ('+r.pkgNote+')':''}</span></span>
+        <span style="font-family:'DM Mono',monospace;">${r.unitCost>0?fmt(r.cost):'—'}</span>
+      </div>`;
+    });
+    html+=`<div style="display:flex;justify-content:space-between;margin-top:8px;padding-top:6px;border-top:1px solid var(--border2);font-weight:600;">
+      <span style="font-size:13px;">Total Materials</span>
+      <span style="font-family:'DM Mono',monospace;">${fmt(totalMatCost)}</span>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px;padding:8px 10px;background:var(--surface2);border-radius:6px;border:1px solid var(--border2);">
+      <span style="font-size:12px;color:var(--text2);display:flex;align-items:center;gap:6px;">
+        Consumables
+        <input type="number" min="0" max="100" step="1" value="${consPct}" onchange="jcSetConsumablesPct(this.value)" style="width:44px;font-size:12px;text-align:center;border:1px solid var(--border2);border-radius:4px;padding:2px 4px;background:var(--surface);color:var(--text);font-family:'DM Mono',monospace;">
+        <span style="font-size:12px;color:var(--text3);">% of materials</span>
+      </span>
+      <span style="font-family:'DM Mono',monospace;font-size:12px;">${consCost>0?fmt(consCost):'—'}</span>
+    </div>`;
+  }
+
+  // Mileage
+  html+=sec('Mileage');
+  html+=`<div style="display:flex;flex-direction:column;gap:8px;">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      <span style="font-size:12px;color:var(--text2);">One-way distance:</span>
+      <input type="number" min="0" step="0.1" value="${mileageOneWay||''}" placeholder="miles" onchange="jcSetMileageOneWay(this.value)" style="width:70px;font-size:12px;text-align:center;border:1px solid var(--border2);border-radius:4px;padding:2px 6px;background:var(--surface);color:var(--text);font-family:'DM Mono',monospace;">
+      <span style="font-size:12px;color:var(--text3);">mi</span>
+      <button id="jc-mile-calc-btn" onclick="jcCalcMileage()" style="font-size:11px;padding:3px 10px;border-radius:4px;border:1px solid var(--primary);background:none;color:var(--primary);cursor:pointer;">📍 Auto-Calculate</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      <span style="font-size:12px;color:var(--text2);">IRS rate:</span>
+      <span style="font-size:11px;color:var(--text3);">$</span>
+      <input type="number" min="0" step="0.01" value="${irsRate.toFixed(2)}" onchange="jcSetMileageRate(this.value)" style="width:56px;font-size:12px;text-align:center;border:1px solid var(--border2);border-radius:4px;padding:2px 6px;background:var(--surface);color:var(--text);font-family:'DM Mono',monospace;">
+      <span style="font-size:12px;color:var(--text3);">/mile &nbsp;·&nbsp; ${workDays} day${workDays!==1?'s':''} × ${mileageOneWay>0?(mileageOneWay*2).toFixed(1)+' mi round trip':'—'}</span>
+    </div>
+    ${mileageOneWay>0?`<div style="display:flex;justify-content:space-between;padding-top:6px;border-top:1px solid var(--border2);font-weight:600;">
+      <span style="font-size:13px;">Total Mileage &nbsp;<span style="font-size:11px;font-weight:400;color:var(--text3);">${totalMiles} mi</span></span>
+      <span style="font-family:'DM Mono',monospace;">${fmt(mileageCost)}</span>
+    </div>`:`<div style="font-size:12px;color:var(--text3);">Enter distance or click Auto-Calculate to pull driving distance from your shop.</div>`}
+  </div>`;
+
+  // Summary
+  html+=sec('Summary');
+  html+=`<div style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:14px 16px;">
+    <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text2);margin-bottom:6px;"><span>Contract Value</span><span style="font-family:'DM Mono',monospace;">${revenue>0?fmt(revenue):'—'}</span></div>
+    <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text2);margin-bottom:6px;"><span>Labor Cost</span><span style="font-family:'DM Mono',monospace;color:var(--red);">-${fmt(totalLaborCost)}</span></div>
+    <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text2);margin-bottom:6px;"><span>Material Cost</span><span style="font-family:'DM Mono',monospace;color:var(--red);">-${fmt(totalMatCost)}</span></div>
+    ${consCost>0?`<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text2);margin-bottom:6px;"><span>Consumables (${consPct}%)</span><span style="font-family:'DM Mono',monospace;color:var(--red);">-${fmt(consCost)}</span></div>`:''}
+    ${mileageCost>0?`<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text2);margin-bottom:6px;"><span>Mileage (${totalMiles} mi)</span><span style="font-family:'DM Mono',monospace;color:var(--red);">-${fmt(mileageCost)}</span></div>`:''}
+    <div style="border-top:2px solid var(--border2);padding-top:10px;margin-top:6px;display:flex;justify-content:space-between;align-items:center;">
+      <span style="font-size:14px;font-weight:700;">Gross Profit</span>
+      <span style="font-size:20px;font-weight:700;font-family:'DM Mono',monospace;color:${profitColor};">${revenue>0?fmt(grossProfit):'—'}</span>
+    </div>
+    ${revenue>0?`<div style="display:flex;justify-content:space-between;margin-top:4px;">
+      <span style="font-size:12px;color:var(--text3);">Margin</span>
+      <span style="font-size:14px;font-weight:700;font-family:'DM Mono',monospace;color:${profitColor};">${margin}%</span>
+    </div>`:''}
+  </div>
+  ${revenue===0?`<div style="font-size:12px;color:var(--text3);margin-top:10px;">💡 Set a Job Value on the Job Info tab to see profit and margin.</div>`:''}`;
+
+  el.innerHTML=html;
 }
 
 // ── SAVE / DELETE / RESCHEDULE ────────────────────────────────────────────────
@@ -4139,11 +4618,12 @@ function showPage(id){
   if(localStorage.getItem('fpRole')==='crew'&&id!=='crewview') return;
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
-  const map={dashboard:0,pipeline:1,jobs:2,schedule:3,salesschedule:4,reference:5,installers:6,materials:7,materialcalc:8,jobtypes:9,holidays:10,pinsettings:11,crewview:12};
+  const map={dashboard:0,pipeline:1,jobs:2,schedule:3,salesschedule:4,jobcosting:5,reference:6,installers:7,materials:8,materialcalc:9,jobtypes:10,holidays:11,pinsettings:12,crewview:13};
   document.querySelectorAll('.nav-item').forEach((n,i)=>n.classList.toggle('active',i===map[id]));
   if(id==='dashboard') renderDashboard();
   if(id==='schedule') renderSchedule();
   if(id==='salesschedule') renderSalesSchedule();
+  if(id==='jobcosting') renderJobCostingPage();
   if(id==='holidays') renderHolidaySettings();
   if(id==='installers') renderCrewCards();
   if(id==='materials') renderMaterials();
@@ -4626,12 +5106,19 @@ function addJobCard(customer, jobLabel, value, displayVal, detail, status, exist
     if(extraData.notes)   card.dataset.notes=extraData.notes;
     if(extraData.sqft)    card.dataset.sqft=extraData.sqft;
   }
+  card.onclick = function(e){
+    if(e.target.closest('button')) return;
+    const name=this.querySelector('.lead-name').textContent.trim();
+    const match=JOB_RECORDS.find(j=>j.customer===name);
+    if(match){ openJobCard(match.id); }
+    else { openJobEdit(this); }
+  };
   card.innerHTML=`
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px;">
       <div class="lead-name" style="flex:1;">${customer}</div>
       <div style="display:flex;gap:2px;flex-shrink:0;margin-top:-2px;">
-        <button onclick="openJobEdit(this)" title="Edit job" style="background:none;border:none;cursor:pointer;color:var(--text3);padding:3px 5px;font-size:13px;line-height:1;border-radius:4px;transition:color .15s;" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">✏</button>
-        <button onclick="deleteJobCard(this)" title="Delete job" style="background:none;border:none;cursor:pointer;color:var(--text3);padding:3px 5px;font-size:13px;line-height:1;border-radius:4px;transition:color .15s;" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text3)'">✕</button>
+        <button onclick="event.stopPropagation();openJobEdit(this)" title="Edit job" style="background:none;border:none;cursor:pointer;color:var(--text3);padding:3px 5px;font-size:13px;line-height:1;border-radius:4px;transition:color .15s;" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">✏</button>
+        <button onclick="event.stopPropagation();deleteJobCard(this)" title="Delete job" style="background:none;border:none;cursor:pointer;color:var(--text3);padding:3px 5px;font-size:13px;line-height:1;border-radius:4px;transition:color .15s;" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text3)'">✕</button>
       </div>
     </div>
     <div class="lead-detail">${jobLabel}</div>
@@ -4639,9 +5126,9 @@ function addJobCard(customer, jobLabel, value, displayVal, detail, status, exist
     <div class="lead-value">${displayVal}</div>
     <div style="display:flex;gap:5px;margin-top:10px;flex-wrap:wrap;align-items:center;">
       <span class="status-pill" style="background:${sc.bg};color:${sc.color};border:1px solid ${sc.color}44;">${statusLabels[status]}</span>
-      ${status==='approved'?`<button class="btn btn-primary" style="font-size:11px;padding:4px 10px;margin-left:auto;" onclick="scheduleApprovedJob('${safeCustomer}','${safeLabel}','${safeVal}',this)">📅 Schedule</button>`:''}
-      ${nextStages[status]?`<button class="btn btn-ghost" style="font-size:10px;padding:3px 8px;${status!=='approved'?'margin-left:auto;':''}" onclick="advanceJobCard(this,'${nextStages[status]}')">${nextLabels[status]}</button>`:''}
-      ${status==='complete'?`<button class="btn btn-ghost" style="font-size:10px;padding:3px 8px;margin-left:auto;color:var(--blue);border-color:var(--blue-dim);" onclick="markJobInvoiced(this)">📄 Invoice Sent</button>`:''}
+      ${status==='approved'?`<button class="btn btn-primary" style="font-size:11px;padding:4px 10px;margin-left:auto;" onclick="event.stopPropagation();scheduleApprovedJob('${safeCustomer}','${safeLabel}','${safeVal}',this)">📅 Schedule</button>`:''}
+      ${nextStages[status]?`<button class="btn btn-ghost" style="font-size:10px;padding:3px 8px;${status!=='approved'?'margin-left:auto;':''}" onclick="event.stopPropagation();advanceJobCard(this,'${nextStages[status]}')">${nextLabels[status]}</button>`:''}
+      ${status==='complete'?`<button class="btn btn-ghost" style="font-size:10px;padding:3px 8px;margin-left:auto;color:var(--blue);border-color:var(--blue-dim);" onclick="event.stopPropagation();markJobInvoiced(this)">📄 Invoice Sent</button>`:''}
     </div>
   `;
   col.appendChild(card);
@@ -5316,7 +5803,7 @@ function calcBurdenForCrew(c){
   const futa       = parseFloat(c.futa||0)/100;
   const wc         = parseFloat(c.wc||0)/100;
   const gl         = parseFloat(c.gl||0)/100;
-  const benefitsHr = parseFloat(c.benefits||0) / hrs;
+  const benefitsHr = parseFloat(c.benefits||0) * 12 / (hrs * 52);
   const ptoDays    = parseFloat(c.ptoDays||0);
   const annualHrs  = hrs * 52;
   const ptoHrCost  = annualHrs > 0 ? (ptoDays * 8 * hr) / annualHrs : 0;
@@ -5334,8 +5821,8 @@ function calcBurden(){
   const futa       = parseFloat(document.getElementById('ce-futa').value||0)/100;
   const wc         = parseFloat(document.getElementById('ce-wc').value||0)/100;
   const gl         = parseFloat(document.getElementById('ce-gl').value||0)/100;
-  const benefitsWk = parseFloat(document.getElementById('ce-benefits').value||0);
-  const benefitsHr = benefitsWk / hrs;
+  const benefitsMo = parseFloat(document.getElementById('ce-benefits').value||0);
+  const benefitsHr = benefitsMo * 12 / (hrs * 52);
   const ptoDays    = parseFloat(document.getElementById('ce-pto-days').value||0);
   const annualHrs  = hrs * 52;
   const ptoHrs     = ptoDays * 8;
@@ -5362,7 +5849,7 @@ function calcBurden(){
     {label:"Workers' Comp ("+parseFloat(document.getElementById('ce-wc').value)+'%)', val:hr*wc, note:''},
     {label:'General Liability ('+parseFloat(document.getElementById('ce-gl').value)+'%)', val:hr*gl, note:''},
   ];
-  if(benefitsHr>0) rows.push({label:'Health / Benefits', val:benefitsHr, note:'$'+benefitsWk.toFixed(2)+'/wk ÷ '+hrs+' hrs'});
+  if(benefitsHr>0) rows.push({label:'Health / Benefits', val:benefitsHr, note:'$'+benefitsMo.toFixed(2)+'/mo × 12 ÷ '+annualHrs+' hrs/yr'});
   if(ptoHrCost>0)  rows.push({label:'PTO ('+ptoDays+' days/yr)', val:ptoHrCost, note:'$'+ptoAnnCost.toFixed(2)+'/yr ÷ '+annualHrs+' hrs worked'});
 
   document.getElementById('ce-breakdown').innerHTML = rows.map(r=>
@@ -6847,6 +7334,7 @@ function skipReplacement(){
       <button class="tab active" id="jc-tab-info" onclick="jcTab('info')">Job Info</button>
       <button class="tab" id="jc-tab-materials" onclick="jcTab('materials')">📦 Materials</button>
       <button class="tab" id="jc-tab-log" onclick="jcTab('log')">📅 Daily Log</button>
+      <button class="tab" id="jc-tab-costing" onclick="jcTab('costing')">💰 Costing</button>
     </div>
     <!-- Info Pane -->
     <div id="jc-pane-info" class="modal-body">
@@ -6916,6 +7404,10 @@ function skipReplacement(){
           ✓ Mark Job as Complete
         </button>
       </div>
+    </div>
+    <!-- Job Costing Pane -->
+    <div id="jc-pane-costing" class="modal-body" style="display:none;">
+      <div id="jc-costing-content"></div>
     </div>
     <div class="modal-footer" style="flex-wrap:wrap;gap:8px;">
       <button class="btn btn-ghost" style="color:var(--red);" onclick="deleteJobRecord()">🗑 Delete</button>
