@@ -1897,13 +1897,14 @@ async function deduplicateSlotsByJobRecord(){
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
   try{
-    await Promise.all([loadLeads(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits()]);
+    await Promise.all([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits()]);
     await fixSlotDrift();               // correct any week-offset drift before rendering
     await deduplicateSlotsByJobRecord(); // remove stale/duplicate slots outside job date ranges
     HOLIDAYS=buildHolidayLookup();
     populateJobTypeDropdowns();
     renderDashboard();
     renderTodos(); // must be after renderDashboard so todo-list element exists
+    await autoMoveStaleQuotedLeads();
     renderPipeline();
     renderSchedule();
     renderCrewCards();
@@ -2620,8 +2621,11 @@ function openJobCard(jobId){
   document.getElementById('jc-dates-row').textContent='📅 '+(job.startDate?jcFmtDate(job.startDate):'—')+' – '+(job.endDate?jcFmtDate(job.endDate):'—');
   jcRenderCrewPicker();
   jcPopulateMatDatalist(); // keep materials list in sync
+  jcRenderSupplierInvoices();
   jcTab('info');
   openModal('jobcard');
+  // Apply lock state after modal is open so elements exist
+  setTimeout(()=>jcApplyLockState(job),0);
 }
 
 function jcStyleStatus(s){
@@ -2766,6 +2770,56 @@ function jcMatPick(i,name){
     if(sel) sel.value=matched;
   }
 }
+
+// ── SUPPLIER INVOICES ────────────────────────────────────────────────────────
+function jcRenderSupplierInvoices(){
+  const job=getJobRecord(_jcId); if(!job) return;
+  if(!job.supplierInvoices) job.supplierInvoices=[];
+  const el=document.getElementById('jc-invoice-list'); if(!el) return;
+  if(!job.supplierInvoices.length){
+    el.innerHTML='<div style="font-size:12px;color:var(--text3);padding:4px 0;">No supplier invoices added yet.</div>';
+    return;
+  }
+  el.innerHTML=job.supplierInvoices.map((inv,i)=>`
+    <div style="display:grid;grid-template-columns:1fr 100px 130px 32px;gap:8px;align-items:center;">
+      <input class="form-input" placeholder="Vendor / Supplier" value="${(inv.vendor||'').replace(/"/g,'&quot;')}"
+        oninput="jcInvSet(${i},'vendor',this.value)" style="font-size:12px;padding:6px 10px;"/>
+      <input class="form-input" placeholder="Inv #" value="${(inv.invoiceNum||'').replace(/"/g,'&quot;')}"
+        oninput="jcInvSet(${i},'invoiceNum',this.value)" style="font-size:12px;padding:6px 10px;"/>
+      <div style="position:relative;">
+        <span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--text3);pointer-events:none;">$</span>
+        <input class="form-input" type="number" min="0" step="0.01" placeholder="0.00" value="${inv.amount||''}"
+          oninput="jcInvSet(${i},'amount',this.value)" style="font-size:12px;padding:6px 10px 6px 20px;font-family:'DM Mono',monospace;"/>
+      </div>
+      <button onclick="jcRemoveSupplierInvoice(${i})" style="background:none;border:none;cursor:pointer;color:var(--danger,#e74c3c);font-size:18px;line-height:1;padding:0 4px;">×</button>
+    </div>
+    <input class="form-input" placeholder="Description (optional)" value="${(inv.description||'').replace(/"/g,'&quot;')}"
+      oninput="jcInvSet(${i},'description',this.value)" style="font-size:12px;padding:6px 10px;margin-top:-4px;"/>
+  `).join('');
+}
+
+function jcAddSupplierInvoice(){
+  const job=getJobRecord(_jcId); if(!job) return;
+  if(!job.supplierInvoices) job.supplierInvoices=[];
+  job.supplierInvoices.push({vendor:'',invoiceNum:'',description:'',amount:''});
+  jcRenderSupplierInvoices();
+}
+
+function jcRemoveSupplierInvoice(i){
+  const job=getJobRecord(_jcId); if(!job) return;
+  job.supplierInvoices.splice(i,1);
+  jcRenderSupplierInvoices();
+  saveJobRecords();
+}
+
+function jcInvSet(i,field,val){
+  const job=getJobRecord(_jcId); if(!job||!job.supplierInvoices?.[i]) return;
+  job.supplierInvoices[i][field]=val;
+  // Debounced save
+  clearTimeout(_jcInvSaveTimer);
+  _jcInvSaveTimer=setTimeout(()=>saveJobRecords(),800);
+}
+let _jcInvSaveTimer=null;
 
 // Rebuild the materials datalist from the saved Materials list
 function jcPopulateMatDatalist(){
@@ -3367,7 +3421,8 @@ function renderJobCostingPage(){
     });
 
     laborCost=Math.round(laborCost*100)/100;
-    matCost=Math.round(matCost*100)/100;
+    const supplierInvTotal=Math.round((job.supplierInvoices||[]).reduce((a,inv)=>a+(parseFloat(inv.amount)||0),0)*100)/100;
+    matCost=Math.round((matCost+supplierInvTotal)*100)/100;
     const consPct=parseFloat(job.consumablesPct===undefined?10:job.consumablesPct)||0;
     const consCost=Math.round(matCost*consPct/100*100)/100;
     const mileOneWay=parseFloat(job.mileageOneWay)||0;
@@ -3398,9 +3453,9 @@ function renderJobCostingPage(){
   let html=`
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px;">
     <div class="stat-card"><div class="stat-label">Total Revenue</div><div class="stat-value">${fmt(totRev)}</div></div>
-    <div class="stat-card"><div class="stat-label">Total Labor Cost</div><div class="stat-value" style="color:var(--red);">${fmt(totLab)}</div></div>
+    <div class="stat-card"><div class="stat-label">Avg Margin (Weighted)</div><div class="stat-value" style="color:${totMargin===null?'var(--text3)':totMargin>=0?'var(--green)':'var(--red)'};">${totMargin!==null?totMargin+'%':'—'}<span style="font-size:13px;font-weight:400;color:var(--text3);margin-left:6px;">${rows.length} job${rows.length!==1?'s':''}</span></div></div>
     <div class="stat-card"><div class="stat-label">Profit Per Day</div><div class="stat-value" style="color:${profitPerDay===null?'var(--text3)':profitPerDay>=0?'var(--green)':'var(--red)'};">${profitPerDay!==null?fmt(profitPerDay):'—'}${totWorkDays>0?`<span style="font-size:13px;font-weight:500;color:var(--text3);margin-left:8px;">${totWorkDays}d</span>`:''}</div></div>
-    <div class="stat-card"><div class="stat-label">Gross Profit</div><div class="stat-value" style="color:${totProfit>=0?'var(--green)':'var(--red)'};">${fmt(totProfit)}${totMargin!==null?`<span style="font-size:13px;font-weight:500;color:var(--text3);margin-left:8px;">${totMargin}%</span>`:''}</div></div>
+    <div class="stat-card"><div class="stat-label">Gross Profit</div><div class="stat-value" style="color:${totProfit>=0?'var(--green)':'var(--red)'};">${fmt(totProfit)}</div></div>
   </div>
   <div style="background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);overflow:hidden;">
     <div style="display:grid;grid-template-columns:1.8fr 1fr 1fr 1fr 1fr 1fr;gap:0;padding:10px 16px;background:var(--surface2);border-bottom:1px solid var(--border2);font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;">
@@ -3492,6 +3547,11 @@ function renderJobCosting(){
   });
   Object.values(matTotals).forEach(r=>matRows.push(r));
 
+  // ── SUPPLIER INVOICES ──
+  const supplierInvoices=(job.supplierInvoices||[]).filter(inv=>parseFloat(inv.amount)>0);
+  const supplierInvTotal=Math.round(supplierInvoices.reduce((a,inv)=>a+(parseFloat(inv.amount)||0),0)*100)/100;
+  totalMatCost=Math.round((totalMatCost+supplierInvTotal)*100)/100;
+
   // ── CONSUMABLES ──
   if(job.consumablesPct===undefined) job.consumablesPct=10;
   const consPct=parseFloat(job.consumablesPct)||0;
@@ -3556,8 +3616,8 @@ function renderJobCosting(){
 
   // Materials
   html+=sec('Material Cost');
-  if(matRows.length===0){
-    html+=`<div style="font-size:13px;color:var(--text3);">No materials logged yet — add them in the Daily Log.</div>`;
+  if(matRows.length===0&&supplierInvoices.length===0){
+    html+=`<div style="font-size:13px;color:var(--text3);">No materials logged yet — add them in the Daily Log or add a Supplier Invoice on the Materials tab.</div>`;
   } else {
     matRows.forEach(r=>{
       html+=`<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);padding:3px 0;">
@@ -3565,6 +3625,13 @@ function renderJobCosting(){
         <span style="font-family:'DM Mono',monospace;">${r.unitCost>0?fmt(r.cost):'—'}</span>
       </div>`;
     });
+    supplierInvoices.forEach(inv=>{
+      html+=`<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);padding:3px 0;">
+        <span>${inv.vendor||'Supplier'}${inv.invoiceNum?' <span style="color:var(--text3);">#'+inv.invoiceNum+'</span>':''}${inv.description?' <span style="color:var(--text3);">— '+inv.description+'</span>':''}</span>
+        <span style="font-family:'DM Mono',monospace;">${fmt(parseFloat(inv.amount)||0)}</span>
+      </div>`;
+    });
+    if(supplierInvoices.length) html+=`<div style="font-size:10px;color:var(--text3);padding:1px 0 4px;">↑ Supplier invoices</div>`;
     html+=`<div style="display:flex;justify-content:space-between;margin-top:8px;padding-top:6px;border-top:1px solid var(--border2);font-weight:600;">
       <span style="font-size:13px;">Total Materials</span>
       <span style="font-family:'DM Mono',monospace;">${fmt(totalMatCost)}</span>
@@ -3623,8 +3690,56 @@ function renderJobCosting(){
 }
 
 // ── SAVE / DELETE / RESCHEDULE ────────────────────────────────────────────────
+function jcApplyLockState(job){
+  const locked=!!(job&&job.locked);
+  // Padlock icon — closed shackle (both arms into body) vs open shackle (right arm raised)
+  const btn=document.getElementById('jc-lock-btn');
+  if(btn){
+    btn.dataset.locked=locked?'1':'0';
+    btn.style.color=locked?'var(--accent)':'var(--text3)';
+    btn.title=locked?'Unlock job':'Lock job';
+  }
+  const shackle=document.getElementById('jc-lock-shackle');
+  if(shackle){
+    // Locked: right arm goes down into body (v4). Unlocked: right arm goes up and away (v-4)
+    shackle.setAttribute('d', locked ? 'M7 11V7a5 5 0 0 1 10 0v4' : 'M7 11V7a5 5 0 0 1 10 0v-4');
+  }
+  // Banner
+  const banner=document.getElementById('jc-lock-banner');
+  if(banner) banner.style.display=locked?'flex':'none';
+  // Disable / enable all inputs & textareas in the job panes
+  const panes=['jc-pane-info','jc-pane-materials','jc-pane-log','jc-pane-costing'];
+  panes.forEach(id=>{
+    const pane=document.getElementById(id); if(!pane) return;
+    pane.querySelectorAll('input,textarea,select,button:not(.modal-close)').forEach(el=>{
+      el.disabled=locked;
+      el.style.opacity=locked?'0.55':'';
+      el.style.cursor=locked?'not-allowed':'';
+    });
+  });
+  // Footer buttons
+  ['jc-save-btn','jc-delete-btn','jc-reschedule-btn'].forEach(id=>{
+    const el=document.getElementById(id); if(!el) return;
+    el.disabled=locked;
+    el.style.opacity=locked?'0.4':'';
+    el.style.cursor=locked?'not-allowed':'';
+  });
+  // Status dropdown
+  const sel=document.getElementById('jc-status-sel');
+  if(sel){ sel.disabled=locked; sel.style.opacity=locked?'0.55':''; }
+}
+
+async function jcToggleLock(){
+  const job=getJobRecord(_jcId); if(!job) return;
+  job.locked=!job.locked;
+  jcApplyLockState(job);
+  await saveJobRecords();
+  showToast(job.locked?'Job locked':'Job unlocked');
+}
+
 async function saveJobCard(){
   const job=getJobRecord(_jcId); if(!job) return;
+  if(job.locked){showToast('Job is locked — unlock it first.');return;}
   const oldName=job.customer;
   job.customer=document.getElementById('jc-customer').value.trim();
   job.phone=document.getElementById('jc-phone').value.trim();
@@ -4929,6 +5044,48 @@ document.addEventListener('click', e=>{
   }
 });
 let LEADS = [];
+let LEAD_QUOTED_DATES = {}; // {lead_db_id: ISO date string} — tracks when each lead entered Estimate Sent
+
+async function loadLeadQuotedDates(){
+  const data=await sb.getKV('lead_quoted_dates');
+  LEAD_QUOTED_DATES=data||{};
+}
+async function saveLeadQuotedDates(){
+  await sb.setKV('lead_quoted_dates',LEAD_QUOTED_DATES);
+}
+
+async function autoMoveStaleQuotedLeads(){
+  const now=Date.now();
+  const SEVEN_DAYS=7*24*60*60*1000;
+  let changed=false, movedNames=[];
+
+  for(const lead of LEADS){
+    const key=String(lead.db_id||lead.name);
+    if(lead.stage==='quoted'){
+      if(!LEAD_QUOTED_DATES[key]){
+        // First time we see this lead in quoted — start the clock from today
+        LEAD_QUOTED_DATES[key]=new Date().toISOString();
+        changed=true;
+      } else if(now-new Date(LEAD_QUOTED_DATES[key]).getTime()>=SEVEN_DAYS){
+        lead.stage='followup';
+        await dbSaveLead(lead);
+        delete LEAD_QUOTED_DATES[key];
+        movedNames.push(lead.name);
+        changed=true;
+      }
+    } else if(lead.stage!=='quoted'&&LEAD_QUOTED_DATES[key]){
+      // Lead moved out of quoted manually — clear its timer
+      delete LEAD_QUOTED_DATES[key];
+      changed=true;
+    }
+  }
+
+  if(changed) await saveLeadQuotedDates();
+  if(movedNames.length){
+    renderPipeline();
+    showToast(`Moved to Follow-Up (7 days): ${movedNames.join(', ')}`);
+  }
+}
 
 const PIPELINE_STAGES = [
   {id:'new',       label:'New',            color:'var(--blue)',   emptyText:'Add your first lead →'},
@@ -4988,6 +5145,15 @@ function renderPipeline(){
             </div>
             ${l.value?`<div class="lead-value">${parseFloat(l.value).toLocaleString('en-US',{style:'currency',currency:'USD'})}</div>`:''}
             <div class="lead-date">${l.date||''}</div>
+            ${stage.id==='quoted'?(()=>{
+              const key=String(l.db_id||l.name);
+              const qd=LEAD_QUOTED_DATES[key];
+              if(!qd) return '';
+              const days=Math.floor((Date.now()-new Date(qd).getTime())/(24*60*60*1000));
+              const remaining=7-days;
+              const color=remaining<=1?'var(--red)':remaining<=3?'var(--orange)':'var(--text3)';
+              return `<div style="font-size:10.5px;color:${color};margin-top:4px;">${days===0?'Sent today':days===1?'Sent yesterday':`Sent ${days} days ago`}${remaining>0?` · auto follow-up in ${remaining}d`:' · moving to Follow-Up…'}</div>`;
+            })():''}
             ${visitBadge}
             ${wonBtn}
           </div>`;
@@ -5031,8 +5197,18 @@ function moveLead(idx, stage){
       return;
     }
   }
-  LEADS[idx].stage = stage;
-  dbSaveLead(LEADS[idx]);
+  const lead=LEADS[idx];
+  const key=String(lead.db_id||lead.name);
+  // Track when a lead enters Estimate Sent; clear timer if leaving
+  if(stage==='quoted'){
+    LEAD_QUOTED_DATES[key]=new Date().toISOString();
+    saveLeadQuotedDates();
+  } else if(LEAD_QUOTED_DATES[key]){
+    delete LEAD_QUOTED_DATES[key];
+    saveLeadQuotedDates();
+  }
+  lead.stage=stage;
+  dbSaveLead(lead);
   renderPipeline();
 }
 
@@ -7328,6 +7504,12 @@ function skipReplacement(){
         </div>
         <div id="jc-meta" style="font-size:11.5px;color:var(--text3);margin-top:5px;font-family:'DM Mono',monospace;"></div>
       </div>
+      <button id="jc-lock-btn" onclick="jcToggleLock()" title="Lock / Unlock job" style="background:none;border:none;cursor:pointer;padding:4px 6px;border-radius:6px;line-height:1;color:var(--text3);transition:color .15s;display:flex;align-items:center;" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color=document.getElementById('jc-lock-btn').dataset.locked==='1'?'var(--accent)':'var(--text3)'">
+        <svg id="jc-lock-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="11" width="18" height="11" rx="2"/>
+          <path id="jc-lock-shackle" d="M7 11V7a5 5 0 0 1 10 0v-4"/>
+        </svg>
+      </button>
       <button class="modal-close" onclick="closeModal('jobcard')">×</button>
     </div>
     <div class="tabs" style="padding:0 22px 0;background:var(--surface);margin-top:4px;">
@@ -7387,6 +7569,18 @@ function skipReplacement(){
       </div>
       <div id="jc-mat-list" style="display:flex;flex-direction:column;gap:8px;"></div>
       <button class="btn btn-ghost" onclick="jcAddMaterial()" style="width:100%;margin-top:12px;">+ Add Material</button>
+
+      <!-- Supplier Invoices -->
+      <div style="margin-top:22px;padding-top:18px;border-top:2px solid var(--border2);">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+          <div>
+            <div style="font-size:13px;font-weight:600;color:var(--text);">Supplier Invoices</div>
+            <div style="font-size:11.5px;color:var(--text3);margin-top:2px;">Job-specific materials not in your standard list — enter the invoice total directly.</div>
+          </div>
+        </div>
+        <div id="jc-invoice-list" style="display:flex;flex-direction:column;gap:8px;margin-top:10px;"></div>
+        <button class="btn btn-ghost" onclick="jcAddSupplierInvoice()" style="width:100%;margin-top:10px;border-style:dashed;">+ Add Supplier Invoice</button>
+      </div>
     </div>
     <!-- Daily Log Pane -->
     <div id="jc-pane-log" class="modal-body" style="display:none;">
@@ -7409,12 +7603,15 @@ function skipReplacement(){
     <div id="jc-pane-costing" class="modal-body" style="display:none;">
       <div id="jc-costing-content"></div>
     </div>
+    <div id="jc-lock-banner" style="display:none;margin:0 22px 0;padding:8px 14px;background:#f59e0b22;border:1px solid #f59e0b66;border-radius:8px;font-size:12px;color:#92400e;display:none;align-items:center;gap:8px;">
+      🔒 <span>This job is locked. Click the padlock to make changes.</span>
+    </div>
     <div class="modal-footer" style="flex-wrap:wrap;gap:8px;">
-      <button class="btn btn-ghost" style="color:var(--red);" onclick="deleteJobRecord()">🗑 Delete</button>
-      <button class="btn btn-ghost" style="color:var(--blue);" onclick="jcReschedule()">📅 Reschedule</button>
+      <button id="jc-delete-btn" class="btn btn-ghost" style="color:var(--red);" onclick="deleteJobRecord()">🗑 Delete</button>
+      <button id="jc-reschedule-btn" class="btn btn-ghost" style="color:var(--blue);" onclick="jcReschedule()">📅 Reschedule</button>
       <div style="flex:1"></div>
       <button class="btn btn-ghost" onclick="closeModal('jobcard')">Close</button>
-      <button class="btn btn-primary" onclick="saveJobCard()">Save</button>
+      <button id="jc-save-btn" class="btn btn-primary" onclick="saveJobCard()">Save</button>
     </div>
   </div>
 </div>
