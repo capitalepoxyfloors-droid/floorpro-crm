@@ -29,7 +29,8 @@
   .app{display:flex;height:100vh;overflow:hidden;}
   .sidebar{width:220px;background:#fff;border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;}
   .main{flex:1;overflow-y:auto;display:flex;flex-direction:column;}
-  .logo{padding:20px 18px 16px;border-bottom:1px solid var(--border);}
+  .logo{padding:14px 18px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;}
+  #cef-logo-img{width:40px;height:40px;border-radius:9px;object-fit:cover;flex-shrink:0;display:block;}
   .logo-mark{font-size:17px;font-weight:600;letter-spacing:-0.3px;}
   .logo-mark span{color:var(--accent);}
   .logo-sub{font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;margin-top:2px;}
@@ -240,6 +241,8 @@
   @media(max-width:960px){
     .sidebar{width:60px;}
     .logo-mark,.logo-sub,.user-name,.user-role,.nav-item span{display:none;}
+    .logo{padding:10px;justify-content:center;}
+    #cef-logo-img{width:36px;height:36px;}
     .nav-badge{display:none;}
     .nav-item{justify-content:center;padding:10px;}
     .nav-label{height:1px;background:var(--border);margin:6px 10px;padding:0;font-size:0;overflow:hidden;}
@@ -361,8 +364,11 @@
   <!-- SIDEBAR -->
   <div class="sidebar">
     <div class="logo">
-      <div class="logo-mark">CEF<span> Assist</span></div>
-      <div class="logo-sub">Field Management v2.0</div>
+      <img id="cef-logo-img" src="" alt="Capital Epoxy Floors" />
+      <div>
+        <div class="logo-mark">CEF<span> Assist</span></div>
+        <div class="logo-sub">Field Management v3.0</div>
+      </div>
     </div>
     <nav class="nav">
       <div class="nav-label">Workspace</div>
@@ -1623,7 +1629,8 @@ async function loadJobs(){
     } else {
       // Restore address/notes from DB notes field so Schedule button can pre-fill them
       const extraData = r.notes ? {notes: r.notes} : undefined;
-      addJobCard(r.customer,r.job_label,r.value,r.display_val||('$'+r.value),r.detail,r.status,r.id,extraData);
+      const fallbackDisp=parseFloat(r.value)>0?'$'+parseFloat(r.value).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):(r.value||'—');
+      addJobCard(r.customer,r.job_label,r.value,r.display_val||fallbackDisp,r.detail,r.status,r.id,extraData);
     }
   });
   updateJobCounts();
@@ -2258,7 +2265,7 @@ function sjConfirm(){
   } else {
     // Fresh schedule (no existing approved card) — still create a Jobs board card
     const val=document.getElementById('sj-val').value.trim();
-    const dispVal=val?'$'+parseFloat(val).toLocaleString('en-US'):'—';
+    const dispVal=val&&parseFloat(val)>0?'$'+parseFloat(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'—';
     const notes=document.getElementById('sj-notes').value.trim();
     addJobCard(cust, sjTypeLabel, val, dispVal, '', 'scheduled', undefined, {notes});
   }
@@ -7371,6 +7378,15 @@ function skipReplacement(){
   showToast('PTO saved. No replacement assigned — job days left unassigned.');
   selectedReplacement=null; conflictData=null;
 }
+
+// ── LOGO IMAGE — populate from apple-touch-icon so no base64 duplication ──────
+(function(){
+  try{
+    const link=document.querySelector('link[rel="apple-touch-icon"]');
+    const img=document.getElementById('cef-logo-img');
+    if(link&&img) img.src=link.getAttribute('href');
+  }catch(e){}
+})();
 
 </script>
 <!-- ADD WAVE JOB MODAL — Manual Entry -->
