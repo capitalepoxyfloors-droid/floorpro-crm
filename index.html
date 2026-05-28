@@ -1630,7 +1630,12 @@ async function loadJobs(){
       // Restore address/notes from DB notes field so Schedule button can pre-fill them
       const extraData = r.notes ? {notes: r.notes} : undefined;
       const fallbackDisp=parseFloat(r.value)>0?'$'+parseFloat(r.value).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):(r.value||'—');
-      addJobCard(r.customer,r.job_label,r.value,r.display_val||fallbackDisp,r.detail,r.status,r.id,extraData);
+      // Format display_val even if it's a raw number string (e.g. "34768.25" → "$34,768.25")
+      const rawDisp=r.display_val||'';
+      const formattedDisp=rawDisp&&/^[\d.]+$/.test(rawDisp.trim())&&parseFloat(rawDisp)>0
+        ?'$'+parseFloat(rawDisp).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})
+        :(rawDisp||fallbackDisp);
+      addJobCard(r.customer,r.job_label,r.value,formattedDisp,r.detail,r.status,r.id,extraData);
     }
   });
   updateJobCounts();
@@ -3766,6 +3771,28 @@ async function saveJobCard(){
   }
   document.getElementById('jc-name').textContent=job.customer||'Unnamed Job';
   await saveJobRecords();
+  // ── Sync value back to the board card ────────────────────────────────────
+  const numVal=parseFloat(job.value)||0;
+  const cleanDisplay=numVal>0?'$'+numVal.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'—';
+  document.querySelectorAll('.lead-card').forEach(card=>{
+    const cardCust=card.querySelector('.lead-name')?.textContent.trim();
+    if(cardCust!==job.customer) return;
+    // Update or insert the value element
+    let valEl=card.querySelector('.lead-value');
+    if(valEl){ valEl.textContent=cleanDisplay; }
+    else if(numVal>0){
+      valEl=document.createElement('div'); valEl.className='lead-value'; valEl.textContent=cleanDisplay;
+      card.querySelector('.lead-name')?.insertAdjacentElement('afterend',valEl);
+    }
+    card.dataset.value=numVal>0?numVal.toString():(card.dataset.value||'');
+    // Push updated value to Supabase jobs table
+    const dbId=card.dataset.dbId||null;
+    const jobLabel=card.querySelector('.lead-detail')?.textContent.trim()||'';
+    const detail=card.querySelectorAll('.lead-detail')[1]?.textContent.trim()||'';
+    const status=card.dataset.status||'scheduled';
+    const notes=[card.dataset.address||'',card.dataset.notes||''].filter(Boolean).join('\n');
+    if(dbId) dbSaveJob({customer:job.customer,jobLabel,value:card.dataset.value,displayVal:cleanDisplay,detail,status,notes,db_id:dbId});
+  });
   closeModal('jobcard');
   renderSchedule();
 }
