@@ -362,7 +362,7 @@
   <div class="sidebar">
     <div class="logo">
       <div class="logo-mark">CEF<span> Assist</span></div>
-      <div class="logo-sub">Field Management v1.0</div>
+      <div class="logo-sub">Field Management v2.0</div>
     </div>
     <nav class="nav">
       <div class="nav-label">Workspace</div>
@@ -2246,13 +2246,14 @@ function sjConfirm(){
     const jobLabel=card.querySelector('.lead-detail')?.textContent||'';
     const valEl=card.querySelector('.lead-value');
     const displayVal=valEl?valEl.textContent:'—';
+    const numericValue=card.dataset.value||'';
     const detail=card.querySelectorAll('.lead-detail')[1]?.textContent||'';
     const extraData={address:card.dataset.address||'',notes:card.dataset.notes||'',sqft:card.dataset.sqft||''};
     const addrNote=[extraData.address,extraData.notes].filter(Boolean).join('\n');
-    if(dbId) dbSaveJob({customer,jobLabel,value:'',displayVal,detail,status:'scheduled',notes:addrNote,db_id:dbId});
+    if(dbId) dbSaveJob({customer,jobLabel,value:numericValue,displayVal,detail,status:'scheduled',notes:addrNote,db_id:dbId});
     card.remove();
     updateJobCounts();
-    addJobCard(customer, jobLabel, '', displayVal, detail, 'scheduled', dbId||undefined, extraData);
+    addJobCard(customer, jobLabel, numericValue, displayVal, detail, 'scheduled', dbId||undefined, extraData);
     window._pendingApprovedCard=null;
   } else {
     // Fresh schedule (no existing approved card) — still create a Jobs board card
@@ -5277,6 +5278,7 @@ function addJobCard(customer, jobLabel, value, displayVal, detail, status, exist
   card.className='lead-card residential';
   card.dataset.status=status;
   card.dataset.dbId=existingDbId||'';
+  card.dataset.value=value||'';
   if(extraData){
     if(extraData.address) card.dataset.address=extraData.address;
     if(extraData.notes)   card.dataset.notes=extraData.notes;
@@ -5316,15 +5318,16 @@ function advanceJobCard(btn, nextStatus){
   const dbId=card.dataset.dbId||null;
   const customer=card.querySelector('.lead-name').textContent;
   const jobLabel=card.querySelector('.lead-detail').textContent;
-  const value=card.querySelector('.lead-value')?.textContent||'—';
+  const numericValue=card.dataset.value||'';
+  const displayVal=card.querySelector('.lead-value')?.textContent||'—';
   const detail=card.querySelectorAll('.lead-detail')[1]?.textContent||'';
-  // Carry over address/notes so they persist across column moves
+  // Carry over address/notes/value so they persist across column moves
   const extraData={address:card.dataset.address||'',notes:card.dataset.notes||'',sqft:card.dataset.sqft||''};
   const addrNote=[extraData.address,extraData.notes].filter(Boolean).join('\n');
-  if(dbId) dbSaveJob({customer,jobLabel,value:'',displayVal:value,detail,status:nextStatus,notes:addrNote,db_id:dbId});
+  if(dbId) dbSaveJob({customer,jobLabel,value:numericValue,displayVal,detail,status:nextStatus,notes:addrNote,db_id:dbId});
   card.remove();
   updateJobCounts();
-  addJobCard(customer, jobLabel, '', value, detail, nextStatus, dbId||undefined, extraData);
+  addJobCard(customer, jobLabel, numericValue, displayVal, detail, nextStatus, dbId||undefined, extraData);
 }
 
 // ── Job Edit / Delete ─────────────────────────────────────────────────────────
@@ -5379,13 +5382,18 @@ function saveJobEdit(){
   const oldStatus = card.dataset.status;
   const extraData = { address:'', notes: notesVal, sqft: card.dataset.sqft || '' };
 
+  // Parse numeric value from whatever the user typed ($5,088 or 5088)
+  const numericValue = parseFloat(displayVal.replace(/[^0-9.]/g,''))||0;
+  const cleanDisplay = numericValue>0 ? '$'+numericValue.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : (displayVal||'—');
+  const numStr = numericValue>0 ? numericValue.toString() : (card.dataset.value||'');
+
   // Save to DB
-  dbSaveJob({ customer, jobLabel, value:'', displayVal, detail:'', status: newStatus, notes: notesVal, db_id: dbId });
+  dbSaveJob({ customer, jobLabel, value:numStr, displayVal:cleanDisplay, detail:'', status: newStatus, notes: notesVal, db_id: dbId });
 
   // Remove old card and re-add in correct column (handles status change too)
   card.remove();
   updateJobCounts();
-  addJobCard(customer, jobLabel, '', displayVal, '', newStatus, dbId || undefined, extraData);
+  addJobCard(customer, jobLabel, numStr, cleanDisplay, '', newStatus, dbId || undefined, extraData);
 
   closeModal('jobedit');
   showToast('✓ Job updated!');
