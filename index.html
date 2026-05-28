@@ -302,6 +302,7 @@
   .crew-mode .sidebar{display:none!important;}
   .crew-mode .cv-lock-btn{display:none!important;}
   .crew-mode #jc-value-group{display:none!important;}
+  .crew-mode #jc-invoice-section{display:none!important;}
   /* PIN login */
   @keyframes pin-shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-9px)}40%{transform:translateX(9px)}60%{transform:translateX(-6px)}80%{transform:translateX(6px)}}
   .pin-dot{width:14px;height:14px;border-radius:50%;border:2px solid var(--border2);background:transparent;transition:all .15s;}
@@ -2612,6 +2613,7 @@ function openJobCard(jobId){
   const hideValue = document.getElementById('page-crewview')?.classList.contains('active') || localStorage.getItem('fpRole')==='crew';
   document.getElementById('jc-value-group').style.display = hideValue ? 'none' : '';
   document.getElementById('jc-tab-costing').style.display = hideValue ? 'none' : '';
+  document.getElementById('jc-invoice-section').style.display = hideValue ? 'none' : '';
   // Header
   document.getElementById('jc-name').textContent=job.customer||'Unnamed Job';
   const meta=[];
@@ -7615,7 +7617,7 @@ function skipReplacement(){
       <button class="btn btn-ghost" onclick="jcAddMaterial()" style="width:100%;margin-top:12px;">+ Add Material</button>
 
       <!-- Supplier Invoices -->
-      <div style="margin-top:22px;padding-top:18px;border-top:2px solid var(--border2);">
+      <div id="jc-invoice-section" style="margin-top:22px;padding-top:18px;border-top:2px solid var(--border2);">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
           <div>
             <div style="font-size:13px;font-weight:600;color:var(--text);">Supplier Invoices</div>
