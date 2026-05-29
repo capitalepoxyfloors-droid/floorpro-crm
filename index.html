@@ -108,7 +108,7 @@
   .stage-lost .pipeline-stage{color:var(--red);}
   .two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px;}
   .schedule-block{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;overflow-x:auto;}
-  .schedule-week{display:grid;grid-template-columns:100px repeat(5,1fr);min-width:520px;}
+  .schedule-week{display:grid;grid-template-columns:100px repeat(5,1fr) repeat(2,0.8fr);min-width:640px;}
   .sch-header{padding:10px 0;text-align:center;font-size:11px;font-family:'DM Mono',monospace;color:var(--text2);border-bottom:1px solid var(--border2);text-transform:uppercase;letter-spacing:.5px;font-weight:600;}
   .sch-header:first-child{text-align:left;padding-left:12px;}
   .sch-installer{padding:11px 0 11px 12px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border2);background:var(--surface);}
@@ -122,10 +122,10 @@
   .sch-job.newjob{background:var(--green-dim);color:var(--green);border-left:3px solid var(--green);border-radius:4px;text-align:center;font-weight:700;}
   .sch-avail{color:var(--text3);font-size:11px;text-align:center;padding:6px 0;font-family:'DM Mono',monospace;font-weight:500;}
   /* Spanning schedule rows */
-  .sch-row{display:grid;grid-template-columns:100px 1fr;min-width:520px;border-bottom:1px solid var(--border2);}
+  .sch-row{display:grid;grid-template-columns:100px 1fr;min-width:640px;border-bottom:1px solid var(--border2);}
   .sch-row:last-child{border-bottom:none;}
   .sch-row .sch-installer{border-bottom:none;align-self:stretch;}
-  .sch-row-body{position:relative;display:grid;grid-template-columns:repeat(5,1fr);}
+  .sch-row-body{position:relative;display:grid;grid-template-columns:repeat(5,1fr) repeat(2,0.8fr);}
   .sch-row-body .sch-cell{border-bottom:none;min-height:46px;}
   .sch-span-bar{position:absolute;top:8px;height:30px;border-radius:3px 4px 4px 3px;padding:0 8px 0 6px;font-size:11px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;display:flex;align-items:center;border-left:3px solid var(--accent);background:var(--accent-dim);color:var(--accent);transition:filter .12s;z-index:1;}
   .sch-span-bar:hover{filter:brightness(1.15);}
@@ -135,6 +135,9 @@
   .sch-span-bar.prep{background:var(--blue-dim);color:var(--blue);border-color:var(--blue);}
   .sch-span-bar.newjob{background:var(--green-dim);color:var(--green);border-color:var(--green);}
   .sch-span-bar.done{background:var(--surface3);color:var(--text3);border-color:var(--border2);opacity:.7;}
+  .sch-header.weekend{color:var(--orange);opacity:.85;}
+  .sch-cell.wknd{background:repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(255,255,255,.02) 4px,rgba(255,255,255,.02) 8px);}
+  .sch-job.weekend-work{background:var(--orange-dim);color:var(--orange);border-left:3px solid var(--orange);}
   .sch-empty{color:var(--text3);font-size:11px;text-align:center;padding:6px 0;}
   .jobs-block{background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);overflow:hidden;}
   .job-row{display:grid;grid-template-columns:1fr auto auto auto;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border2);gap:12px;cursor:pointer;transition:background .1s;}
@@ -1448,9 +1451,9 @@ function renderDashboard(){
   const dashSchedEl = document.getElementById('dash-sched-container');
   if(dashSchedEl && typeof buildWeekGrid === 'function'){
     const dashW = new Date().getDay()===0 ? 1 : 0; // Sunday → show next week
-    const dNames=['Mon','Tue','Wed','Thu','Fri'];
+    const dNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
     const wGrid = buildWeekGrid(dashW, getMonday(dashW), dNames);
-    wGrid.style.minWidth='480px';
+    wGrid.style.minWidth='640px';
     dashSchedEl.appendChild(wGrid);
   }
 }
@@ -2432,7 +2435,7 @@ function openSlotEdit(ci, w, d){
   crewSel.innerHTML=CREW.map((c,i)=>`<option value="${i}"${i===ci?' selected':''}>${c.full}</option>`).join('');
 
   // Info bar
-  const dNames=['Mon','Tue','Wed','Thu','Fri'];
+  const dNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
   document.getElementById('se-info').textContent=
     (CREW[ci]?.full||'') + ' · ' + dNames[d] + ' ' + (curDate.getMonth()+1)+'/'+curDate.getDate();
 
@@ -2468,17 +2471,45 @@ function seRemainingSlots(ci, w, d, label){
 }
 
 function seDateToPos(dateStr){
-  // Convert a YYYY-MM-DD string to {w, d} slot position, or null if weekend
+  // Convert a YYYY-MM-DD string to {w, d} slot position (supports Mon–Sun)
   const dt=new Date(dateStr+'T00:00:00');
   const dow=dt.getDay();
-  if(dow===0||dow===6) return null;
-  const dayIdx=dow-1;
+  // dow: 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
+  // dayIdx: Mon=0,Tue=1,Wed=2,Thu=3,Fri=4,Sat=5,Sun=6
+  const dayIdx=dow===0?6:dow-1;
   const wOff=Math.floor((dt-BASE)/(7*24*60*60*1000));
   return {w:wOff, d:dayIdx};
 }
 
 function seSlotToDate(w, d){
   const mon=getMonday(w); const dt=new Date(mon); dt.setDate(dt.getDate()+d); return dt;
+}
+
+// ── WEEKEND WORK ──────────────────────────────────────────────────────────────
+let _wwCtx=null;
+
+function openWeekendWorkModal(ci,wOff,dIdx){
+  _wwCtx={ci,wOff,dIdx};
+  const mon=getMonday(wOff);
+  const date=new Date(mon); date.setDate(date.getDate()+dIdx);
+  const dayName=dIdx===5?'Saturday':'Sunday';
+  document.getElementById('ww-crew').textContent=CREW[ci]?.full||'';
+  document.getElementById('ww-date').textContent=dayName+', '+(date.getMonth()+1)+'/'+date.getDate()+'/'+date.getFullYear();
+  document.getElementById('ww-label').value='';
+  document.getElementById('ww-type').value='epoxy';
+  openModal('weekendwork');
+}
+
+async function saveWeekendWork(){
+  if(!_wwCtx) return;
+  const{ci,wOff,dIdx}=_wwCtx;
+  const label=document.getElementById('ww-label').value.trim();
+  const type=document.getElementById('ww-type').value;
+  if(!label){showToast('Enter a job or task name.');return;}
+  await sePlaceSlot(ci,wOff,dIdx,label,type);
+  closeModal('weekendwork');
+  renderSchedule();
+  showToast('✓ Weekend work added for '+(CREW[ci]?.name||''));
 }
 
 async function seRemoveSlot(ci, w, d){
@@ -2524,7 +2555,7 @@ async function saveSlotEdit(force=false){
   conflictEl.style.display='none';
   if(!force && moved && !(newPos.w===w && newPos.d===d && newCi===ci)){
     if(isBooked(newCi, newPos.w, newPos.d)){
-      const dNames=['Mon','Tue','Wed','Thu','Fri'];
+      const dNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
       const cd=seSlotToDate(newPos.w,newPos.d);
       document.getElementById('se-conflict-msg').textContent=
         '⚠ '+(CREW[newCi]?.full||'')+' is already booked on '+
@@ -7310,17 +7341,17 @@ function renderSchedule(){
   if(!container) return;
   container.innerHTML='';
 
-  const dNames=['Mon','Tue','Wed','Thu','Fri'];
+  const dNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 
   for(let wIdx=0;wIdx<schedViewWeeks;wIdx++){
     const wOff=weekOffset+wIdx;
     const mon=getMonday(wOff);
-    const fri=new Date(mon); fri.setDate(fri.getDate()+4);
+    const sun=new Date(mon); sun.setDate(sun.getDate()+6);
 
     if(schedViewWeeks>1){
       const label=document.createElement('div');
       label.className='week-block-label';
-      label.textContent='Week of '+fmtDate(mon)+' – '+fmtDate(fri);
+      label.textContent='Week of '+fmtDate(mon)+' – '+fmtDate(sun);
       const block=document.createElement('div');
       block.className='week-block';
       block.appendChild(label);
@@ -7336,23 +7367,25 @@ function renderSchedule(){
   // Update label
   const mon0=getMonday(weekOffset);
   const monEnd=getMonday(weekOffset+schedViewWeeks-1);
-  const friEnd=new Date(monEnd); friEnd.setDate(friEnd.getDate()+4);
-  document.getElementById('week-label').textContent=fmtDate(mon0)+' – '+fmtDate(friEnd);
+  const sunEnd=new Date(monEnd); sunEnd.setDate(sunEnd.getDate()+6);
+  document.getElementById('week-label').textContent=fmtDate(mon0)+' – '+fmtDate(sunEnd);
 
 }
 
 function buildWeekGrid(wOff,mon,dNames){
+  const TOTAL_DAYS=7; // Mon–Sun
   const wrap=document.createElement('div');
   wrap.className='schedule-block';
 
-  // Header row (uses the 6-column schedule-week grid)
+  // Header row
   const hdrGrid=document.createElement('div');
   hdrGrid.className='schedule-week';
   const h0=mk('div','sch-header','Crew');h0.style.cssText='text-align:left;padding-left:14px;';hdrGrid.appendChild(h0);
-  for(let d=0;d<5;d++){
+  for(let d=0;d<TOTAL_DAYS;d++){
     const dd=new Date(mon);dd.setDate(dd.getDate()+d);
-    const hdr=mk('div','sch-header',dNames[d]+' '+(dd.getMonth()+1)+'/'+dd.getDate());
-    if(isHoliday(dd)) hdr.style.color='var(--orange)';
+    const cls='sch-header'+(d>=5?' weekend':'');
+    const hdr=mk('div',cls,dNames[d]+' '+(dd.getMonth()+1)+'/'+dd.getDate());
+    if(d<5&&isHoliday(dd)) hdr.style.color='var(--orange)';
     hdrGrid.appendChild(hdr);
   }
   wrap.appendChild(hdrGrid);
@@ -7366,57 +7399,68 @@ function buildWeekGrid(wOff,mon,dNames){
     nameCell.innerHTML=`<div class="installer-dot" style="background:${cr.color}"></div>${cr.name}`;
     rowDiv.appendChild(nameCell);
 
-    // Gather slot data for all 5 days
+    // Gather slot data for all 7 days
     const days=[];
-    for(let d=0;d<5;d++){
+    for(let d=0;d<TOTAL_DAYS;d++){
+      const isWknd=d>=5;
       const pto=ptoSlots[i]?.[wOff]?.[d];
-      const hol=getHolidayForCell(wOff,d);
+      const hol=(!isWknd)?getHolidayForCell(wOff,d):null;
       const slot=(!pto&&!hol)?(getSlot(i,wOff,d)||getNew(i,wOff,d)):null;
-      days.push({pto,hol,slot});
+      days.push({pto,hol,slot,isWknd});
     }
 
-    // Events body — 5 background cells + absolutely positioned spanning bars
+    // Events body — 7 background cells + absolutely positioned spanning bars
     const body=mk('div','sch-row-body');
 
-    // Background cells: show Free / Holiday / PTO; leave job days empty (bar covers them)
-    days.forEach(({pto,hol,slot},dIdx)=>{
-      const cell=mk('div','sch-cell');
-      if(hol)       cell.appendChild(mk('div','sch-job holiday',hol));
-      else if(pto){
+    days.forEach(({pto,hol,slot,isWknd},dIdx)=>{
+      const cell=mk('div','sch-cell'+(isWknd?' wknd':''));
+      if(hol){
+        cell.appendChild(mk('div','sch-job holiday',hol));
+      } else if(pto){
         const ptoEl=mk('div','sch-job pto','🚫 '+pto.label);
         ptoEl.style.cursor='pointer';
         ptoEl.title='Click to edit PTO';
         (function(ci,wo,di){ ptoEl.onclick=()=>openPtoDayEdit(ci,wo,di); })(i,wOff,dIdx);
         cell.appendChild(ptoEl);
+      } else if(slot){
+        // slot is covered by a span bar — leave cell empty
+      } else if(isWknd){
+        // Weekend empty cell — click to add weekend work
+        const addBtn=mk('div','sch-avail','+ Add');
+        addBtn.style.cssText='cursor:pointer;color:var(--orange);opacity:.7;';
+        addBtn.title='Add weekend work';
+        (function(ci,wo,di){ addBtn.onclick=()=>openWeekendWorkModal(ci,wo,di); })(i,wOff,dIdx);
+        cell.appendChild(addBtn);
+      } else {
+        cell.appendChild(mk('div','sch-avail','Free'));
       }
-      else if(!slot) cell.appendChild(mk('div','sch-avail','Free'));
       body.appendChild(cell);
     });
 
-    // Find runs of consecutive days with the same job label and render one bar each
+    // Spanning bars: find runs of consecutive days with the same job label
     let runStart=null, runLabel=null, runType=null;
     const flushRun=(endExcl)=>{
       if(runStart===null) return;
-      const startDay=runStart; // capture for closure
+      const startDay=runStart;
       const span=endExcl-startDay;
-      // Check if this job is marked complete
       const jobId=SLOT_JOB_MAP[jcSlotKey(i,wOff,startDay)];
       const jr=jobId?JOB_RECORDS.find(j=>j.id===jobId):JOB_RECORDS.find(j=>j.customer===runLabel);
       const isDone=jr?.status==='complete';
+      const isWkndBar=startDay>=5;
       const bar=document.createElement('div');
-      bar.className='sch-span-bar '+(isDone?'done':(runType||'epoxy'));
+      bar.className='sch-span-bar '+(isDone?'done':(isWkndBar?'weekend-work ':(runType||'epoxy')));
       bar.textContent=(isDone?'✓ ':'')+runLabel;
       bar.title='Click to open';
-      bar.style.cssText=`left:calc(${((startDay/5)*100).toFixed(3)}% + 2px);width:calc(${((span/5)*100).toFixed(3)}% - 6px);`;
+      bar.style.cssText=`left:calc(${((startDay/TOTAL_DAYS)*100).toFixed(3)}% + 2px);width:calc(${((span/TOTAL_DAYS)*100).toFixed(3)}% - 6px);`;
       bar.onclick=()=>openSlotEdit(i,wOff,startDay);
       body.appendChild(bar);
       runStart=null; runLabel=null; runType=null;
     };
-    for(let d=0;d<=5;d++){
-      if(d===5){ flushRun(5); break; }
+    for(let d=0;d<=TOTAL_DAYS;d++){
+      if(d===TOTAL_DAYS){ flushRun(TOTAL_DAYS); break; }
       const{pto,hol,slot}=days[d];
       if(slot){
-        if(slot.l===runLabel){ /* extend */ }
+        if(slot.l===runLabel){ /* extend run */ }
         else{ flushRun(d); runStart=d; runLabel=slot.l; runType=slot.t||'epoxy'; }
       } else { flushRun(d); }
     }
@@ -8028,6 +8072,39 @@ function skipReplacement(){
         <button class="btn btn-ghost" onclick="closeModal('ptoday-edit')">Cancel</button>
         <button class="btn btn-primary" onclick="savePtoDayEdit()">Save</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-weekendwork">
+  <div class="modal" style="max-width:380px;">
+    <div class="modal-header">
+      <div class="modal-title">🗓 Add Weekend Work</div>
+      <button class="modal-close" onclick="closeModal('weekendwork')">×</button>
+    </div>
+    <div class="modal-body" style="display:flex;flex-direction:column;gap:14px;">
+      <div style="font-size:13px;color:var(--text2);background:var(--surface2);border-radius:var(--radius-sm);padding:10px 12px;line-height:1.8;">
+        <div>Crew: <strong id="ww-crew"></strong></div>
+        <div>Date: <strong id="ww-date"></strong></div>
+      </div>
+      <div class="form-group" style="margin:0;">
+        <label class="form-label">Job / Task Name</label>
+        <input class="form-input" id="ww-label" type="text" placeholder="Customer name or task"/>
+      </div>
+      <div class="form-group" style="margin:0;">
+        <label class="form-label">Type</label>
+        <select class="form-select" id="ww-type">
+          <option value="epoxy">Epoxy / Flake</option>
+          <option value="concrete">Concrete</option>
+          <option value="overlay">Overlay / Metallic</option>
+          <option value="prep">Prep</option>
+          <option value="newjob">New Install</option>
+        </select>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('weekendwork')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveWeekendWork()">Save</button>
     </div>
   </div>
 </div>
