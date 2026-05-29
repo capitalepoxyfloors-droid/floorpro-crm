@@ -7065,6 +7065,54 @@ const ptoSlots={};
 function isPTO(i,w,d){ return !!(ptoSlots[i]?.[w]?.[d]); }
 function isBooked(i,w,d){ return !!(getSlot(i,w,d)||getNew(i,w,d)||isPTO(i,w,d)||getHolidayForCell(w,d)); }
 
+// ── PTO DAY EDIT ──────────────────────────────────────────────────────────────
+let _editPtoCrewIdx=null,_editPtoWOff=null,_editPtoDIdx=null;
+
+function openPtoDayEdit(crewIdx,wOff,dIdx){
+  _editPtoCrewIdx=crewIdx; _editPtoWOff=wOff; _editPtoDIdx=dIdx;
+  const pto=ptoSlots[crewIdx]?.[wOff]?.[dIdx]; if(!pto) return;
+  const mon=getMonday(wOff);
+  const date=new Date(mon); date.setDate(date.getDate()+dIdx);
+  const dateStr=date.toISOString().split('T')[0];
+  document.getElementById('pte-crew').textContent=CREW[crewIdx]?.full||'';
+  document.getElementById('pte-date').value=dateStr;
+  document.getElementById('pte-label').value=pto.label||'';
+  openModal('ptoday-edit');
+}
+
+async function savePtoDayEdit(){
+  const newDateStr=document.getElementById('pte-date').value;
+  const newLabel=document.getElementById('pte-label').value.trim()||'PTO';
+  if(!newDateStr){showToast('Please select a date.');return;}
+  const d=new Date(newDateStr+'T00:00:00');
+  const dow=d.getDay();
+  if(dow===0||dow===6){showToast('Please choose a weekday (Mon–Fri).');return;}
+  const newDIdx=dow-1;
+  const mon=new Date(d); mon.setDate(d.getDate()-(dow-1)); mon.setHours(0,0,0,0);
+  const newWOff=Math.round((mon-BASE)/(7*24*60*60*1000));
+  const pto=ptoSlots[_editPtoCrewIdx]?.[_editPtoWOff]?.[_editPtoDIdx];
+  // Remove old entry
+  if(pto?.db_id) await sb.delete('pto_blocks',pto.db_id);
+  else await sb.deleteWhere('pto_blocks',{crew_idx:_editPtoCrewIdx,week_offset:_editPtoWOff,day_idx:_editPtoDIdx});
+  delete ptoSlots[_editPtoCrewIdx][_editPtoWOff][_editPtoDIdx];
+  // Insert at new date
+  if(!ptoSlots[_editPtoCrewIdx]) ptoSlots[_editPtoCrewIdx]={};
+  if(!ptoSlots[_editPtoCrewIdx][newWOff]) ptoSlots[_editPtoCrewIdx][newWOff]={};
+  ptoSlots[_editPtoCrewIdx][newWOff][newDIdx]={label:newLabel,type:'pto'};
+  const newId=await dbSavePTOEntry(_editPtoCrewIdx,newWOff,newDIdx,newLabel);
+  if(newId) ptoSlots[_editPtoCrewIdx][newWOff][newDIdx].db_id=newId;
+  closeModal('ptoday-edit'); renderSchedule(); showToast('✓ PTO updated.');
+}
+
+async function deletePtoDayEdit(){
+  if(!confirm('Remove this PTO day?')) return;
+  const pto=ptoSlots[_editPtoCrewIdx]?.[_editPtoWOff]?.[_editPtoDIdx];
+  if(pto?.db_id) await sb.delete('pto_blocks',pto.db_id);
+  else await sb.deleteWhere('pto_blocks',{crew_idx:_editPtoCrewIdx,week_offset:_editPtoWOff,day_idx:_editPtoDIdx});
+  delete ptoSlots[_editPtoCrewIdx][_editPtoWOff][_editPtoDIdx];
+  closeModal('ptoday-edit'); renderSchedule(); showToast('PTO removed.');
+}
+
 // ── SCHEDULE VIEW (1-week / 4-week) ───────────────────────────────────────────
 let schedViewWeeks = 2;
 
@@ -7154,10 +7202,16 @@ function buildWeekGrid(wOff,mon,dNames){
     const body=mk('div','sch-row-body');
 
     // Background cells: show Free / Holiday / PTO; leave job days empty (bar covers them)
-    days.forEach(({pto,hol,slot})=>{
+    days.forEach(({pto,hol,slot},dIdx)=>{
       const cell=mk('div','sch-cell');
       if(hol)       cell.appendChild(mk('div','sch-job holiday',hol));
-      else if(pto)  cell.appendChild(mk('div','sch-job pto','🚫 '+pto.label));
+      else if(pto){
+        const ptoEl=mk('div','sch-job pto','🚫 '+pto.label);
+        ptoEl.style.cursor='pointer';
+        ptoEl.title='Click to edit PTO';
+        (function(ci,wo,di){ ptoEl.onclick=()=>openPtoDayEdit(ci,wo,di); })(i,wOff,dIdx);
+        cell.appendChild(ptoEl);
+      }
       else if(!slot) cell.appendChild(mk('div','sch-avail','Free'));
       body.appendChild(cell);
     });
@@ -7769,6 +7823,34 @@ function skipReplacement(){
       <div style="flex:1"></div>
       <button class="btn btn-ghost" onclick="closeModal('slotedit')">Cancel</button>
       <button class="btn btn-primary" onclick="saveSlotEdit()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- PTO Day Edit Modal -->
+<div class="modal-overlay" id="modal-ptoday-edit">
+  <div class="modal" style="max-width:360px;">
+    <div class="modal-header">
+      <div class="modal-title">Edit PTO Day</div>
+      <button class="modal-close" onclick="closeModal('ptoday-edit')">×</button>
+    </div>
+    <div class="modal-body" style="display:flex;flex-direction:column;gap:14px;">
+      <div style="font-size:13px;color:var(--text2);">Crew member: <strong id="pte-crew"></strong></div>
+      <div class="form-group" style="margin:0;">
+        <label class="form-label">Date</label>
+        <input class="form-input" id="pte-date" type="date"/>
+      </div>
+      <div class="form-group" style="margin:0;">
+        <label class="form-label">Reason / Label</label>
+        <input class="form-input" id="pte-label" type="text" placeholder="PTO"/>
+      </div>
+    </div>
+    <div class="modal-footer" style="justify-content:space-between;">
+      <button class="btn" style="background:var(--red-dim);color:var(--red);border:1px solid var(--red-dim);" onclick="deletePtoDayEdit()">🗑 Remove</button>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-ghost" onclick="closeModal('ptoday-edit')">Cancel</button>
+        <button class="btn btn-primary" onclick="savePtoDayEdit()">Save</button>
+      </div>
     </div>
   </div>
 </div>
