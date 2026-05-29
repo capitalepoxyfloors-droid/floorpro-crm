@@ -7593,7 +7593,11 @@ function buildWeekGrid(wOff,mon,dNames){
       bar.className='sch-span-bar '+(isDone?'done':(isWkndBar?'weekend-work ':(runType||'epoxy')));
       bar.textContent=(isDone?'✓ ':'')+runLabel;
       bar.title='Click to open';
-      bar.style.cssText=`left:calc(${((startDay/TOTAL_DAYS)*100).toFixed(3)}% + 2px);width:calc(${((span/TOTAL_DAYS)*100).toFixed(3)}% - 6px);`;
+      const COL_FR=[1,1,1,1,1,0.8,0.8]; // Mon-Fri=1fr, Sat-Sun=0.8fr — must match CSS grid
+      const TOTAL_FR=COL_FR.reduce((a,b)=>a+b,0);
+      const leftFr=COL_FR.slice(0,startDay).reduce((a,b)=>a+b,0);
+      const widthFr=COL_FR.slice(startDay,startDay+span).reduce((a,b)=>a+b,0);
+      bar.style.cssText=`left:calc(${(leftFr/TOTAL_FR*100).toFixed(3)}% + 2px);width:calc(${(widthFr/TOTAL_FR*100).toFixed(3)}% - 6px);`;
       bar.onclick=()=>openSlotEdit(i,wOff,startDay);
       body.appendChild(bar);
       runStart=null; runLabel=null; runType=null;
