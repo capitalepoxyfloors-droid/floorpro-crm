@@ -3079,11 +3079,11 @@ function jcRenderDayLogs(){
         </div>
         <div id="jctr-${key}" class="form-row" style="margin:0;${log.fullDay?'opacity:0.35;':''}">
           <div class="form-group" style="margin:0;">
-            <label class="form-label">Start Time</label>
+            <label class="form-label">Site Start <span style="font-weight:400;color:var(--text3);font-size:10px;">(default for all crew)</span></label>
             <input class="form-input" type="text" inputmode="numeric" placeholder="7:00 AM" value="${log.startTime||''}" oninput="jcLogSet('${ds}','startTime',this.value)" onblur="fmtTimeInput(this,'${ds}','startTime')" style="font-size:13px;"/>
           </div>
           <div class="form-group" style="margin:0;">
-            <label class="form-label">End Time</label>
+            <label class="form-label">Site End <span style="font-weight:400;color:var(--text3);font-size:10px;">(default for all crew)</span></label>
             <input class="form-input" type="text" inputmode="numeric" placeholder="3:30 PM" value="${log.endTime||''}" oninput="jcLogSet('${ds}','endTime',this.value)" onblur="fmtTimeInput(this,'${ds}','endTime')" style="font-size:13px;"/>
           </div>
         </div>
@@ -3262,7 +3262,12 @@ function jcLogSet(ds,field,val){
   if(!job.dayLogs) job.dayLogs={};
   if(!job.dayLogs[ds]) job.dayLogs[ds]={};
   job.dayLogs[ds][field]=val;
-  if(field==='startTime'||field==='endTime') jcHours(ds.replace(/-/g,''),ds);
+  if(field==='startTime'||field==='endTime'){
+    jcHours(ds.replace(/-/g,''),ds);
+    // Refresh hours badge for any crew member using the global time as fallback
+    const crew=job.dayLogs[ds].crewPresent||[];
+    crew.forEach((_,i)=>jcUpdateCrewHrs(ds,i));
+  }
 }
 
 // ── DAILY LOG — CREW DROPDOWN ─────────────────────────────────────────────────
@@ -3276,19 +3281,44 @@ function _jcMigrateCrewPresent(log){
 
 function jcDayCrewHtml(ds,log){
   const crew=log.crewPresent||[];
+  const key=ds.replace(/-/g,'');
   let rows='';
   crew.forEach((c,i)=>{
-    rows+=`<div class="jc-crew-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
-      <select class="form-input" style="flex:1;font-size:12px;padding:4px 6px;" onchange="jcLogPickCrewMember('${ds}',${i},this)">
-        <option value="custom"${c.crewIdx===-1?' selected':''}>— Custom —</option>
-        ${CREW_DATA.map((cd,ci)=>`<option value="${ci}"${c.crewIdx===ci?' selected':''}>${cd.full}</option>`).join('')}
-      </select>
-      ${c.crewIdx===-1?`<input class="form-input" placeholder="Name" value="${(c.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetCrew('${ds}',${i},'name',this.value)" style="flex:1;font-size:12px;padding:4px 6px;"/>`:``}
-      <button onclick="jcLogRemoveCrewMember('${ds}',${i})" style="background:none;border:none;cursor:pointer;color:var(--danger,#e74c3c);font-size:16px;padding:0 2px;line-height:1;" title="Remove">×</button>
+    const cStart=c.startTime||'', cEnd=c.endTime||'';
+    const effStart=cStart||log.startTime||'', effEnd=cEnd||log.endTime||'';
+    const hasCustom=!!(cStart||cEnd);
+    const hrsText=log.fullDay?'8.0 hrs':(effStart&&effEnd?jcCalcHrs(effStart,effEnd):'');
+    const dimTime=log.fullDay?'opacity:.4;pointer-events:none;':'';
+    rows+=`<div style="margin-bottom:8px;background:var(--surface);border:1px solid var(--border2);border-radius:6px;overflow:hidden;">
+      <div style="display:flex;gap:6px;align-items:center;padding:5px 8px;">
+        <select class="form-input" style="flex:1;font-size:12px;padding:4px 6px;" onchange="jcLogPickCrewMember('${ds}',${i},this)">
+          <option value="custom"${c.crewIdx===-1?' selected':''}>— Custom —</option>
+          ${CREW_DATA.map((cd,ci)=>`<option value="${ci}"${c.crewIdx===ci?' selected':''}>${cd.full}</option>`).join('')}
+        </select>
+        ${c.crewIdx===-1?`<input class="form-input" placeholder="Name" value="${(c.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetCrew('${ds}',${i},'name',this.value)" style="flex:1;font-size:12px;padding:4px 6px;"/>`:``}
+        <button onclick="jcLogRemoveCrewMember('${ds}',${i})" style="background:none;border:none;cursor:pointer;color:var(--red);font-size:16px;padding:0 2px;line-height:1;" title="Remove">×</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:5px;padding:3px 8px 5px;border-top:1px solid var(--border2);background:var(--surface2);${dimTime}">
+        <span style="font-size:10px;color:var(--text3);flex-shrink:0;">⏱</span>
+        <input class="form-input" type="text" inputmode="numeric"
+          placeholder="${log.startTime||'Start'}"
+          value="${cStart}"
+          oninput="jcLogSetCrew('${ds}',${i},'startTime',this.value);jcUpdateCrewHrs('${ds}',${i})"
+          onblur="jcFmtCrewTime(this,'${ds}',${i},'startTime')"
+          style="font-size:11px;padding:2px 5px;width:70px;flex:none;" />
+        <span style="color:var(--text3);font-size:11px;flex-shrink:0;">–</span>
+        <input class="form-input" type="text" inputmode="numeric"
+          placeholder="${log.endTime||'End'}"
+          value="${cEnd}"
+          oninput="jcLogSetCrew('${ds}',${i},'endTime',this.value);jcUpdateCrewHrs('${ds}',${i})"
+          onblur="jcFmtCrewTime(this,'${ds}',${i},'endTime')"
+          style="font-size:11px;padding:2px 5px;width:70px;flex:none;" />
+        <span id="jccrh-${key}-${i}" style="font-size:11px;font-weight:700;color:${hasCustom?'var(--accent)':'var(--text3)'};">${hrsText}</span>
+      </div>
     </div>`;
   });
-  return `<div id="jc-crew-${ds.replace(/-/g,'')}">`+
-    `<button onclick="jcLogAddCrewMember('${ds}')" style="font-size:12px;color:var(--primary);background:none;border:1px dashed var(--primary);border-radius:6px;padding:3px 10px;cursor:pointer;margin-bottom:6px;">+ Add Crew Member</button>`+
+  return `<div id="jc-crew-${key}">`+
+    `<button onclick="jcLogAddCrewMember('${ds}')" style="font-size:12px;color:var(--accent);background:none;border:1px dashed var(--accent);border-radius:6px;padding:3px 10px;cursor:pointer;margin-bottom:6px;">+ Add Crew Member</button>`+
     rows+
   `</div>`;
 }
@@ -3307,8 +3337,10 @@ function jcLogAddCrewMember(ds){
   const job=getJobRecord(_jcId); if(!job) return;
   if(!job.dayLogs) job.dayLogs={};
   if(!job.dayLogs[ds]) job.dayLogs[ds]={crewPresent:[],task:'',materialsUsed:[],startTime:'',endTime:'',notes:''};
-  _jcMigrateCrewPresent(job.dayLogs[ds]);
-  job.dayLogs[ds].crewPresent.push({crewIdx:-1,name:'',burdenedRate:''});
+  const log=job.dayLogs[ds];
+  _jcMigrateCrewPresent(log);
+  // New crew member starts with blank individual times (they inherit global site hours)
+  log.crewPresent.push({crewIdx:-1,name:'',burdenedRate:'',startTime:'',endTime:''});
   jcRenderDayCrew(ds);
 }
 
@@ -3341,6 +3373,65 @@ function jcLogSetCrew(ds,idx,field,val){
   _jcMigrateCrewPresent(job.dayLogs[ds]);
   const c=job.dayLogs[ds].crewPresent[idx]; if(!c) return;
   c[field]=val;
+}
+
+// Format a crew member's time input (same smart-parse as fmtTimeInput but saves to crewPresent)
+function jcFmtCrewTime(el,ds,idx,field){
+  const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
+  _jcMigrateCrewPresent(job.dayLogs[ds]);
+  const c=job.dayLogs[ds].crewPresent[idx]; if(!c) return;
+  let v=el.value.trim(); if(!v){ c[field]=''; jcUpdateCrewHrs(ds,idx); return; }
+  const raw=v.replace(/\s/g,'');
+  const apM=raw.match(/^(\d{1,2}):?(\d{2})?(am|pm)$/i);
+  if(apM){
+    const h=parseInt(apM[1]),min=(apM[2]||'00').padStart(2,'0'),ap=apM[3].toUpperCase();
+    el.value=h+':'+min+' '+ap; c[field]=el.value; jcUpdateCrewHrs(ds,idx); return;
+  }
+  const colM=raw.match(/^(\d{1,2}):(\d{2})$/);
+  if(colM){
+    let h=parseInt(colM[1]); const min=colM[2];
+    if(h===0) el.value='12:'+min+' AM';
+    else if(h<12) el.value=h+':'+min+' AM';
+    else if(h===12) el.value='12:'+min+' PM';
+    else el.value=(h-12)+':'+min+' PM';
+    c[field]=el.value; jcUpdateCrewHrs(ds,idx); return;
+  }
+  const digs=raw.replace(/\D/g,'');
+  if(digs.length>=1&&digs.length<=4){
+    let h,min;
+    if(digs.length<=2){h=parseInt(digs);min='00';}
+    else{h=parseInt(digs.slice(0,digs.length-2));min=digs.slice(-2);}
+    if(parseInt(min)>59) min='00';
+    let ap='AM';
+    if(h>=12){ap='PM';if(h>12)h-=12;}
+    if(h===0)h=12;
+    el.value=h+':'+min.padStart(2,'0')+' '+ap;
+    c[field]=el.value; jcUpdateCrewHrs(ds,idx);
+  }
+}
+
+// Refresh the hours badge for one crew member row
+function jcUpdateCrewHrs(ds,idx){
+  const job=getJobRecord(_jcId); if(!job) return;
+  const log=job.dayLogs?.[ds]; if(!log) return;
+  const c=log.crewPresent?.[idx]; if(!c) return;
+  const key=ds.replace(/-/g,'');
+  const el=document.getElementById('jccrh-'+key+'-'+idx); if(!el) return;
+  const effStart=c.startTime||log.startTime||'';
+  const effEnd=c.endTime||log.endTime||'';
+  const hrsText=log.fullDay?'8.0 hrs':(effStart&&effEnd?jcCalcHrs(effStart,effEnd):'');
+  const hasCustom=!!(c.startTime||c.endTime);
+  el.textContent=hrsText;
+  el.style.color=hasCustom?'var(--accent)':'var(--text3)';
+}
+
+// Hours for a specific crew member — uses individual times if set, else day global
+function jcGetCrewMemberHrs(c,log){
+  if(!log) return 0;
+  if(log.fullDay) return 8;
+  const s=c.startTime||log.startTime||'';
+  const e=c.endTime||log.endTime||'';
+  return parseFloat(jcCalcHrs(s,e))||0;
 }
 
 // ── DAILY LOG — MATERIALS DROPDOWN ───────────────────────────────────────────
@@ -3458,7 +3549,7 @@ function jcToggleFullDay(ds){
   const log=job.dayLogs[ds];
   log.fullDay=!log.fullDay;
   const key=ds.replace(/-/g,'');
-  // Update the hours display
+  // Update the day-level hours display
   const el=document.getElementById('jch-'+key);
   if(el) el.textContent=log.fullDay?'8.0 hrs':(log.startTime&&log.endTime?jcCalcHrs(log.startTime,log.endTime):'—');
   // Update time input opacity
@@ -3467,10 +3558,12 @@ function jcToggleFullDay(ds){
   // Update button style
   const btn=document.getElementById('jcfd-'+key);
   if(btn){
-    btn.style.background=log.fullDay?'var(--primary)':'none';
-    btn.style.color=log.fullDay?'#fff':'var(--primary)';
+    btn.style.background=log.fullDay?'var(--accent)':'none';
+    btn.style.color=log.fullDay?'#fff':'var(--accent)';
     btn.textContent=log.fullDay?'✓ Full 8-hr Day':'Full 8-hr Day';
   }
+  // Re-render crew rows so per-member time inputs enable/disable
+  jcRenderDayCrew(ds);
   saveJobRecords();
 }
 
@@ -3591,21 +3684,21 @@ function renderJobCostingPage(){
 
     allDates.forEach(ds=>{
       const log=logs[ds]; if(!log) return;
-      // Labor
+      // Labor — use per-crew-member hours when individual times are set
       {
-        const hrs=jcGetLogHrs(log);
-        if(hrs>0){
-          totalHrs+=hrs;
-          const seenDay=new Set();
-          (Array.isArray(log.crewPresent)?log.crewPresent:[]).forEach(c=>{
-            const effectiveName=(c.name||(c.crewIdx>=0&&CREW_DATA[c.crewIdx]?CREW_DATA[c.crewIdx].full:'')).trim();
-            if(!effectiveName) return;
-            if(seenDay.has(effectiveName.toLowerCase())) return;
-            seenDay.add(effectiveName.toLowerCase());
+        const seenDay=new Set();
+        (Array.isArray(log.crewPresent)?log.crewPresent:[]).forEach(c=>{
+          const effectiveName=(c.name||(c.crewIdx>=0&&CREW_DATA[c.crewIdx]?CREW_DATA[c.crewIdx].full:'')).trim();
+          if(!effectiveName) return;
+          if(seenDay.has(effectiveName.toLowerCase())) return;
+          seenDay.add(effectiveName.toLowerCase());
+          const hrs=jcGetCrewMemberHrs(c,log);
+          if(hrs>0){
+            totalHrs+=hrs;
             const rate=jcGetBurdenedRate(c);
             laborCost+=hrs*rate;
-          });
-        }
+          }
+        });
       }
       // Materials
       (Array.isArray(log.materialsUsed)?log.materialsUsed:[]).forEach(m=>{
