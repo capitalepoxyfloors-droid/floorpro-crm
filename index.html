@@ -2946,7 +2946,7 @@ function jcRenderDayLogs(){
         </div>
         <div class="form-group" style="margin:0;">
           <label class="form-label">Task Completed</label>
-          <input class="form-input" placeholder="What was done today" value="${(log.task||'').replace(/"/g,'&quot;')}" oninput="jcLogSet('${ds}','task',this.value)" style="font-size:13px;"/>
+          <textarea class="form-textarea" placeholder="What was done today" oninput="jcLogSet('${ds}','task',this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'" style="font-size:13px;overflow-y:auto;resize:none;min-height:60px;">${(log.task||'').replace(/</g,'&lt;')}</textarea>
         </div>
         <div class="form-group" style="margin:0;">
           <label class="form-label">Materials Actually Used</label>
@@ -2971,10 +2971,15 @@ function jcRenderDayLogs(){
         </div>
         <div class="form-group" style="margin:0;">
           <label class="form-label">Notes</label>
-          <textarea class="form-textarea" placeholder="Anything worth noting — issues, decisions, next steps..." oninput="jcLogSet('${ds}','notes',this.value)" style="min-height:52px;font-size:13px;">${log.notes||''}</textarea>
+          <textarea class="form-textarea" placeholder="Anything worth noting — issues, decisions, next steps..." oninput="jcLogSet('${ds}','notes',this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'" style="min-height:52px;font-size:13px;overflow-y:auto;resize:none;">${log.notes||''}</textarea>
         </div>
       </div>`;
     container.appendChild(sec);
+  });
+  // Auto-size all textareas now that content is rendered
+  container.querySelectorAll('textarea').forEach(ta=>{
+    ta.style.height='auto';
+    ta.style.height=ta.scrollHeight+'px';
   });
 }
 
