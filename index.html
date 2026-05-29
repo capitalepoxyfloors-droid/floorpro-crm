@@ -5864,7 +5864,7 @@ let matFilter = 'all';
 
 const BUILTIN_MAT_CATS=['Epoxy','Polyaspartic','Urethane','Urethane Cement','Overlay','Flake','Quartz','Sand','Misc'];
 let CUSTOM_MAT_CATS=[];
-function getAllMatCats(){ return [...BUILTIN_MAT_CATS,...CUSTOM_MAT_CATS]; }
+function getAllMatCats(){ return [...BUILTIN_MAT_CATS,...CUSTOM_MAT_CATS].sort((a,b)=>a.localeCompare(b)); }
 
 async function loadMatCategories(){
   const val=await sb.getKV('mat_categories');
