@@ -3039,7 +3039,10 @@ function jcRenderDayLogs(){
     sec.innerHTML=`
       <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--border2);">
         <div style="font-size:13px;font-weight:700;">Day ${idx+1} — ${jcFmtDate(ds)}</div>
-        <div class="status-pill ${filled?'pill-active':'pill-complete'}" style="font-size:10px;">${filled?'✓ Logged':'Not yet filled in'}</div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div class="status-pill ${filled?'pill-active':'pill-complete'}" style="font-size:10px;">${filled?'✓ Logged':'Not yet filled in'}</div>
+          ${idx===days.length-1&&localStorage.getItem('fpRole')!=='crew'?`<button onclick="jcRemoveLastDay('${ds}')" style="background:none;border:1px solid var(--red);color:var(--red);font-size:10px;padding:2px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;">✕ Remove Day</button>`:''}
+        </div>
       </div>
       <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
         <div class="form-group" style="margin:0;">
@@ -3095,6 +3098,49 @@ function jcAddExtraDay(){
   job.extraDays.push(dateStr);
   jcRenderDayLogs();
   showToast('Day added to the log.');
+}
+
+async function jcRemoveLastDay(ds){
+  const job=getJobRecord(_jcId); if(!job) return;
+  if(!confirm('Remove '+jcFmtDate(ds)+' from this job?\n\nAny log data entered for that day will also be deleted.')) return;
+  if(!job.extraDays) job.extraDays=[];
+  const isExtra=job.extraDays.includes(ds);
+  if(isExtra){
+    // Just remove from extra days list
+    job.extraDays=job.extraDays.filter(d=>d!==ds);
+  } else {
+    // It's a scheduled day — walk endDate back to previous weekday
+    const d=new Date(ds+'T00:00:00');
+    d.setDate(d.getDate()-1);
+    while(d.getDay()===0||d.getDay()===6) d.setDate(d.getDate()-1);
+    const newEnd=d.toISOString().split('T')[0];
+    job.endDate=newEnd;
+    // Also remove the schedule slot for this day so the grid stays in sync
+    const dow=new Date(ds+'T00:00:00').getDay();
+    const dIdx=dow-1;
+    const mon=new Date(ds+'T00:00:00'); mon.setDate(mon.getDate()-(dow-1)); mon.setHours(0,0,0,0);
+    const wOff=Math.round((mon-BASE)/(7*24*60*60*1000));
+    // Remove slot for each crew member on this job
+    if(job.crewNames){
+      const crewOnJob=CREW.map((_,i)=>i).filter(ci=>{
+        const s=newSlots[ci]?.[wOff]?.[dIdx]||slots[ci]?.[wOff]?.[dIdx];
+        return s&&(s.l===job.customer||SLOT_JOB_MAP[jcSlotKey(ci,wOff,dIdx)]===_jcId);
+      });
+      for(const ci of crewOnJob){
+        delete SLOT_JOB_MAP[jcSlotKey(ci,wOff,dIdx)];
+        await seRemoveSlot(ci,wOff,dIdx);
+      }
+      await saveSlotJobMap();
+    }
+    // Update header dates display
+    document.getElementById('jc-dates-row').textContent='📅 '+(job.startDate?jcFmtDate(job.startDate):'—')+' – '+jcFmtDate(newEnd);
+  }
+  // Delete log data for that day
+  if(job.dayLogs?.[ds]) delete job.dayLogs[ds];
+  await saveJobRecords();
+  jcRenderDayLogs();
+  renderSchedule();
+  showToast('✓ '+jcFmtDate(ds)+' removed from job.');
 }
 
 function jcMarkComplete(){
