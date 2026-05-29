@@ -677,19 +677,8 @@
       <div class="topbar">
         <div class="page-title">Material Price List</div>
         <div class="topbar-actions">
-          <div style="display:flex;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);overflow:hidden;flex-wrap:wrap;">
-            <button class="btn" style="border-radius:0;border:none;padding:6px 12px;font-size:12px;background:var(--accent);color:#fff;" onclick="filterMaterials('all',this)">All</button>
-            <button class="btn" style="border-radius:0;border:none;padding:6px 12px;font-size:12px;background:transparent;color:var(--text2);" onclick="filterMaterials('Epoxy',this)">Epoxy</button>
-            <button class="btn" style="border-radius:0;border:none;padding:6px 12px;font-size:12px;background:transparent;color:var(--text2);" onclick="filterMaterials('Polyaspartic',this)">Polyaspartic</button>
-            <button class="btn" style="border-radius:0;border:none;padding:6px 12px;font-size:12px;background:transparent;color:var(--text2);" onclick="filterMaterials('Urethane',this)">Urethane</button>
-            <button class="btn" style="border-radius:0;border:none;padding:6px 12px;font-size:12px;background:transparent;color:var(--text2);" onclick="filterMaterials('Urethane Cement',this)">Urethane Cement</button>
-            <button class="btn" style="border-radius:0;border:none;padding:6px 12px;font-size:12px;background:transparent;color:var(--text2);" onclick="filterMaterials('Overlay',this)">Overlay</button>
-            <button class="btn" style="border-radius:0;border:none;padding:6px 12px;font-size:12px;background:transparent;color:var(--text2);" onclick="filterMaterials('Flake',this)">Flake</button>
-            <button class="btn" style="border-radius:0;border:none;padding:6px 12px;font-size:12px;background:transparent;color:var(--text2);" onclick="filterMaterials('Quartz',this)">Quartz</button>
-            <button class="btn" style="border-radius:0;border:none;padding:6px 12px;font-size:12px;background:transparent;color:var(--text2);" onclick="filterMaterials('Sand',this)">Sand</button>
-            <button class="btn" style="border-radius:0;border:none;padding:6px 12px;font-size:12px;background:transparent;color:var(--text2);" onclick="filterMaterials('Misc',this)">Misc</button>
-          </div>
-          <button class="btn btn-primary" onclick="openModal('addmaterial')">+ Add Material</button>
+          <div id="mat-cat-tabs" style="display:flex;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);overflow:hidden;flex-wrap:wrap;"></div>
+          <button class="btn btn-primary" onclick="populateMatCatSelect();openModal('addmaterial')">+ Add Material</button>
         </div>
       </div>
       <div class="content">
@@ -961,17 +950,7 @@
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Category</label>
-          <select class="form-select" id="mat-cat">
-            <option>Epoxy</option>
-            <option>Polyaspartic</option>
-            <option>Urethane</option>
-            <option>Urethane Cement</option>
-            <option>Overlay</option>
-            <option>Flake</option>
-            <option>Quartz</option>
-            <option>Sand</option>
-            <option>Misc</option>
-          </select>
+          <select class="form-select" id="mat-cat"></select>
         </div>
         <div class="form-group">
           <label class="form-label">Unit of Measure</label>
@@ -1925,7 +1904,7 @@ async function deduplicateSlotsByJobRecord(){
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
   try{
-    await Promise.all([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits()]);
+    await Promise.all([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories()]);
     await fixSlotDrift();               // correct any week-offset drift before rendering
     await deduplicateSlotsByJobRecord(); // remove stale/duplicate slots outside job date ranges
     HOLIDAYS=buildHolidayLookup();
@@ -5883,6 +5862,49 @@ let MATERIALS = [
 let editingMatIdx = null;
 let matFilter = 'all';
 
+const BUILTIN_MAT_CATS=['Epoxy','Polyaspartic','Urethane','Urethane Cement','Overlay','Flake','Quartz','Sand','Misc'];
+let CUSTOM_MAT_CATS=[];
+function getAllMatCats(){ return [...BUILTIN_MAT_CATS,...CUSTOM_MAT_CATS]; }
+
+async function loadMatCategories(){
+  const val=await sb.getKV('mat_categories');
+  if(val){try{CUSTOM_MAT_CATS=JSON.parse(val);}catch(e){}}
+  renderMatCategoryTabs();
+  populateMatCatSelect();
+}
+async function saveMatCategories(){ await sb.setKV('mat_categories',JSON.stringify(CUSTOM_MAT_CATS)); }
+
+function renderMatCategoryTabs(){
+  const wrap=document.getElementById('mat-cat-tabs'); if(!wrap) return;
+  const s='border-radius:0;border:none;padding:6px 12px;font-size:12px;cursor:pointer;';
+  let html=`<button class="btn" style="${s}background:${matFilter==='all'?'var(--accent)':'transparent'};color:${matFilter==='all'?'#fff':'var(--text2)'};" onclick="filterMaterials('all',this)">All</button>`;
+  getAllMatCats().forEach(cat=>{
+    const active=matFilter===cat;
+    const esc=cat.replace(/'/g,"\\'");
+    html+=`<button class="btn" style="${s}background:${active?'var(--accent)':'transparent'};color:${active?'#fff':'var(--text2)'};" onclick="filterMaterials('${esc}',this)">${cat}</button>`;
+  });
+  html+=`<button class="btn" style="${s}background:transparent;color:var(--accent);border-left:1px solid var(--border2);" onclick="addMatCategory()">+ Category</button>`;
+  wrap.innerHTML=html;
+}
+
+function populateMatCatSelect(currentVal){
+  const sel=document.getElementById('mat-cat'); if(!sel) return;
+  const cur=currentVal||sel.value||'Epoxy';
+  sel.innerHTML=getAllMatCats().map(c=>`<option${c===cur?' selected':''}>${c}</option>`).join('');
+}
+
+async function addMatCategory(){
+  const name=prompt('New category name:');
+  if(!name||!name.trim()) return;
+  const clean=name.trim();
+  if(getAllMatCats().some(c=>c.toLowerCase()===clean.toLowerCase())){showToast('That category already exists.');return;}
+  CUSTOM_MAT_CATS.push(clean);
+  await saveMatCategories();
+  renderMatCategoryTabs();
+  populateMatCatSelect();
+  showToast('✓ Category "'+clean+'" added.');
+}
+
 const CAT_COLORS = {
   'Epoxy':            'var(--accent)',
   'Polyaspartic':     'var(--blue)',
@@ -6007,6 +6029,7 @@ function editMaterial(idx){
   document.getElementById('mat-supplier').value = m.supplier||'';
   document.getElementById('mat-notes').value = m.notes||'';
   document.getElementById('mat-cost-sqft').style.display='none';
+  populateMatCatSelect(m.cat);
   openModal('addmaterial');
   updateMatCoverage();
 }
