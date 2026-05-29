@@ -1241,8 +1241,19 @@
       </div>
       <!-- Step 2 -->
       <div id="sj-s2" style="display:none;">
+        <!-- Auto-find by headcount -->
+        <div style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:14px;">
+          <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;letter-spacing:.3px;text-transform:uppercase;">🔍 Auto-Find Best Date</div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span style="font-size:13px;color:var(--text2);">I need</span>
+            <input type="number" id="sj-auto-count" min="1" max="10" value="2" class="form-input" style="width:60px;text-align:center;padding:6px 8px;"/>
+            <span style="font-size:13px;color:var(--text2);">people — find the earliest date</span>
+            <button class="btn btn-ghost" onclick="sjAutoFind()" style="white-space:nowrap;font-size:12.5px;">Find →</button>
+          </div>
+          <div id="sj-auto-result" style="display:none;margin-top:10px;font-size:12.5px;color:var(--accent);font-family:'DM Mono',monospace;"></div>
+        </div>
         <div class="info-box" style="margin-bottom:16px;">
-          Each crew member is shown with their <strong>earliest available start</strong> for this job. Tap to select who you want — the window updates automatically as you pick.
+          Or pick crew manually — each member shows their <strong>earliest available start</strong>. Tap to select.
         </div>
         <div class="form-group">
           <label class="form-label">Available Crew</label>
@@ -2096,6 +2107,58 @@ function sjToggleCrew(idx){
     btn.textContent='Confirm Dates →';btn.disabled=true;btn.className='btn btn-primary';
     sjFound=null;
   }
+  sjUpdateWindowHighlights();
+}
+
+function sjAutoFind(){
+  const count=parseInt(document.getElementById('sj-auto-count').value)||1;
+  const days=Math.max(1,parseInt(document.getElementById('sj-days').value)||1);
+  const earliest=document.getElementById('sj-earliest').value;
+  if(count<1||count>CREW.length){showToast('Enter a number between 1 and '+CREW.length+'.');return;}
+
+  // Generate all combinations of `count` crew indices
+  function combos(arr,k){
+    if(k===0) return [[]];
+    if(arr.length<k) return [];
+    const[f,...r]=arr;
+    return[...combos(r,k-1).map(c=>[f,...c]),...combos(r,k)];
+  }
+  const allIdx=CREW.map((_,i)=>i);
+  let bestWindow=null,bestCrew=null;
+  for(const combo of combos(allIdx,count)){
+    const win=findWindow(combo,days,earliest);
+    if(win&&(!bestWindow||win.startDate<bestWindow.startDate)){bestWindow=win;bestCrew=combo;}
+  }
+
+  const autoRes=document.getElementById('sj-auto-result');
+  if(!bestCrew){
+    autoRes.style.display='block';
+    autoRes.style.color='var(--red)';
+    autoRes.textContent='No window found for '+count+' people — try reducing crew size or extending the search.';
+    return;
+  }
+
+  // Apply result — update sjCrew & sjFound, highlight cards
+  sjCrew=bestCrew; sjFound=bestWindow;
+  for(let ci=0;ci<CREW.length;ci++){
+    const card=document.getElementById('co'+ci);
+    if(!card) continue;
+    if(bestCrew.includes(ci)) card.classList.add('selected');
+    else card.classList.remove('selected');
+  }
+
+  const names=bestCrew.map(ci=>CREW[ci].name).join(' + ');
+  const endStr=days>1?' – '+fmtDate(bestWindow.endDate):'';
+  autoRes.style.display='block';
+  autoRes.style.color='var(--accent)';
+  autoRes.textContent='✓ '+names+' — available '+fmtDate(bestWindow.startDate)+(days>1?endStr:'');
+
+  const res=document.getElementById('sj-result');
+  const btn=document.getElementById('sj-next');
+  res.style.display='block';
+  res.className='scheduler-result found';
+  res.innerHTML=`<div class="result-badge found">✓ Best window for ${count} people</div><div class="result-date">${fmtDate(bestWindow.startDate)}${endStr} · ${days} day${days>1?'s':''}</div><div class="result-crew">Crew: ${names}</div><div class="result-note">Earliest date ${count} crew members are all free. Adjust selection below if needed.</div>`;
+  btn.textContent='Confirm Dates →';btn.disabled=false;btn.className='btn btn-green';
   sjUpdateWindowHighlights();
 }
 
