@@ -3097,6 +3097,12 @@ function jcAddExtraDay(){
   if(allDays.includes(dateStr)){showToast('That day is already in the log.');return;}
   job.extraDays.push(dateStr);
   jcRenderDayLogs();
+  saveJobRecords();
+  // Advance date picker to next weekday
+  const next=new Date(dateStr+'T00:00:00');
+  next.setDate(next.getDate()+1);
+  while(next.getDay()===0||next.getDay()===6) next.setDate(next.getDate()+1);
+  document.getElementById('jc-extra-date').value=next.toISOString().split('T')[0];
   showToast('Day added to the log.');
 }
 
