@@ -216,7 +216,7 @@
   .crew-option{background:var(--surface2);border:2px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;cursor:pointer;transition:all .15s;display:flex;align-items:center;gap:10px;user-select:none;}
   .crew-option:hover{border-color:var(--border2);}
   .crew-option.selected{border-color:var(--accent);background:var(--accent-dim);}
-  .crew-option.owner-badge .crew-option-name::after{content:'';}
+  .crew-option.owner-badge .crew-option-name::after{content:' (you)';font-size:10px;color:var(--accent);font-weight:400;}
   .crew-option-name{font-size:13px;font-weight:500;}
   .crew-option-role{font-size:10.5px;color:var(--text3);}
   .crew-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
@@ -1984,7 +1984,7 @@ function sjLoadStep2(){
     list.innerHTML='';
     CREW.forEach((cr,ci)=>{
       const card=document.createElement('div');
-      card.className='crew-option';
+      card.className='crew-option'+(CREW[ci].full==='Will Bradford'?' owner-badge':'');
       card.id='co'+ci;
 
       let freeForWindow=false,availText='',roleColor='var(--text3)',opacity='1',clickable=false;
