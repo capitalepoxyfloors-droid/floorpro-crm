@@ -288,20 +288,20 @@
   .cv-month-mark{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);font-family:'DM Mono',monospace;font-weight:700;line-height:1;}
   .cv-day-num{font-size:13.5px;width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:50%;font-family:'DM Mono',monospace;font-weight:600;color:var(--text2);}
   .cv-day-num.today{background:var(--accent);color:#fff;font-weight:800;}
-  .cv-week-events{position:relative;min-height:6px;padding-bottom:5px;}
-  .cv-event-bar{position:absolute;height:26px;border-radius:5px;padding:0 8px 0 7px;font-size:12px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;display:flex;align-items:center;gap:5px;border-left:3px solid var(--accent);background:var(--accent-dim);color:var(--accent);transition:filter .12s,transform .1s;-webkit-tap-highlight-color:transparent;}
-  .cv-event-bar:active{filter:brightness(1.15);transform:scale(.98);}
-  .cv-event-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;opacity:.85;}
-  .cv-event-bar.epoxy{background:var(--accent-dim);color:var(--accent);border-color:var(--accent);}
-  .cv-event-bar.concrete{background:var(--orange-dim);color:var(--orange);border-color:var(--orange);}
-  .cv-event-bar.overlay,.cv-event-bar.metallic{background:var(--purple-dim);color:var(--purple);border-color:var(--purple);}
-  .cv-event-bar.prep{background:var(--blue-dim);color:var(--blue);border-color:var(--blue);}
-  .cv-event-bar.newjob{background:var(--green-dim);color:var(--green);border-color:var(--green);}
-  .cv-event-bar.weekend-work{background:var(--orange-dim);color:var(--orange);border-color:var(--orange);}
-  .cv-event-bar.pto{background:var(--red-dim);color:var(--red);border-color:var(--red);cursor:default;font-style:italic;}
-  .cv-event-bar.holiday{background:var(--orange-dim);color:var(--orange);border-color:var(--orange);cursor:default;opacity:.9;}
-  .cv-event-bar.done{background:var(--surface3);color:var(--text3);border-color:var(--border2);opacity:.65;}
-  .cv-overflow{position:absolute;font-size:10px;color:var(--text3);font-family:'DM Mono',monospace;font-weight:600;}
+  .cv-week-events{position:relative;min-height:4px;padding-bottom:6px;}
+  /* Google Calendar-style solid pill bars */
+  .cv-event-bar{position:absolute;height:22px;border-radius:11px;padding:0 8px;font-size:12px;font-weight:700;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;display:flex;align-items:center;background:var(--accent);color:#fff;border:none;letter-spacing:-.1px;-webkit-tap-highlight-color:transparent;transition:filter .1s;}
+  .cv-event-bar:active{filter:brightness(.82);}
+  .cv-event-bar.epoxy{background:#1a73e8;}
+  .cv-event-bar.concrete{background:#e37400;}
+  .cv-event-bar.overlay,.cv-event-bar.metallic{background:#8430ce;}
+  .cv-event-bar.prep{background:#0097a7;}
+  .cv-event-bar.newjob{background:#188038;}
+  .cv-event-bar.weekend-work{background:#e37400;}
+  .cv-event-bar.pto{background:#d93025;}
+  .cv-event-bar.holiday{background:var(--orange-dim);color:var(--orange);border:1px solid #f6c26b;cursor:default;}
+  .cv-event-bar.done{background:#bdc1c6;color:#fff;}
+  .cv-overflow{position:absolute;font-size:10.5px;color:var(--text3);font-family:'DM Mono',monospace;font-weight:700;}
   /* Address autocomplete dropdown */
   .addr-drop{position:absolute;top:calc(100% + 3px);left:0;right:0;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);z-index:300;max-height:210px;overflow-y:auto;box-shadow:0 8px 28px rgba(0,0,0,.5);}
   .addr-opt{padding:10px 14px;cursor:pointer;font-size:12.5px;color:var(--text);border-bottom:1px solid var(--border);line-height:1.4;}
@@ -331,8 +331,7 @@
     .cv-topbar{padding:12px 14px;}
     .cv-month-label{font-size:15px;}
     .cv-day-num{font-size:12px;width:28px;height:28px;}
-    .cv-event-bar{font-size:11.5px;height:24px;padding:0 6px 0 6px;}
-    .cv-event-dot{width:6px;height:6px;}
+    .cv-event-bar{font-size:11.5px;height:20px;padding:0 6px;border-radius:10px;}
     .cv-crew-chip{font-size:11.5px;padding:5px 11px;}
     .cv-month-mark{font-size:8px;}
     .tabs{overflow-x:auto;scrollbar-width:none;}.tabs::-webkit-scrollbar{display:none;}
@@ -4279,68 +4278,81 @@ function cvGetDayEvents(dateObj){
 // Collect all spanning events for a week row and assign display lanes
 // weekSun — Date object for the Sunday that opens the week
 function cvGetWeekSpanEvents(weekSun){
-  const evMap={};
+  const dedupedMap={};
+
+  // ── 1. Job slots ─────────────────────────────────────────────────────
+  const jobMap={};
   for(let col=0;col<7;col++){
     const dt=new Date(weekSun); dt.setDate(weekSun.getDate()+col); dt.setHours(0,0,0,0);
-    const pos=cvDateToSlot(dt);
-    const{w,d}=pos;
+    const{w,d}=cvDateToSlot(dt);
     const crewList=cvCrewIdx===-1?CREW.map((_,i)=>i):[cvCrewIdx];
     for(const ci of crewList){
-      // ── Job slots ──
-      const slot=newSlots[ci]?.[w]?.[d]||getSlot(ci,w,d);
-      if(slot){
-        const jobId=SLOT_JOB_MAP[jcSlotKey(ci,w,d)]||null;
-        const key=jobId?String(jobId):('lbl_'+slot.l+'_'+ci);
-        const crewCol=CREW[ci]?.color||null;
-        if(evMap[key]){
-          evMap[key].colEnd=col;
-          if(jobId&&!evMap[key].jobId) evMap[key].jobId=jobId;
-          if(crewCol&&!evMap[key].crewColors.includes(crewCol)) evMap[key].crewColors.push(crewCol);
-        } else {
-          const jr=jobId?JOB_RECORDS.find(j=>j.id===jobId):JOB_RECORDS.find(j=>j.customer===(slot.l||''));
-          const isDone=jr?.status==='complete';
-          evMap[key]={key,jobId,ci,w,d,label:slot.l||'Job',type:slot.t||'epoxy',colStart:col,colEnd:col,isComplete:isDone,crewColors:crewCol?[crewCol]:[]};
-        }
-      }
-      // ── PTO (weekdays only, d=0–4) ──
-      if(d<=4){
-        const pto=ptoSlots[ci]?.[w]?.[d];
-        if(pto){
-          const ptoKey='_pto_'+ci+'_'+w+'_'+d;
-          const crewCol=CREW[ci]?.color||null;
-          const ptoName=cvCrewIdx===-1?(CREW[ci]?.name||'Crew')+' – ':('' );
-          evMap[ptoKey]={key:ptoKey,jobId:null,ci,w,d,label:ptoName+(pto.label||'Off'),type:'pto',colStart:col,colEnd:col,isPTO:true,crewColors:crewCol?[crewCol]:[]};
-        }
+      const slot=newSlots[ci]?.[w]?.[d]||getSlot(ci,w,d); if(!slot) continue;
+      const jobId=SLOT_JOB_MAP[jcSlotKey(ci,w,d)]||null;
+      const key=jobId?String(jobId):('lbl_'+slot.l);
+      if(jobMap[key]){
+        jobMap[key].colEnd=col;
+        if(jobId&&!jobMap[key].jobId) jobMap[key].jobId=jobId;
+      } else {
+        const jr=jobId?JOB_RECORDS.find(j=>j.id===jobId):JOB_RECORDS.find(j=>j.customer===(slot.l||''));
+        const isDone=jr?.status==='complete';
+        jobMap[key]={key,jobId,ci,w,d,label:slot.l||'Job',type:slot.t||'epoxy',colStart:col,colEnd:col,isComplete:isDone};
       }
     }
   }
-
-  // Merge bars with the same label (handles duplicate job records)
+  // Merge duplicate labels (same job, multiple crew members)
   const byLabel={};
-  const dedupedMap={};
-  for(const [key,ev] of Object.entries(evMap)){
-    if(ev.isPTO){ dedupedMap[key]=ev; continue; } // never merge PTO
-    const existing=byLabel[ev.label];
-    if(existing){
-      existing.colStart=Math.min(existing.colStart,ev.colStart);
-      existing.colEnd=Math.max(existing.colEnd,ev.colEnd);
-      if(!existing.jobId&&ev.jobId){existing.jobId=ev.jobId;existing.ci=ev.ci;existing.w=ev.w;existing.d=ev.d;}
-      ev.crewColors.forEach(c=>{if(!existing.crewColors.includes(c))existing.crewColors.push(c);});
-    } else {
-      byLabel[ev.label]=ev;
-      dedupedMap[key]=ev;
-    }
+  for(const ev of Object.values(jobMap)){
+    const ex=byLabel[ev.label];
+    if(ex){
+      ex.colStart=Math.min(ex.colStart,ev.colStart);
+      ex.colEnd=Math.max(ex.colEnd,ev.colEnd);
+      if(!ex.jobId&&ev.jobId){ex.jobId=ev.jobId;ex.ci=ev.ci;ex.w=ev.w;ex.d=ev.d;}
+    } else { byLabel[ev.label]=ev; dedupedMap[ev.key]=ev; }
   }
 
-  // Inject holidays as single-day bars
+  // ── 2. PTO — merge consecutive weekday runs per crew member ──────────
+  const ptoByCI={};
+  for(let col=0;col<7;col++){
+    const dt=new Date(weekSun); dt.setDate(weekSun.getDate()+col); dt.setHours(0,0,0,0);
+    const{w,d}=cvDateToSlot(dt);
+    if(d>4) continue; // weekdays only
+    const crewList=cvCrewIdx===-1?CREW.map((_,i)=>i):[cvCrewIdx];
+    for(const ci of crewList){
+      const pto=ptoSlots[ci]?.[w]?.[d]; if(!pto) continue;
+      if(!ptoByCI[ci]) ptoByCI[ci]=[];
+      ptoByCI[ci].push({col,label:pto.label||'Off'});
+    }
+  }
+  for(const [ciStr,days] of Object.entries(ptoByCI)){
+    const ci=parseInt(ciStr);
+    days.sort((a,b)=>a.col-b.col);
+    // In "All" view prepend crew first name; in single-crew view just show the reason
+    const firstName=(CREW[ci]?.name||'').split(' ')[0];
+    const prefix=cvCrewIdx===-1?firstName+' ':'';
+    let rStart=null,rEnd=null,rLabel='Off';
+    const flush=()=>{
+      if(rStart===null) return;
+      const key='_pto_'+ci+'_'+rStart;
+      dedupedMap[key]={key,jobId:null,ci,w:0,d:0,label:prefix+rLabel,type:'pto',colStart:rStart,colEnd:rEnd,isPTO:true};
+      rStart=null;
+    };
+    for(const {col,label} of days){
+      if(rStart===null){rStart=col;rEnd=col;rLabel=label;}
+      else if(col===rEnd+1){rEnd=col;}
+      else{flush();rStart=col;rEnd=col;rLabel=label;}
+    }
+    flush();
+  }
+
+  // ── 3. Holidays ───────────────────────────────────────────────────────
   for(let col=0;col<7;col++){
     const hdt=new Date(weekSun); hdt.setDate(weekSun.getDate()+col); hdt.setHours(0,0,0,0);
     const hol=isHoliday(hdt); if(!hol) continue;
-    const hKey='_hol_'+col;
-    dedupedMap[hKey]={key:hKey,jobId:null,ci:-1,w:0,d:0,label:hol,type:'holiday',colStart:col,colEnd:col,isHoliday:true,crewColors:[]};
+    dedupedMap['_hol_'+col]={key:'_hol_'+col,jobId:null,ci:-1,w:0,d:0,label:hol,type:'holiday',colStart:col,colEnd:col,isHoliday:true};
   }
 
-  // Greedy lane assignment — sort by colStart then assign lowest free lane
+  // ── 4. Lane assignment ────────────────────────────────────────────────
   const events=Object.values(dedupedMap).sort((a,b)=>a.colStart-b.colStart||a.colEnd-b.colEnd);
   const laneEnds=[];
   for(const ev of events){
@@ -4354,51 +4366,47 @@ function cvGetWeekSpanEvents(weekSun){
 
 // Build HTML for one week row — date-number strip + absolutely-positioned event bars
 function cvBuildWeek(weekSun,today){
-  const LANE_H=30; // px per lane (26px bar + 4px gap)
-  const BAR_TOP_PAD=5; // px from top of events container to first bar
+  const BAR_H=22;   // bar height in px
+  const LANE_H=25;  // px per lane (bar + gap)
+  const TOP_PAD=4;  // px above first bar
   const spanEvts=cvGetWeekSpanEvents(weekSun);
   const numLanes=spanEvts.length?Math.max(...spanEvts.map(e=>e.lane))+1:0;
-  const eventsH=numLanes>0?numLanes*LANE_H+BAR_TOP_PAD+4:0;
+  const eventsH=numLanes>0?numLanes*LANE_H+TOP_PAD+2:0;
 
-  // Date-number strip — month abbrev shown as a tiny label above the circle on the 1st
+  // Date-number strip
   const MO=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   let datesHtml='';
   for(let col=0;col<7;col++){
     const dt=new Date(weekSun); dt.setDate(weekSun.getDate()+col); dt.setHours(0,0,0,0);
     const isToday=dt.getTime()===today.getTime();
-    const isWknd=col===0||col===6; // Sun=0, Sat=6
+    const isWknd=col===0||col===6;
     const hol=(!isWknd)&&isHoliday(dt);
     const isFirst=dt.getDate()===1;
     const monthMark=isFirst?`<div class="cv-month-mark">${MO[dt.getMonth()]}</div>`:'';
     const numColor=hol&&!isToday?'color:var(--orange);':'';
-    let wdnCls='cv-wdn';
-    if(isWknd) wdnCls+=' cv-weekend';
-    if(isToday) wdnCls+=' cv-today-col';
+    let wdnCls='cv-wdn'+(isWknd?' cv-weekend':'')+(isToday?' cv-today-col':'');
     datesHtml+=`<div class="${wdnCls}"${hol?` title="${hol.name}"`:''}>` +
-      `${monthMark}<div class="cv-day-num${isToday?' today':''}"${numColor?` style="${numColor}"`:''}>` +
-      `${dt.getDate()}</div></div>`;
+      monthMark+`<div class="cv-day-num${isToday?' today':''}"${numColor?` style="${numColor}"`:''}>${dt.getDate()}</div></div>`;
   }
 
-  // Absolute event bars with crew-color dots
+  // Event bars — solid pill shape, no dots, clean text
   let barsHtml='';
   for(const ev of spanEvts){
     const span=ev.colEnd-ev.colStart+1;
     const leftPct=((ev.colStart/7)*100).toFixed(3);
     const widthPct=((span/7)*100).toFixed(3);
-    const topPx=ev.lane*LANE_H+BAR_TOP_PAD;
-    // Up to 3 crew color dots
-    const dotsHtml=ev.crewColors.slice(0,4).map(c=>`<span class="cv-event-dot" style="background:${c}"></span>`).join('');
+    const topPx=ev.lane*LANE_H+TOP_PAD;
     const tapDt=new Date(weekSun); tapDt.setDate(weekSun.getDate()+ev.colStart);
     const tapDate=tapDt.toISOString().split('T')[0];
-    const barStyle=`left:${leftPct}%;width:calc(${widthPct}% - 4px);top:${topPx}px;`;
+    const sty=`left:${leftPct}%;width:calc(${widthPct}% - 3px);top:${topPx}px;height:${BAR_H}px;`;
     if(ev.isHoliday){
-      barsHtml+=`<div class="cv-event-bar holiday" style="${barStyle}">🎉 ${ev.label}</div>`;
+      barsHtml+=`<div class="cv-event-bar holiday" style="${sty}">${ev.label}</div>`;
     } else if(ev.isPTO){
-      barsHtml+=`<div class="cv-event-bar pto" style="${barStyle}">${dotsHtml}🚫 ${ev.label}</div>`;
+      barsHtml+=`<div class="cv-event-bar pto" style="${sty}">🚫 ${ev.label}</div>`;
     } else if(ev.isComplete){
-      barsHtml+=`<div class="cv-event-bar done" style="${barStyle}" onclick="cvTapEvent(${ev.jobId||'null'},${ev.ci},${ev.w},${ev.d},'${tapDate}')">${dotsHtml}✓ ${ev.label}</div>`;
+      barsHtml+=`<div class="cv-event-bar done" style="${sty}" onclick="cvTapEvent(${ev.jobId||'null'},${ev.ci},${ev.w},${ev.d},'${tapDate}')">✓ ${ev.label}</div>`;
     } else {
-      barsHtml+=`<div class="cv-event-bar ${ev.type}" style="${barStyle}" onclick="cvTapEvent(${ev.jobId||'null'},${ev.ci},${ev.w},${ev.d},'${tapDate}')">${dotsHtml}${ev.label}</div>`;
+      barsHtml+=`<div class="cv-event-bar ${ev.type}" style="${sty}" onclick="cvTapEvent(${ev.jobId||'null'},${ev.ci},${ev.w},${ev.d},'${tapDate}')">${ev.label}</div>`;
     }
   }
 
@@ -6738,7 +6746,7 @@ function injectCustomTypeCSS(){
   getAllJobTypes().forEach(t=>{
     const c=JT_COLORS[t.color]||JT_COLORS.accent;
     const k=CSS.escape(t.key);
-    css+=`.cv-event-bar.${k}{background:${c.d};color:${c.v};border-color:${c.v};}\n`;
+    css+=`.cv-event-bar.${k}{background:${c.v};color:#fff;border:none;}\n`;
   });
   // Custom types also need install schedule + span bar styles (built-ins have these statically)
   CUSTOM_JOB_TYPES.forEach(t=>{
