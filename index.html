@@ -1935,6 +1935,8 @@ async function loadAllFromSupabase(){
     await Promise.all([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories()]);
     await fixSlotDrift();               // correct any week-offset drift before rendering
     await deduplicateSlotsByJobRecord(); // remove stale/duplicate slots outside job date ranges
+    // Backfill schedule slots for any jobs that have extra days added via the day log
+    for(const job of JOB_RECORDS){ if((job.extraDays||[]).length>0) await jcSyncCrewSlots(job); }
     HOLIDAYS=buildHolidayLookup();
     populateJobTypeDropdowns();
     renderDashboard();
@@ -3142,28 +3144,26 @@ async function jcAddExtraDay(){
   const allDays=[...jcAllDays(job.startDate,job.endDate),...job.extraDays];
   if(allDays.includes(dateStr)){showToast('That day is already in the log.');return;}
   job.extraDays.push(dateStr);
-  // Create schedule slots for this extra day immediately (one per crew member on the job)
+  // Always create/refresh the schedule slot for this extra day for every crew member on the job
   const pos=cvDateToSlot(new Date(dateStr+'T00:00:00'));
   if(pos){
     const{w,d}=pos;
     const crewNames=(job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean);
-    let slotAdded=false;
     for(const name of crewNames){
       const ci=CREW.findIndex(c=>c.full===name); if(ci===-1) continue;
       const key=jcSlotKey(ci,w,d);
-      if(SLOT_JOB_MAP[key]===job.id||(newSlots[ci]?.[w]?.[d]?.l===job.customer)) continue;
+      // Only skip if a DIFFERENT job owns this slot
       if(newSlots[ci]?.[w]?.[d]&&SLOT_JOB_MAP[key]&&SLOT_JOB_MAP[key]!==job.id) continue;
       await sePlaceSlot(ci,w,d,job.customer,job.jobType||'epoxy');
-      SLOT_JOB_MAP[key]=job.id; slotAdded=true;
+      SLOT_JOB_MAP[key]=job.id;
     }
-    if(slotAdded){
-      await saveSlotJobMap();
-      if(document.getElementById('page-schedule')?.classList.contains('active')) renderSchedule();
-      if(document.getElementById('page-crewview')?.classList.contains('active')) renderCrewView();
-    }
+    await saveSlotJobMap();
   }
   jcRenderDayLogs();
-  saveJobRecords();
+  await saveJobRecords();
+  // Always re-render both calendars so the new day shows immediately
+  renderSchedule();
+  renderCrewView();
   // Advance date picker to next calendar day
   const next=new Date(dateStr+'T00:00:00');
   next.setDate(next.getDate()+1);
@@ -3177,8 +3177,23 @@ async function jcRemoveLastDay(ds){
   if(!job.extraDays) job.extraDays=[];
   const isExtra=job.extraDays.includes(ds);
   if(isExtra){
-    // Just remove from extra days list
     job.extraDays=job.extraDays.filter(d=>d!==ds);
+    // Also remove the schedule slot for this extra day so the calendar stays in sync
+    const ePos=cvDateToSlot(new Date(ds+'T00:00:00'));
+    if(ePos){
+      const{w:eW,d:eD}=ePos;
+      const eNames=(job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean);
+      let eChanged=false;
+      for(const eName of eNames){
+        const eCi=CREW.findIndex(c=>c.full===eName); if(eCi===-1) continue;
+        const eKey=jcSlotKey(eCi,eW,eD);
+        const eSlot=newSlots[eCi]?.[eW]?.[eD];
+        if(eSlot&&(SLOT_JOB_MAP[eKey]===job.id||eSlot.l===job.customer)){
+          delete SLOT_JOB_MAP[eKey]; await seRemoveSlot(eCi,eW,eD); eChanged=true;
+        }
+      }
+      if(eChanged) await saveSlotJobMap();
+    }
   } else {
     // It's a scheduled day — walk endDate back to previous weekday
     const d=new Date(ds+'T00:00:00');
@@ -3211,6 +3226,7 @@ async function jcRemoveLastDay(ds){
   await saveJobRecords();
   jcRenderDayLogs();
   renderSchedule();
+  renderCrewView();
   showToast('✓ '+jcFmtDate(ds)+' removed from job.');
 }
 
