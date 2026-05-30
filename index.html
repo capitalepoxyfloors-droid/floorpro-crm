@@ -135,6 +135,8 @@
   .sch-span-bar.prep{background:#0097a7;color:#fff;border:none;}
   .sch-span-bar.newjob{background:#188038;color:#fff;border:none;}
   .sch-span-bar.done{background:#bdc1c6;color:#fff;border:none;opacity:.85;}
+  .sch-span-bar.extension{opacity:.32;}
+  .cv-event-bar.extension{opacity:.32;}
   .sch-header.weekend{color:var(--orange);opacity:.85;}
   .sch-cell.wknd{background:repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(255,255,255,.02) 4px,rgba(255,255,255,.02) 8px);}
   .sch-job.weekend-work{background:#e37400;color:#fff;border:none;}
@@ -2716,17 +2718,12 @@ async function jcSyncCrewSlots(job){
   let added=0;
   for(const name of names){
     const ci=CREW.findIndex(c=>c.full===name); if(ci===-1) continue;
-    // Does this crew member have at least one slot tied to this job?
-    const hasSlot=allDates.some(ds=>{
-      const pos=cvDateToSlot(new Date(ds+'T00:00:00')); if(!pos) return false;
-      const key=jcSlotKey(ci,pos.w,pos.d);
-      return SLOT_JOB_MAP[key]===job.id||(newSlots[ci]?.[pos.w]?.[pos.d]?.l===job.customer);
-    });
-    if(hasSlot) continue; // already on schedule — nothing to do
-    // No slots found — create them for every job day
+    // Check each date individually — creates missing slots (e.g. extension days added later)
     for(const ds of allDates){
       const pos=cvDateToSlot(new Date(ds+'T00:00:00')); if(!pos) continue;
       const{w,d}=pos; const key=jcSlotKey(ci,w,d);
+      // Already has a slot for this job on this date — skip
+      if(SLOT_JOB_MAP[key]===job.id||(newSlots[ci]?.[w]?.[d]?.l===job.customer)) continue;
       // Don't stomp a different job already on this day
       if(newSlots[ci]?.[w]?.[d]&&SLOT_JOB_MAP[key]&&SLOT_JOB_MAP[key]!==job.id) continue;
       await sePlaceSlot(ci,w,d,job.customer,job.jobType||'epoxy');
@@ -3137,7 +3134,7 @@ function jcRenderDayLogs(){
   });
 }
 
-function jcAddExtraDay(){
+async function jcAddExtraDay(){
   const job=getJobRecord(_jcId); if(!job) return;
   const dateStr=document.getElementById('jc-extra-date').value;
   if(!dateStr){showToast('Pick a date first.');return;}
@@ -3145,12 +3142,31 @@ function jcAddExtraDay(){
   const allDays=[...jcAllDays(job.startDate,job.endDate),...job.extraDays];
   if(allDays.includes(dateStr)){showToast('That day is already in the log.');return;}
   job.extraDays.push(dateStr);
+  // Create schedule slots for this extra day immediately (one per crew member on the job)
+  const pos=cvDateToSlot(new Date(dateStr+'T00:00:00'));
+  if(pos){
+    const{w,d}=pos;
+    const crewNames=(job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean);
+    let slotAdded=false;
+    for(const name of crewNames){
+      const ci=CREW.findIndex(c=>c.full===name); if(ci===-1) continue;
+      const key=jcSlotKey(ci,w,d);
+      if(SLOT_JOB_MAP[key]===job.id||(newSlots[ci]?.[w]?.[d]?.l===job.customer)) continue;
+      if(newSlots[ci]?.[w]?.[d]&&SLOT_JOB_MAP[key]&&SLOT_JOB_MAP[key]!==job.id) continue;
+      await sePlaceSlot(ci,w,d,job.customer,job.jobType||'epoxy');
+      SLOT_JOB_MAP[key]=job.id; slotAdded=true;
+    }
+    if(slotAdded){
+      await saveSlotJobMap();
+      if(document.getElementById('page-schedule')?.classList.contains('active')) renderSchedule();
+      if(document.getElementById('page-crewview')?.classList.contains('active')) renderCrewView();
+    }
+  }
   jcRenderDayLogs();
   saveJobRecords();
-  // Advance date picker to next weekday
+  // Advance date picker to next calendar day
   const next=new Date(dateStr+'T00:00:00');
   next.setDate(next.getDate()+1);
-  while(next.getDay()===0||next.getDay()===6) next.setDate(next.getDate()+1);
   document.getElementById('jc-extra-date').value=next.toISOString().split('T')[0];
   showToast('Day added to the log.');
 }
@@ -4314,31 +4330,36 @@ function cvGetWeekSpanEvents(weekSun){
   const jobMap={};
   for(let col=0;col<7;col++){
     const dt=new Date(weekSun); dt.setDate(weekSun.getDate()+col); dt.setHours(0,0,0,0);
+    const dtStr=dt.toISOString().split('T')[0];
     const{w,d}=cvDateToSlot(dt);
     const crewList=cvCrewIdx===-1?CREW.map((_,i)=>i):[cvCrewIdx];
     for(const ci of crewList){
       const slot=newSlots[ci]?.[w]?.[d]||getSlot(ci,w,d); if(!slot) continue;
       const jobId=SLOT_JOB_MAP[jcSlotKey(ci,w,d)]||null;
-      const key=jobId?String(jobId):('lbl_'+slot.l);
+      const jr=jobId?JOB_RECORDS.find(j=>j.id===jobId):JOB_RECORDS.find(j=>j.customer===(slot.l||''));
+      // Is this an extension day? (in extraDays but not in the original startDate-endDate range)
+      const isExtra=!!(jr?.extraDays?.includes(dtStr));
+      // Key includes isExtra so original and extension segments get separate bars
+      const key=(jobId?String(jobId):('lbl_'+slot.l))+(isExtra?'_ext':'_org');
       if(jobMap[key]){
         jobMap[key].colEnd=col;
         if(jobId&&!jobMap[key].jobId) jobMap[key].jobId=jobId;
       } else {
-        const jr=jobId?JOB_RECORDS.find(j=>j.id===jobId):JOB_RECORDS.find(j=>j.customer===(slot.l||''));
         const isDone=jr?.status==='complete';
-        jobMap[key]={key,jobId,ci,w,d,label:slot.l||'Job',type:slot.t||'epoxy',colStart:col,colEnd:col,isComplete:isDone};
+        jobMap[key]={key,jobId,ci,w,d,label:slot.l||'Job',type:slot.t||'epoxy',colStart:col,colEnd:col,isComplete:isDone,isExtra};
       }
     }
   }
-  // Merge duplicate labels (same job, multiple crew members)
+  // Merge duplicate labels (same job, multiple crew members) — keep original/extension separate
   const byLabel={};
   for(const ev of Object.values(jobMap)){
-    const ex=byLabel[ev.label];
+    const mergeKey=ev.label+(ev.isExtra?'_ext':'_org');
+    const ex=byLabel[mergeKey];
     if(ex){
       ex.colStart=Math.min(ex.colStart,ev.colStart);
       ex.colEnd=Math.max(ex.colEnd,ev.colEnd);
       if(!ex.jobId&&ev.jobId){ex.jobId=ev.jobId;ex.ci=ev.ci;ex.w=ev.w;ex.d=ev.d;}
-    } else { byLabel[ev.label]=ev; dedupedMap[ev.key]=ev; }
+    } else { byLabel[mergeKey]=ev; dedupedMap[ev.key]=ev; }
   }
 
   // ── 2. PTO — merge consecutive weekday runs per crew member ──────────
@@ -4442,7 +4463,8 @@ function cvBuildWeek(weekSun,today){
     } else if(ev.isComplete){
       barsHtml+=`<div class="cv-event-bar done" style="${sty}" onclick="cvTapEvent(${ev.jobId||'null'},${ev.ci},${ev.w},${ev.d},'${tapDate}')">✓ ${ev.label}</div>`;
     } else {
-      barsHtml+=`<div class="cv-event-bar ${ev.type}" style="${sty}" onclick="cvTapEvent(${ev.jobId||'null'},${ev.ci},${ev.w},${ev.d},'${tapDate}')">${ev.label}</div>`;
+      const extCls=ev.isExtra?' extension':'';
+      barsHtml+=`<div class="cv-event-bar ${ev.type}${extCls}" style="${sty}" onclick="cvTapEvent(${ev.jobId||'null'},${ev.ci},${ev.w},${ev.d},'${tapDate}')">${ev.label}</div>`;
     }
   }
 
@@ -7573,12 +7595,22 @@ function buildWeekGrid(wOff,mon,dNames){
 
     // Gather slot data for all 7 days
     const days=[];
+    const slotMon=getMonday(wOff);
     for(let d=0;d<TOTAL_DAYS;d++){
       const isWknd=d>=5;
       const pto=ptoSlots[i]?.[wOff]?.[d];
       const hol=(!isWknd)?getHolidayForCell(wOff,d):null;
       const slot=(!pto&&!hol)?(getSlot(i,wOff,d)||getNew(i,wOff,d)):null;
-      days.push({pto,hol,slot,isWknd});
+      // Detect extension days (in job.extraDays but outside original date range)
+      let isExtra=false;
+      if(slot){
+        const sd=new Date(slotMon); sd.setDate(slotMon.getDate()+d); sd.setHours(0,0,0,0);
+        const sdStr=sd.toISOString().split('T')[0];
+        const slotJobId=SLOT_JOB_MAP[jcSlotKey(i,wOff,d)];
+        const jr=slotJobId?JOB_RECORDS.find(j=>j.id===slotJobId):JOB_RECORDS.find(j=>j.customer===slot.l);
+        isExtra=!!(jr?.extraDays?.includes(sdStr));
+      }
+      days.push({pto,hol,slot,isWknd,isExtra});
     }
 
     // Events body — 7 background cells + absolutely positioned spanning bars
@@ -7609,8 +7641,8 @@ function buildWeekGrid(wOff,mon,dNames){
       body.appendChild(cell);
     });
 
-    // Spanning bars: find runs of consecutive days with the same job label
-    let runStart=null, runLabel=null, runType=null;
+    // Spanning bars: find runs of consecutive days with the same job label + same ext status
+    let runStart=null, runLabel=null, runType=null, runIsExtra=false;
     const flushRun=(endExcl)=>{
       if(runStart===null) return;
       const startDay=runStart;
@@ -7620,7 +7652,8 @@ function buildWeekGrid(wOff,mon,dNames){
       const isDone=jr?.status==='complete';
       const isWkndBar=startDay>=5;
       const bar=document.createElement('div');
-      bar.className='sch-span-bar '+(isDone?'done':(isWkndBar?'weekend-work ':(runType||'epoxy')));
+      const extCls=runIsExtra&&!isDone?' extension':'';
+      bar.className='sch-span-bar '+(isDone?'done':(isWkndBar?'weekend-work ':(runType||'epoxy')))+extCls;
       bar.textContent=(isDone?'✓ ':'')+runLabel;
       bar.title='Click to open';
       const COL_FR=[1,1,1,1,1,0.8,0.8]; // Mon-Fri=1fr, Sat-Sun=0.8fr — must match CSS grid
@@ -7630,14 +7663,14 @@ function buildWeekGrid(wOff,mon,dNames){
       bar.style.cssText=`left:calc(${(leftFr/TOTAL_FR*100).toFixed(3)}% + 2px);width:calc(${(widthFr/TOTAL_FR*100).toFixed(3)}% - 6px);`;
       bar.onclick=()=>openSlotEdit(i,wOff,startDay);
       body.appendChild(bar);
-      runStart=null; runLabel=null; runType=null;
+      runStart=null; runLabel=null; runType=null; runIsExtra=false;
     };
     for(let d=0;d<=TOTAL_DAYS;d++){
       if(d===TOTAL_DAYS){ flushRun(TOTAL_DAYS); break; }
-      const{pto,hol,slot}=days[d];
+      const{pto,hol,slot,isExtra}=days[d];
       if(slot){
-        if(slot.l===runLabel){ /* extend run */ }
-        else{ flushRun(d); runStart=d; runLabel=slot.l; runType=slot.t||'epoxy'; }
+        if(slot.l===runLabel&&isExtra===runIsExtra){ /* extend run */ }
+        else{ flushRun(d); runStart=d; runLabel=slot.l; runType=slot.t||'epoxy'; runIsExtra=isExtra; }
       } else { flushRun(d); }
     }
 
