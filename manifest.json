@@ -1,6 +1,6 @@
 {
-  "name": "CEF Assist",
-  "short_name": "CEF Assist",
+  "name": "CrewBoard",
+  "short_name": "CrewBoard",
   "start_url": ".",
   "display": "standalone",
   "background_color": "#ffffff",
