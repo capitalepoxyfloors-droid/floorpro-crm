@@ -4522,7 +4522,7 @@ function renderCrewView(){
   let chips=`<button class="cv-crew-chip" onclick="cvSelectCrew(-1)" style="color:var(--text2);background:${allSel?'var(--surface3)':'var(--surface2)'};border-color:${allSel?'var(--border2)':'transparent'};">All</button>`;
   chips+=CREW.map((c,i)=>{
     const sel=cvCrewIdx===i, col=c.color||'var(--accent)';
-    return `<button class="cv-crew-chip" onclick="cvSelectCrew(${i})" style="color:${col};background:${sel?col+'33':'var(--surface2)'};border-color:${sel?col:'transparent'};">${c.full}</button>`;
+    return `<button class="cv-crew-chip" onclick="cvSelectCrew(${i})" style="color:${col};background:${sel?col+'33':'var(--surface2)'};border-color:${sel?col:'transparent'};">${c.name}</button>`;
   }).join('');
   elCrew.innerHTML=chips;
 
