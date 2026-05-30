@@ -3083,8 +3083,12 @@ function jcRenderDayLogs(){
   }
   if(!job.dayLogs) job.dayLogs={};
   if(!job.extraDays) job.extraDays=[];
-  // Merge scheduled days with any manually added extra days, sorted chronologically (includes weekends)
-  const scheduled=jcAllDays(job.startDate,job.endDate);
+  // Merge scheduled days with extra days — skip weekends for non-weekend jobs
+  const _dlSDow=new Date(job.startDate+'T00:00:00').getDay();
+  const _dlEDow=new Date(job.endDate+'T00:00:00').getDay();
+  const _dlWknd=(_dlSDow===0||_dlSDow===6||_dlEDow===0||_dlEDow===6);
+  const scheduled=_dlWknd?jcAllDays(job.startDate,job.endDate):jcWeekdays(job.startDate,job.endDate);
+  const _scheduledSet=new Set(scheduled);
   const days=[...new Set([...scheduled,...job.extraDays])].sort();
   days.forEach((ds,idx)=>{
     if(!job.dayLogs[ds]) job.dayLogs[ds]={crewPresent:[],task:'',materialsUsed:[],startTime:'',endTime:'',notes:''};
@@ -3102,7 +3106,7 @@ function jcRenderDayLogs(){
         <div style="font-size:13px;font-weight:700;">Day ${idx+1} — ${jcFmtDate(ds)}</div>
         <div style="display:flex;align-items:center;gap:8px;">
           <div class="status-pill ${filled?'pill-active':'pill-complete'}" style="font-size:10px;">${filled?'✓ Logged':'Not yet filled in'}</div>
-          ${idx===days.length-1&&localStorage.getItem('fpRole')!=='crew'?`<button onclick="jcRemoveLastDay('${ds}')" style="background:none;border:1px solid var(--red);color:var(--red);font-size:10px;padding:2px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;">✕ Remove Day</button>`:''}
+          ${(idx===days.length-1||(!_scheduledSet.has(ds)&&job.extraDays.includes(ds)))&&localStorage.getItem('fpRole')!=='crew'?`<button onclick="jcRemoveLastDay('${ds}')" style="background:none;border:1px solid var(--red);color:var(--red);font-size:10px;padding:2px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;">✕ Remove Day</button>`:''}
         </div>
       </div>
       <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
@@ -4367,8 +4371,14 @@ function cvGetWeekSpanEvents(weekSun){
       const slot=newSlots[ci]?.[w]?.[d]||getSlot(ci,w,d); if(!slot) continue;
       const jobId=SLOT_JOB_MAP[jcSlotKey(ci,w,d)]||null;
       const jr=jobId?JOB_RECORDS.find(j=>j.id===jobId):JOB_RECORDS.find(j=>j.customer===(slot.l||''));
-      // Is this an extension day? (in extraDays but not in the original startDate-endDate range)
-      const isExtra=!!(jr?.extraDays?.includes(dtStr));
+      // Is this an extension day? (in extraDays but NOT in the original scheduled weekdays)
+      let isExtra=false;
+      if(jr?.extraDays?.includes(dtStr)){
+        const jrSD=new Date((jr.startDate||'')+'T00:00:00').getDay(),jrED=new Date((jr.endDate||'')+'T00:00:00').getDay();
+        const jrWk=(jrSD===0||jrSD===6||jrED===0||jrED===6);
+        const origSched=new Set(jr.startDate&&jr.endDate?(jrWk?jcAllDays(jr.startDate,jr.endDate):jcWeekdays(jr.startDate,jr.endDate)):[]);
+        isExtra=!origSched.has(dtStr);
+      }
       // Key includes isExtra so original and extension segments get separate bars
       const key=(jobId?String(jobId):('lbl_'+slot.l))+(isExtra?'_ext':'_org');
       if(jobMap[key]){
@@ -7638,7 +7648,12 @@ function buildWeekGrid(wOff,mon,dNames){
         const sdStr=sd.toISOString().split('T')[0];
         const slotJobId=SLOT_JOB_MAP[jcSlotKey(i,wOff,d)];
         const jr=slotJobId?JOB_RECORDS.find(j=>j.id===slotJobId):JOB_RECORDS.find(j=>j.customer===slot.l);
-        isExtra=!!(jr?.extraDays?.includes(sdStr));
+        if(jr?.extraDays?.includes(sdStr)){
+          const jrSD=new Date((jr.startDate||'')+'T00:00:00').getDay(),jrED=new Date((jr.endDate||'')+'T00:00:00').getDay();
+          const jrWk=(jrSD===0||jrSD===6||jrED===0||jrED===6);
+          const origSched=new Set(jr.startDate&&jr.endDate?(jrWk?jcAllDays(jr.startDate,jr.endDate):jcWeekdays(jr.startDate,jr.endDate)):[]);
+          isExtra=!origSched.has(sdStr);
+        }
       }
       days.push({pto,hol,slot,isWknd,isExtra});
     }
