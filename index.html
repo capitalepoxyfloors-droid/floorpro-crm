@@ -1902,7 +1902,7 @@ async function deduplicateSlotsByJobRecord(){
         if(!job||!job.startDate) continue;
 
         const endDate=job.endDate||job.startDate;
-        const validDates=new Set([...jcWeekdays(job.startDate,endDate),...(job.extraDays||[])]);
+        const validDates=new Set([...jcAllDays(job.startDate,endDate),...(job.extraDays||[])]);
 
         const slotMon=getMonday(wN);
         const slotDate=new Date(slotMon);
@@ -2686,7 +2686,7 @@ function jcBackfillSlotMap(job){
 async function jcCleanOrphanedSlots(job){
   if(!job||!job.startDate||!job.endDate) return;
   const names=new Set((job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean));
-  const allDates=[...jcWeekdays(job.startDate,job.endDate),...(job.extraDays||[])];
+  const allDates=[...jcAllDays(job.startDate,job.endDate),...(job.extraDays||[])];
   let changed=false;
   for(let ci=0;ci<CREW.length;ci++){
     if(names.has(CREW[ci].full)) continue; // on the job — leave their slot alone
@@ -2712,7 +2712,7 @@ async function jcSyncCrewSlots(job){
   if(!job||!job.startDate||!job.endDate||!job.crewNames) return;
   const names=(job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean);
   if(!names.length) return;
-  const allDates=[...jcWeekdays(job.startDate,job.endDate),...(job.extraDays||[])];
+  const allDates=[...jcAllDays(job.startDate,job.endDate),...(job.extraDays||[])];
   let added=0;
   for(const name of names){
     const ci=CREW.findIndex(c=>c.full===name); if(ci===-1) continue;
@@ -2743,6 +2743,13 @@ async function jcSyncCrewSlots(job){
 function jcWeekdays(s,e){
   const days=[],cur=new Date(s+'T00:00:00'),end=new Date(e+'T00:00:00');
   while(cur<=end){const dow=cur.getDay();if(dow&&dow<6)days.push(cur.toISOString().split('T')[0]);cur.setDate(cur.getDate()+1);}
+  return days;
+}
+// All calendar days between two date strings (inclusive) — includes weekends
+function jcAllDays(s,e){
+  if(!s||!e) return [];
+  const days=[],cur=new Date(s+'T00:00:00'),end=new Date(e+'T00:00:00');
+  while(cur<=end){days.push(cur.toISOString().split('T')[0]);cur.setDate(cur.getDate()+1);}
   return days;
 }
 function jcFmtDate(ds){ return new Date(ds+'T00:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}); }
@@ -2825,8 +2832,8 @@ async function jcToggleCrew(i){
   job.crewNames=names.join(', ');
   await saveJobRecords();
 
-  // Build full weekday list for this job (scheduled days + any extra days)
-  const allDates=job.startDate&&job.endDate?[...jcWeekdays(job.startDate,job.endDate)]:[];
+  // Build full calendar day list for this job (scheduled days + any extra days — includes weekends)
+  const allDates=job.startDate&&job.endDate?[...jcAllDays(job.startDate,job.endDate)]:[];
   (job.extraDays||[]).forEach(d=>{if(!allDates.includes(d))allDates.push(d);});
 
   let skipped=0;
@@ -3064,8 +3071,8 @@ function jcRenderDayLogs(){
   }
   if(!job.dayLogs) job.dayLogs={};
   if(!job.extraDays) job.extraDays=[];
-  // Merge scheduled days with any manually added extra days, sorted chronologically
-  const scheduled=jcWeekdays(job.startDate,job.endDate);
+  // Merge scheduled days with any manually added extra days, sorted chronologically (includes weekends)
+  const scheduled=jcAllDays(job.startDate,job.endDate);
   const days=[...new Set([...scheduled,...job.extraDays])].sort();
   days.forEach((ds,idx)=>{
     if(!job.dayLogs[ds]) job.dayLogs[ds]={crewPresent:[],task:'',materialsUsed:[],startTime:'',endTime:'',notes:''};
@@ -3135,7 +3142,7 @@ function jcAddExtraDay(){
   const dateStr=document.getElementById('jc-extra-date').value;
   if(!dateStr){showToast('Pick a date first.');return;}
   if(!job.extraDays) job.extraDays=[];
-  const allDays=[...jcWeekdays(job.startDate,job.endDate),...job.extraDays];
+  const allDays=[...jcAllDays(job.startDate,job.endDate),...job.extraDays];
   if(allDays.includes(dateStr)){showToast('That day is already in the log.');return;}
   job.extraDays.push(dateStr);
   jcRenderDayLogs();
