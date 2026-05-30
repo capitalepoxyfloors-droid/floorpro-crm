@@ -2690,7 +2690,9 @@ function jcBackfillSlotMap(job){
 async function jcCleanOrphanedSlots(job){
   if(!job||!job.startDate||!job.endDate) return;
   const names=new Set((job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean));
-  const allDates=[...jcAllDays(job.startDate,job.endDate),...(job.extraDays||[])];
+  const csDow=new Date(job.startDate+'T00:00:00').getDay(),ceDow=new Date(job.endDate+'T00:00:00').getDay();
+  const csWknd=(csDow===0||csDow===6||ceDow===0||ceDow===6);
+  const allDates=[...(csWknd?jcAllDays(job.startDate,job.endDate):jcWeekdays(job.startDate,job.endDate)),...(job.extraDays||[])];
   let changed=false;
   for(let ci=0;ci<CREW.length;ci++){
     if(names.has(CREW[ci].full)) continue; // on the job — leave their slot alone
@@ -2716,7 +2718,14 @@ async function jcSyncCrewSlots(job){
   if(!job||!job.startDate||!job.endDate||!job.crewNames) return;
   const names=(job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean);
   if(!names.length) return;
-  const allDates=[...jcAllDays(job.startDate,job.endDate),...(job.extraDays||[])];
+  // Use weekdays-only for the original scheduled range so jobs spanning a weekend
+  // don't get phantom Sat/Sun slots. Exception: if the job itself starts or ends on
+  // a weekend day (a true weekend job) use jcAllDays to include those days.
+  const sDow=new Date(job.startDate+'T00:00:00').getDay();
+  const eDow=new Date(job.endDate+'T00:00:00').getDay();
+  const isWkndJob=(sDow===0||sDow===6||eDow===0||eDow===6);
+  const origDates=isWkndJob?jcAllDays(job.startDate,job.endDate):jcWeekdays(job.startDate,job.endDate);
+  const allDates=[...new Set([...origDates,...(job.extraDays||[])])];
   let added=0;
   for(const name of names){
     const ci=CREW.findIndex(c=>c.full===name); if(ci===-1) continue;
@@ -2831,8 +2840,11 @@ async function jcToggleCrew(i){
   job.crewNames=names.join(', ');
   await saveJobRecords();
 
-  // Build full calendar day list for this job (scheduled days + any extra days — includes weekends)
-  const allDates=job.startDate&&job.endDate?[...jcAllDays(job.startDate,job.endDate)]:[];
+  // Build work-day list for this job — weekdays for regular jobs, all days for weekend jobs
+  const _tsDow=job.startDate?new Date(job.startDate+'T00:00:00').getDay():1;
+  const _teDow=job.endDate?new Date(job.endDate+'T00:00:00').getDay():1;
+  const _tsWknd=(_tsDow===0||_tsDow===6||_teDow===0||_teDow===6);
+  const allDates=job.startDate&&job.endDate?[...(_tsWknd?jcAllDays(job.startDate,job.endDate):jcWeekdays(job.startDate,job.endDate))]:[];
   (job.extraDays||[]).forEach(d=>{if(!allDates.includes(d))allDates.push(d);});
 
   let skipped=0;
