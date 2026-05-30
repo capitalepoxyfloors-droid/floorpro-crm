@@ -1253,8 +1253,15 @@
           </div>
           <div id="sj-auto-result" style="display:none;margin-top:10px;font-size:12.5px;color:var(--accent);font-family:'DM Mono',monospace;"></div>
         </div>
-        <div class="info-box" style="margin-bottom:16px;">
+        <div class="info-box" style="margin-bottom:12px;">
           Or pick crew manually — each member shows their <strong>earliest available start</strong>. Tap to select.
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;padding:4px 0 12px;">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;">
+            <input type="checkbox" id="sj-weekends" onchange="sjLoadStep2()" style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer;">
+            <span style="font-size:13px;font-weight:600;color:var(--text);">Include weekend days</span>
+          </label>
+          <span style="font-size:11.5px;color:var(--text3);">(Sat &amp; Sun count as workdays)</span>
         </div>
         <div class="form-group">
           <label class="form-label">Available Crew</label>
@@ -1963,11 +1970,13 @@ function sjLoadStep2(){
   list.innerHTML='<div style="font-size:12px;color:var(--text3);padding:6px 0;">Checking availability…</div>';
   setTimeout(()=>{
     // Figure out the exact requested start: find the first working day on or after earliestStr
+    const wknd2=sjIncludeWeekends();
+    const MD2=wknd2?6:4;
     const reqDate=earliestStr?new Date(earliestStr+'T12:00:00'):new Date();
     // Find the week/day offset for the requested start date
     let reqW=null,reqD=null;
     outer:for(let w=0;w<=60;w++){
-      for(let d=0;d<5;d++){
+      for(let d=0;d<=MD2;d++){
         const mon=getMonday(w);
         const dd=new Date(mon);dd.setDate(dd.getDate()+d);
         // Compare date only (strip time)
@@ -1991,14 +2000,14 @@ function sjLoadStep2(){
         freeForWindow=true;
         let cW=reqW,cD=reqD;
         for(let i=0;i<days;i++){
-          if(cD>4){cW++;cD=0;}
+          if(cD>MD2){cW++;cD=0;}
           if(isBooked(ci,cW,cD)){freeForWindow=false;break;}
           cD++;
         }
         if(freeForWindow){
           // Compute end date
           let endW=reqW,endD=reqD;
-          for(let i=0;i<days-1;i++){endD++;if(endD>4){endD=0;endW++;}}
+          for(let i=0;i<days-1;i++){endD++;if(endD>MD2){endD=0;endW++;}}
           const endMon=getMonday(endW);
           const endDate=new Date(endMon);endDate.setDate(endDate.getDate()+endD);
           const startMon=getMonday(reqW);
@@ -2042,9 +2051,10 @@ function sjLoadStep2(){
 
 // Returns true if crew member ci is free for every working day of the given found window
 function crewFreeForWindow(ci, found){
+  const MD=found.weekends?6:4;
   let curW=found.w, curD=found.start;
   for(let i=0;i<found.days;i++){
-    if(curD>4){curW++;curD=0;}
+    if(curD>MD){curW++;curD=0;}
     if(isBooked(ci,curW,curD)) return false;
     curD++;
   }
@@ -2198,33 +2208,37 @@ function sjAutoFind(){
   sjUpdateWindowHighlights();
 }
 
+function sjIncludeWeekends(){ return !!(document.getElementById('sj-weekends')?.checked); }
+
 function findWindow(crew,days,earliestStr){
+  const wknd=sjIncludeWeekends();
+  const MAX_D=wknd?6:4; // last valid day index in a week (Mon=0…Sun=6 or Mon=0…Fri=4)
   let earliest=earliestStr?new Date(earliestStr+'T00:00:00'):new Date(BASE);
   // Search far enough ahead to cover the earliest date + buffer, accounting for multi-week jobs
   const weeksToEarliest=Math.ceil((earliest-new Date(BASE))/(7*24*60*60*1000));
-  const weeksNeeded=Math.ceil(days/5);
+  const weeksNeeded=wknd?Math.ceil(days/7):Math.ceil(days/5);
   const maxW=Math.max(52,weeksToEarliest+weeksNeeded+8);
   for(let w=0;w<=maxW;w++){
-    for(let start=0;start<=4;start++){
+    for(let start=0;start<=MAX_D;start++){
       const mon=getMonday(w);
       const wStart=new Date(mon);wStart.setDate(wStart.getDate()+start);
       if(wStart<earliest) continue;
-      // Check 'days' consecutive working days (Mon-Fri), spanning week boundaries
+      // Check 'days' consecutive days, spanning week boundaries
       let ok=true;
       let curW=w,curD=start;
       for(let i=0;i<days;i++){
-        if(curD>4){curW++;curD=0;}
+        if(curD>MAX_D){curW++;curD=0;}
         for(let c of crew){if(isBooked(c,curW,curD)){ok=false;break;}}
         if(!ok) break;
         curD++;
       }
       if(ok){
-        // Calculate end date by walking forward days-1 working days
+        // Calculate end date by walking forward days-1 days
         let endW=w,endD=start;
-        for(let i=0;i<days-1;i++){endD++;if(endD>4){endD=0;endW++;}}
+        for(let i=0;i<days-1;i++){endD++;if(endD>MAX_D){endD=0;endW++;}}
         const endMon=getMonday(endW);
         const wEnd=new Date(endMon);wEnd.setDate(wEnd.getDate()+endD);
-        return{w,start,days,startDate:wStart,endDate:wEnd};
+        return{w,start,days,startDate:wStart,endDate:wEnd,weekends:wknd};
       }
     }
   }
@@ -2307,11 +2321,12 @@ function sjConfirm(){
   const sjTypeLabel=document.getElementById('sj-type').value;
   const sjTypeMatch=getAllJobTypes().find(t=>t.label===sjTypeLabel);
   const cssType=sjTypeMatch?sjTypeMatch.key:'epoxy';
-  const{w,start,days}=sjFound;
+  const{w,start,days,weekends:wkndBooked}=sjFound;
+  const BOOK_MD=wkndBooked?6:4;
   // Book slots across week boundaries (supports multi-week jobs)
   {let curW=w,curD=start;
   for(let i=0;i<days;i++){
-    if(curD>4){curW++;curD=0;}
+    if(curD>BOOK_MD){curW++;curD=0;}
     sjCrew.forEach(ci=>{
       if(!newSlots[ci]) newSlots[ci]={};
       if(!newSlots[ci][curW]) newSlots[ci][curW]={};
@@ -2343,7 +2358,7 @@ function sjConfirm(){
   // Map slots to job ID across week boundaries
   {let curW=w,curD=start;
   for(let i=0;i<days;i++){
-    if(curD>4){curW++;curD=0;}
+    if(curD>BOOK_MD){curW++;curD=0;}
     sjCrew.forEach(ci=>{ SLOT_JOB_MAP[jcSlotKey(ci,curW,curD)]=jobId; });
     curD++;
   }}
@@ -2422,6 +2437,7 @@ function sjReset(){
   if(crewList) crewList.innerHTML=''; // crew cards are built dynamically on step 2 load
   ['sj-cust','sj-val','sj-notes'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('sj-days').value='2';
+  const wkCb=document.getElementById('sj-weekends');if(wkCb) wkCb.checked=false;
 }
 
 // ── EDIT SCHEDULED SLOT ────────────────────────────────────────────────────────
