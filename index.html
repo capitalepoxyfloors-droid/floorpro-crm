@@ -4374,8 +4374,8 @@ function cvGetWeekSpanEvents(weekSun){
 function cvBuildWeek(weekSun,today){
   const BAR_H=22;       // bar height in px — must match .cv-event-bar height in CSS
   const LANE_H=27;      // px per lane (bar + gap)
-  const TOP_PAD=8;      // px above first bar
-  const MIN_EVT_H=104;  // minimum events-area height — ensures week rows fill the screen
+  const TOP_PAD=6;      // px above first bar
+  const MIN_EVT_H=36;   // minimum events-area height for empty weeks
   const spanEvts=cvGetWeekSpanEvents(weekSun);
   const numLanes=spanEvts.length?Math.max(...spanEvts.map(e=>e.lane))+1:0;
   const eventsH=Math.max(numLanes>0?numLanes*LANE_H+TOP_PAD+4:0, MIN_EVT_H);
