@@ -4293,6 +4293,7 @@ function cvCheckMode(){
 function cvLockDevice(){
   if(!confirm('Lock this device to Crew View only?\n\nUse the Manager Access link at the bottom to unlock.')) return;
   localStorage.setItem('fpRole','crew');
+  _saveSession('crew');
   document.body.classList.add('crew-mode');
   const ml=document.getElementById('cv-manager-link');
   if(ml) ml.style.display='block';
