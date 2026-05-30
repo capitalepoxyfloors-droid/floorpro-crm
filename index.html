@@ -276,22 +276,23 @@
   .cv-dow-row{display:grid;grid-template-columns:repeat(7,1fr);background:var(--surface);border-bottom:2px solid var(--border);}
   .cv-dow{text-align:center;font-size:11px;font-family:'DM Mono',monospace;color:var(--text3);padding:9px 0 7px;text-transform:uppercase;font-weight:700;letter-spacing:.5px;}
   .cv-dow.cv-dow-weekend{opacity:.55;}
-  /* Week rows — date-number strip + spanning event bars */
-  .cv-week-row{border-bottom:1px solid var(--border);}
+  /* Week rows — Google Calendar-style: bordered day cells with date num inside */
+  .cv-week-row{border-bottom:1px solid var(--border);position:relative;}
   .cv-week-row:last-child{border-bottom:none;}
-  .cv-wdn{padding:13px 0 10px;border-right:1px solid var(--border2);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;}
-  .cv-wdn:last-child{border-right:none;}
-  .cv-wdn.cv-weekend{background:rgba(0,0,0,.018);}
-  .cv-wdn.cv-today-col{background:rgba(37,99,235,.07);}
-  .cv-wdn.cv-other-month .cv-day-num{opacity:.28;}
-  .cv-month-mark{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);font-family:'DM Mono',monospace;font-weight:700;line-height:1;}
-  .cv-day-num{font-size:16px;width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:50%;font-family:'DM Mono',monospace;font-weight:600;color:var(--text2);}
-  .cv-day-num.today{background:var(--accent);color:#fff;font-weight:800;}
-  .cv-week-datenums{display:grid;grid-template-columns:repeat(7,1fr);border-bottom:2px solid var(--border);}
-  .cv-week-events{position:relative;padding-bottom:6px;}
-  .cv-week-events::before{content:'';position:absolute;inset:0;background-image:repeating-linear-gradient(to right,transparent,transparent calc(100%/7 - 1px),var(--border2) calc(100%/7 - 1px),var(--border2) calc(100%/7));pointer-events:none;z-index:0;}
+  /* Day cell grid — absolute so it sizes to the row height set by JS */
+  .cv-week-cells{display:grid;grid-template-columns:repeat(7,1fr);position:absolute;inset:0;}
+  .cv-day-cell{border-right:1px solid var(--border2);padding:6px 0 0;display:flex;flex-direction:column;align-items:center;}
+  .cv-day-cell:last-child{border-right:none;}
+  .cv-day-cell.cv-weekend{background:rgba(0,0,0,.022);}
+  .cv-day-cell.cv-today-col{background:rgba(37,99,235,.07);}
+  /* Date number — plain text normally, blue circle only for today (exactly like Google Cal) */
+  .cv-cell-month{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);font-family:'DM Mono',monospace;font-weight:700;margin-bottom:1px;}
+  .cv-cell-num{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:var(--text2);font-family:'DM Mono',monospace;}
+  .cv-cell-num.today{background:var(--accent);color:#fff;font-weight:800;}
+  /* Event bars overlay — starts below the date number area, pointer-events none so cells show through */
+  .cv-week-events{position:absolute;left:0;right:0;top:40px;bottom:0;pointer-events:none;}
   /* Google Calendar-style solid pill bars */
-  .cv-event-bar{position:absolute;height:22px;border-radius:11px;padding:0 9px;font-size:12px;font-weight:700;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;display:flex;align-items:center;background:var(--accent);color:#fff;border:none;letter-spacing:-.1px;-webkit-tap-highlight-color:transparent;transition:filter .1s;z-index:1;}
+  .cv-event-bar{position:absolute;height:22px;border-radius:11px;padding:0 9px;font-size:12px;font-weight:700;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;display:flex;align-items:center;background:var(--accent);color:#fff;border:none;letter-spacing:-.1px;-webkit-tap-highlight-color:transparent;transition:filter .1s;z-index:1;pointer-events:auto;}
   .cv-event-bar:active{filter:brightness(.82);}
   .cv-event-bar.epoxy{background:#1a73e8;}
   .cv-event-bar.concrete{background:#e37400;}
@@ -336,10 +337,10 @@
     .cv-crew-row{padding:7px 10px;gap:6px;}
     .cv-crew-chip{font-size:11.5px;padding:4px 11px;}
     .cv-dow{font-size:10px;padding:6px 0 5px;letter-spacing:.2px;}
-    .cv-wdn{padding:11px 0 8px;}
-    .cv-day-num{font-size:15px;width:36px;height:36px;}
-    .cv-month-mark{font-size:8px;}
-    .cv-event-bar{font-size:12px;height:22px;padding:0 7px;border-radius:11px;}
+    .cv-day-cell{padding:4px 0 0;}
+    .cv-cell-num{width:24px;height:24px;font-size:11px;}
+    .cv-cell-month{font-size:7px;}
+    .cv-event-bar{font-size:11px;height:20px;padding:0 6px;border-radius:10px;}
     .tabs{overflow-x:auto;scrollbar-width:none;}.tabs::-webkit-scrollbar{display:none;}
     .form-row{grid-template-columns:1fr;}
     .modal-footer{flex-wrap:wrap;}
@@ -4386,33 +4387,38 @@ function cvGetWeekSpanEvents(weekSun){
   return events;
 }
 
-// Build HTML for one week row — date-number strip + absolutely-positioned event bars
+// Build one week row — Google Calendar style: bordered day cells + event bars overlay
 function cvBuildWeek(weekSun,today){
-  const BAR_H=22;       // bar height in px — must match .cv-event-bar height in CSS
-  const LANE_H=27;      // px per lane (bar + gap)
-  const TOP_PAD=6;      // px above first bar
-  const MIN_EVT_H=36;   // minimum events-area height for empty weeks
+  const BAR_H=22;      // must match CSS .cv-event-bar height
+  const LANE_H=27;     // px per event lane
+  const TOP_PAD=6;     // gap above first bar inside the events overlay
+  const DATE_H=40;     // px reserved at top of row for date numbers (matches CSS top:40px on .cv-week-events)
+  const MIN_EVTS=66;   // minimum events area height so empty weeks aren't too squished
+
   const spanEvts=cvGetWeekSpanEvents(weekSun);
   const numLanes=spanEvts.length?Math.max(...spanEvts.map(e=>e.lane))+1:0;
-  const eventsH=Math.max(numLanes>0?numLanes*LANE_H+TOP_PAD+4:0, MIN_EVT_H);
+  const evtsH=Math.max(numLanes>0?numLanes*LANE_H+TOP_PAD+8:0, MIN_EVTS);
+  const rowH=DATE_H+evtsH; // total row height set on .cv-week-row
 
-  // Date-number strip
   const MO=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  let datesHtml='';
+
+  // ── Day cells — give the row its Google Calendar grid structure ──────────
+  let cellsHtml='';
   for(let col=0;col<7;col++){
     const dt=new Date(weekSun); dt.setDate(weekSun.getDate()+col); dt.setHours(0,0,0,0);
     const isToday=dt.getTime()===today.getTime();
     const isWknd=col===0||col===6;
-    const hol=(!isWknd)&&isHoliday(dt);
+    const hol=isHoliday(dt);
     const isFirst=dt.getDate()===1;
-    const monthMark=isFirst?`<div class="cv-month-mark">${MO[dt.getMonth()]}</div>`:'';
-    const numColor=hol&&!isToday?'color:var(--orange);':'';
-    let wdnCls='cv-wdn'+(isWknd?' cv-weekend':'')+(isToday?' cv-today-col':'');
-    datesHtml+=`<div class="${wdnCls}"${hol?` title="${hol.name}"`:''}>` +
-      monthMark+`<div class="cv-day-num${isToday?' today':''}"${numColor?` style="${numColor}"`:''}>${dt.getDate()}</div></div>`;
+    const monthMark=isFirst?`<div class="cv-cell-month">${MO[dt.getMonth()]}</div>`:'';
+    const numStyle=hol&&!isToday?' style="color:var(--orange);"':'';
+    let cls='cv-day-cell'+(isWknd?' cv-weekend':'')+(isToday?' cv-today-col':'');
+    cellsHtml+=`<div class="${cls}"${hol?` title="${hol.name}"`:''}>
+      ${monthMark}<div class="cv-cell-num${isToday?' today':''}"${numStyle}>${dt.getDate()}</div>
+    </div>`;
   }
 
-  // Event bars — solid pill shape, no dots, clean text
+  // ── Event bars — absolute overlay starting below the date numbers ────────
   let barsHtml='';
   for(const ev of spanEvts){
     const span=ev.colEnd-ev.colStart+1;
@@ -4433,7 +4439,7 @@ function cvBuildWeek(weekSun,today){
     }
   }
 
-  return `<div class="cv-week-row"><div class="cv-week-datenums">${datesHtml}</div><div class="cv-week-events" style="height:${eventsH}px;">${barsHtml}</div></div>`;
+  return `<div class="cv-week-row" style="height:${rowH}px;"><div class="cv-week-cells">${cellsHtml}</div><div class="cv-week-events">${barsHtml}</div></div>`;
 }
 
 function renderCrewView(){
