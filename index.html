@@ -289,8 +289,9 @@
   .cv-day-num.today{background:var(--accent);color:#fff;font-weight:800;}
   .cv-week-datenums{display:grid;grid-template-columns:repeat(7,1fr);border-bottom:2px solid var(--border);}
   .cv-week-events{position:relative;padding-bottom:6px;}
+  .cv-week-events::before{content:'';position:absolute;inset:0;background-image:repeating-linear-gradient(to right,transparent,transparent calc(100%/7 - 1px),var(--border2) calc(100%/7 - 1px),var(--border2) calc(100%/7));pointer-events:none;z-index:0;}
   /* Google Calendar-style solid pill bars */
-  .cv-event-bar{position:absolute;height:22px;border-radius:11px;padding:0 9px;font-size:12px;font-weight:700;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;display:flex;align-items:center;background:var(--accent);color:#fff;border:none;letter-spacing:-.1px;-webkit-tap-highlight-color:transparent;transition:filter .1s;}
+  .cv-event-bar{position:absolute;height:22px;border-radius:11px;padding:0 9px;font-size:12px;font-weight:700;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;display:flex;align-items:center;background:var(--accent);color:#fff;border:none;letter-spacing:-.1px;-webkit-tap-highlight-color:transparent;transition:filter .1s;z-index:1;}
   .cv-event-bar:active{filter:brightness(.82);}
   .cv-event-bar.epoxy{background:#1a73e8;}
   .cv-event-bar.concrete{background:#e37400;}
