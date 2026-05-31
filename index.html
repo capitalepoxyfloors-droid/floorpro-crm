@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -357,7 +357,7 @@
   <div id="login-card" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:36px 26px 28px;width:100%;max-width:290px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,.5);">
     <div style="font-size:11px;letter-spacing:2.5px;text-transform:uppercase;color:var(--text3);font-family:'DM Mono',monospace;margin-bottom:6px;">FloorPro</div>
     <div style="font-size:26px;font-weight:800;letter-spacing:-.5px;margin-bottom:2px;">CRM</div>
-    <div style="font-size:12px;color:var(--text3);margin-bottom:28px;">Enter your PIN to continue</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:28px;">Enter manager code to continue</div>
     <div style="display:flex;justify-content:center;gap:14px;margin-bottom:6px;">
       <div class="pin-dot" id="pd0"></div>
       <div class="pin-dot" id="pd1"></div>
@@ -772,15 +772,15 @@
           </div>
           <div style="padding:20px 18px;display:flex;flex-direction:column;gap:16px;">
             <div class="form-group" style="margin:0;">
-              <label class="form-label">Crew PIN <span style="color:var(--text3);font-weight:400;">(4–6 digits — share with your crew)</span></label>
-              <input class="form-input" id="pin-new-crew" type="password" inputmode="numeric" maxlength="6" placeholder="Enter new crew PIN" style="width:200px;font-size:18px;letter-spacing:4px;font-family:'DM Mono',monospace;"/>
+              <label class="form-label">Manager Code <span style="color:var(--text3);font-weight:400;">(full access — keep private)</span></label>
+              <input class="form-input" id="pin-new-admin" type="password" inputmode="numeric" maxlength="6" placeholder="New manager code" style="width:200px;font-size:18px;letter-spacing:4px;font-family:'DM Mono',monospace;"/>
             </div>
             <div class="form-group" style="margin:0;">
-              <label class="form-label">Admin PIN <span style="color:var(--text3);font-weight:400;">(keep this private — full access)</span></label>
-              <input class="form-input" id="pin-new-admin" type="password" inputmode="numeric" maxlength="6" placeholder="Enter new admin PIN" style="width:200px;font-size:18px;letter-spacing:4px;font-family:'DM Mono',monospace;"/>
+              <label class="form-label">Crew Code <span style="color:var(--text3);font-weight:400;">(crew view only — schedule, no financial data)</span></label>
+              <input class="form-input" id="pin-new-crew" type="password" inputmode="numeric" maxlength="6" placeholder="New crew code" style="width:200px;font-size:18px;letter-spacing:4px;font-family:'DM Mono',monospace;"/>
             </div>
             <div>
-              <button class="btn btn-primary" onclick="pinSaveSettings()">Save PINs</button>
+              <button class="btn btn-primary" onclick="pinSaveSettings()">Save Codes</button>
             </div>
           </div>
         </div>
@@ -789,7 +789,7 @@
             <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);">Session</div>
           </div>
           <div style="padding:16px 18px;">
-            <p style="font-size:13px;color:var(--text2);margin-bottom:12px;">Sessions last 7 days. Crew members will be prompted for their PIN again after a week, or when they sign out manually.</p>
+            <p style="font-size:13px;color:var(--text2);margin-bottom:12px;">The app locks automatically after 20 minutes of inactivity, and always locks on page refresh. No one can access any part of the app without the manager code.</p>
             <button class="btn btn-ghost" onclick="pinLogout()" style="color:var(--red);border-color:var(--red);">Sign Out</button>
           </div>
         </div>
@@ -1544,7 +1544,7 @@ async function saveDashOrder(){
 }
 async function loadDashOrder(){
   const val = await sb.getKV('dash_order');
-  if(val){ try{ const saved=JSON.parse(val); if(Array.isArray(saved)&&saved.length) dashOrder=saved; }catch(e){} }
+  if(val){ try{ const saved=JSON.parse(val); if(Array.isArray(saved)&&saved.length) dashOrder=saved; }catch(e){console.error('loadDashOrder parse error:',e);} }
 }
 
 // ── TO-DO CHECKLIST ────────────────────────────────────────────────────────────
@@ -1600,16 +1600,17 @@ async function dbSaveTodos(){
 }
 async function loadTodos(){
   const val = await sb.getKV('todos');
-  if(val){ try{ TODOS=JSON.parse(val)||[]; }catch(e){} }
+  if(val){ try{ TODOS=JSON.parse(val)||[]; }catch(e){console.error('loadTodos parse error:',e);} }
   // Don't renderTodos here — let loadAllFromSupabase call it after renderDashboard
 }
 
 // ── SUPABASE SYNC FUNCTIONS ────────────────────────────────────────────────────
 async function dbSaveLead(lead){
   const row={name:lead.name,phone:lead.phone||'',email:lead.email||'',job_type:lead.jobType||'',cust_type:lead.custType||'',sqft:lead.sqft||'',value:lead.value||'',address:lead.address||'',source:lead.source||'',notes:lead.notes||'',stage:lead.stage||'new',detail:lead.detail||'',date_added:lead.date||''};
-  if(lead.db_id){await sb.update('leads',lead.db_id,row);}
-  else{const res=await sb.insert('leads',row);if(res&&res[0])lead.db_id=res[0].id;}
+  if(lead.db_id){const ok=await sb.update('leads',lead.db_id,row);if(!ok){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}}
+  else{const res=await sb.insert('leads',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}lead.db_id=res[0].id;}
   showSyncStatus('✓ Synced');
+  return true;
 }
 async function dbDeleteLead(lead){if(lead.db_id)await sb.delete('leads',lead.db_id);}
 async function loadLeads(){
@@ -1619,9 +1620,10 @@ async function loadLeads(){
 
 async function dbSaveJob(jobObj){
   const row={customer:jobObj.customer,job_label:jobObj.jobLabel,value:jobObj.value||'',display_val:jobObj.displayVal||'',detail:jobObj.detail||'',status:jobObj.status||'approved',crew:jobObj.crew||'',notes:jobObj.notes||''};
-  if(jobObj.db_id){await sb.update('jobs',jobObj.db_id,row);}
-  else{const res=await sb.insert('jobs',row);if(res&&res[0])jobObj.db_id=res[0].id;}
+  if(jobObj.db_id){const ok=await sb.update('jobs',jobObj.db_id,row);if(!ok){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}}
+  else{const res=await sb.insert('jobs',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}jobObj.db_id=res[0].id;}
   showSyncStatus('✓ Synced');
+  return true;
 }
 async function dbDeleteJob(db_id){if(db_id)await sb.delete('jobs',db_id);}
 async function loadJobs(){
@@ -1686,6 +1688,10 @@ async function autoAdvanceJobsByDate(){
       newBoardStatus  = 'inprogress';
       newRecordStatus = 'in_progress';
     }
+    if(job.status === 'in_progress' && end < today){
+      newBoardStatus  = 'complete';
+      newRecordStatus = 'complete';
+    }
     if(!newBoardStatus) continue;
 
     // Update the JOB_RECORD status
@@ -1733,9 +1739,10 @@ async function autoAdvanceJobsByDate(){
 
 async function dbSaveMaterial(mat,idx){
   const row={name:mat.name,mfr:mat.mfr||'',cat:mat.cat||'',unit:mat.unit||'',price:parseFloat(mat.price)||0,price_date:mat.date||'',coverage:parseFloat(mat.coverage)||0,coverage_unit:mat.coverageUnit||'',supplier:mat.supplier||'',notes:mat.notes||''};
-  if(mat.db_id){await sb.update('materials',mat.db_id,row);}
-  else{const res=await sb.insert('materials',row);if(res&&res[0])MATERIALS[idx].db_id=res[0].id;}
+  if(mat.db_id){const ok=await sb.update('materials',mat.db_id,row);if(!ok){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}}
+  else{const res=await sb.insert('materials',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}MATERIALS[idx].db_id=res[0].id;}
   showSyncStatus('✓ Synced');
+  return true;
 }
 async function dbDeleteMaterial(db_id){if(db_id)await sb.delete('materials',db_id);}
 async function loadMaterials(){
@@ -1745,9 +1752,10 @@ async function loadMaterials(){
 
 async function dbSaveCrew(c,idx){
   const row={full_name:c.full,first_name:c.name,last_name:c.full.split(' ').slice(1).join(' '),initials:c.initials,color:c.color,role:c.role||'',phone:c.phone||'',specialties:JSON.stringify(c.specialties||[]),hourly:c.hourly||'',hours:c.hours||'40',ss:c.ss||'6.20',medicare:c.medicare||'1.45',futa:c.futa||'2.70',wc:c.wc||'10.00',gl:c.gl||'3.00',benefits:c.benefits||'0',pto_days:c.ptoDays||'0',sort_order:idx};
-  if(c.db_id){await sb.update('crew',c.db_id,row);}
-  else{const res=await sb.insert('crew',row);if(res&&res[0])CREW_DATA[idx].db_id=res[0].id;}
+  if(c.db_id){const ok=await sb.update('crew',c.db_id,row);if(!ok){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}}
+  else{const res=await sb.insert('crew',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}CREW_DATA[idx].db_id=res[0].id;}
   showSyncStatus('✓ Synced');
+  return true;
 }
 async function loadCrew(){
   const rows=await sb.get('crew','order=sort_order.asc');
@@ -1778,11 +1786,11 @@ async function dbSaveSettings(){
 }
 async function loadSettings(){
   const val = await sb.getKV('enabled_holidays');
-  if(val){ try{ enabledHolidays=new Set(JSON.parse(val)); }catch(e){} }
+  if(val){ try{ enabledHolidays=new Set(JSON.parse(val)); }catch(e){console.error('loadSettings holidays parse error:',e);} }
 }
 async function loadCustomJobTypes(){
   const val=await sb.getKV('custom_job_types');
-  if(val){try{CUSTOM_JOB_TYPES=JSON.parse(val);}catch(e){}}
+  if(val){try{CUSTOM_JOB_TYPES=JSON.parse(val);}catch(e){console.error('loadCustomJobTypes parse error:',e);}}
   const del=await sb.getKV('deleted_builtin_keys');
   if(del){try{DELETED_BUILTIN_KEYS=new Set(JSON.parse(del));}catch(e){}}
   // Re-apply saved renames to built-ins
@@ -1933,7 +1941,10 @@ async function deduplicateSlotsByJobRecord(){
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
   try{
-    await Promise.all([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories()]);
+    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories()]);
+    const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
+    if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
+    if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
     await fixSlotDrift();               // correct any week-offset drift before rendering
     await deduplicateSlotsByJobRecord(); // remove stale/duplicate slots outside job date ranges
     // Backfill schedule slots for any jobs that have extra days added via the day log
@@ -2287,20 +2298,14 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.getElementById('pto-slot-date').value=today;
   // Render dashboard immediately
   renderDashboard();
-  // Check for a valid login session
-  const _initRole = checkLoginSession();
-  if(_initRole){
-    // Returning user with valid session — apply role and load data
-    if(_initRole==='crew'){ localStorage.setItem('fpRole','crew'); } else { localStorage.removeItem('fpRole'); }
-    cvCheckMode();
-    loadAllFromSupabase().then(()=>{
-      if(_initRole==='crew'){showPage('crewview');return;}
-      try{ const last=localStorage.getItem('fpLastPage'); if(last&&last!=='dashboard'&&document.getElementById('page-'+last)) showPage(last); }catch(e){}
-    });
-  } else {
-    // No valid session — show PIN login screen
-    showLoginScreen();
-  }
+  // Always require manager code on every page load — no saved sessions
+  localStorage.removeItem(_pinAuthKey()); // erase any old localStorage auth tokens
+  localStorage.removeItem('fpRole');
+  showLoginScreen();
+  // Reset the auto-lock countdown on any user interaction
+  ['click','keydown','touchstart','mousemove'].forEach(ev=>
+    document.addEventListener(ev, _resetAutoLockTimer, {passive:true})
+  );
 });
 
 function goStep3(){
@@ -2343,7 +2348,7 @@ function sjConfirm(){
   }}
 
   // Create a job record so clicking the slot opens the full job card
-  const jobId = Date.now();
+  const jobId = (typeof crypto!=='undefined'&&crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2));
   const jobRecord = {
     id: jobId,
     customer: cust,
@@ -2633,6 +2638,7 @@ async function saveSlotEdit(force=false){
     }
   }
 
+  _seCtx=null;
   closeModal('slotedit');
   renderSchedule();
   showSyncStatus('✓ Saved');
@@ -2641,7 +2647,9 @@ async function saveSlotEdit(force=false){
 
 async function deleteSlotEdit(){
   if(!_seCtx) return;
+  if(!confirm('Remove this slot from the schedule? This cannot be undone.')) return;
   const {ci,w,d}=_seCtx;
+  _seCtx=null;
   await seRemoveSlot(ci,w,d);
   closeModal('slotedit');
   renderSchedule();
@@ -2654,9 +2662,9 @@ let SLOT_JOB_MAP = {}; // "ci_w_d" → job_id
 let _jcId = null;
 let _seForceOpen = false; // bypass job-card routing for reschedule flow
 
-async function loadJobRecords(){ const v=await sb.getKV('job_records'); if(v){try{JOB_RECORDS=JSON.parse(v)||[];}catch(e){}} }
+async function loadJobRecords(){ const v=await sb.getKV('job_records'); if(v){try{JOB_RECORDS=JSON.parse(v)||[];}catch(e){console.error('loadJobRecords parse error – job_records may be corrupt:',e);}} }
 async function saveJobRecords(){ await sb.setKV('job_records',JSON.stringify(JOB_RECORDS)); showSyncStatus('✓ Saved'); }
-async function loadSlotJobMap(){ const v=await sb.getKV('slot_job_map'); if(v){try{SLOT_JOB_MAP=JSON.parse(v)||{};}catch(e){}} }
+async function loadSlotJobMap(){ const v=await sb.getKV('slot_job_map'); if(v){try{SLOT_JOB_MAP=JSON.parse(v)||{};}catch(e){console.error('loadSlotJobMap parse error – slot_job_map may be corrupt:',e);}} }
 async function saveSlotJobMap(){ await sb.setKV('slot_job_map',JSON.stringify(SLOT_JOB_MAP)); }
 
 function getJobRecord(id){ return JOB_RECORDS.find(j=>j.id===id)||null; }
@@ -3042,7 +3050,9 @@ function jcAddrInput(val){
     try{
       const results=await _photonSearch(val);
       if(!results.length){drop.style.display='none';return;}
-      drop.innerHTML=results.map(a=>`<div class="addr-opt" onmousedown="event.preventDefault()" onclick="jcPickAddr('${a.full.replace(/'/g,"\\'")}')"><div class="addr-main">${a.line1}</div><div class="addr-sub">${[a.city,a.state,a.zip].filter(Boolean).join(', ')}</div></div>`).join('');
+      _jcAddrResults=results;
+      drop.innerHTML=results.map((a,i)=>`<div class="addr-opt" data-idx="${i}" onmousedown="event.preventDefault()"><div class="addr-main">${a.line1.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div><div class="addr-sub">${[a.city,a.state,a.zip].filter(Boolean).join(', ').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div></div>`).join('');
+      drop.querySelectorAll('[data-idx]').forEach(el=>el.addEventListener('click',()=>jcPickAddr(_jcAddrResults[+el.dataset.idx].full)));
       drop.style.display='block';
     }catch(e){drop.style.display='none';}
   },350);
@@ -3063,7 +3073,9 @@ function svAddrInput(val){
     try{
       const results=await _photonSearch(val);
       if(!results.length){drop.style.display='none';return;}
-      drop.innerHTML=results.map(a=>`<div class="addr-opt" onmousedown="event.preventDefault()" onclick="svPickAddr('${a.full.replace(/'/g,"\\'")}')"><div class="addr-main">${a.line1}</div><div class="addr-sub">${[a.city,a.state,a.zip].filter(Boolean).join(', ')}</div></div>`).join('');
+      _svAddrResults=results;
+      drop.innerHTML=results.map((a,i)=>`<div class="addr-opt" data-idx="${i}" onmousedown="event.preventDefault()"><div class="addr-main">${a.line1.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div><div class="addr-sub">${[a.city,a.state,a.zip].filter(Boolean).join(', ').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div></div>`).join('');
+      drop.querySelectorAll('[data-idx]').forEach(el=>el.addEventListener('click',()=>svPickAddr(_svAddrResults[+el.dataset.idx].full)));
       drop.style.display='block';
     }catch(e){drop.style.display='none';}
   },350);
@@ -3685,6 +3697,7 @@ async function jcCalcMileage(){
   try{
     // Step 1: geocode job address via Photon (same API already used in this app)
     const photonRes=await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(job.address)}&limit=3&lang=en`);
+    if(!photonRes.ok) throw new Error('Geocoding service unavailable (HTTP '+photonRes.status+')');
     const photonData=await photonRes.json();
     const feature=photonData?.features?.[0];
     if(!feature) throw new Error('Address not found. Enter miles manually instead.');
@@ -4298,7 +4311,6 @@ function cvCheckMode(){
 function cvLockDevice(){
   if(!confirm('Lock this device to Crew View only?\n\nUse the Manager Access link at the bottom to unlock.')) return;
   localStorage.setItem('fpRole','crew');
-  _saveSession('crew');
   document.body.classList.add('crew-mode');
   const ml=document.getElementById('cv-manager-link');
   if(ml) ml.style.display='block';
@@ -4558,7 +4570,7 @@ function cvTapEvent(jobId,ci,w,d,dateStr){
     const label=slot.l;
     // Scan all weeks for this crew to find every slot with the same label
     let minDate=null,maxDate=null;
-    const newJobId=Date.now();
+    const newJobId=(typeof crypto!=='undefined'&&crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2));
     const crewWeeks=newSlots[ci]||{};
     Object.entries(crewWeeks).forEach(([wStr,days])=>{
       const wOff=+wStr;
@@ -5068,20 +5080,31 @@ function renderMaterialCalc(){
 }
 
 // ── PIN AUTH ─────────────────────────────────────────────────────────────────
-let CREW_PIN='1234', ADMIN_PIN='0061', _pinBuf='';
+let ADMIN_PIN='0061', CREW_PIN='1234', _pinBuf='';
+let _sessionAuthed = false;   // in-memory only — always false on page load/refresh
+let _autoLockTimer  = null;
+const AUTO_LOCK_MS  = 20 * 60 * 1000; // 20 minutes
 
 function _pinAuthKey(){ return 'fpAuth_v1'; }
 
-function checkLoginSession(){
-  try{
-    const a=JSON.parse(localStorage.getItem(_pinAuthKey())||'{}');
-    if(a.expiry&&a.expiry>Date.now()&&(a.role==='crew'||a.role==='admin')) return a.role;
-  }catch(e){}
-  return null;
+// Always returns null on a fresh page load — no saved sessions ever
+function checkLoginSession(){ return null; }
+
+function _saveSession(){
+  _sessionAuthed = true;
+  _resetAutoLockTimer();
 }
 
-function _saveSession(role){
-  localStorage.setItem(_pinAuthKey(),JSON.stringify({role,expiry:Date.now()+7*24*60*60*1000}));
+function _resetAutoLockTimer(){
+  if(!_sessionAuthed) return;
+  clearTimeout(_autoLockTimer);
+  _autoLockTimer = setTimeout(()=>{
+    _sessionAuthed = false;
+    localStorage.removeItem('fpRole');
+    document.body.classList.remove('crew-mode');
+    showLoginScreen();
+    showToast('🔒 App locked due to inactivity.');
+  }, AUTO_LOCK_MS);
 }
 
 async function showLoginScreen(){
@@ -5090,9 +5113,10 @@ async function showLoginScreen(){
   const ls=document.getElementById('login-screen');
   ls.style.display='flex';
   try{
-    const cp=await sb.getKV('crew_pin'), ap=await sb.getKV('admin_pin');
-    if(cp) CREW_PIN=String(cp).trim();
+    const ap=await sb.getKV('admin_pin');
     if(ap) ADMIN_PIN=String(ap).trim();
+    const cp=await sb.getKV('crew_pin');
+    if(cp) CREW_PIN=String(cp).trim();
   }catch(e){}
 }
 
@@ -5123,21 +5147,23 @@ function pinSubmit(){
 }
 
 function _pinSuccess(role){
-  _saveSession(role);
+  _saveSession();
   _hideLoginScreen();
   if(role==='crew'){
     localStorage.setItem('fpRole','crew');
-    cvCheckMode();
+    document.body.classList.add('crew-mode');
+    const ml=document.getElementById('cv-manager-link');
+    if(ml) ml.style.display='block';
+    loadAllFromSupabase().then(()=>{ showPage('crewview'); });
   } else {
     localStorage.removeItem('fpRole');
     document.body.classList.remove('crew-mode');
     const ml=document.getElementById('cv-manager-link');
     if(ml) ml.style.display='none';
+    loadAllFromSupabase().then(()=>{
+      try{ const last=localStorage.getItem('fpLastPage'); if(last&&last!=='dashboard'&&document.getElementById('page-'+last)) showPage(last); }catch(e){}
+    });
   }
-  loadAllFromSupabase().then(()=>{
-    if(role==='crew'){showPage('crewview');return;}
-    try{ const last=localStorage.getItem('fpLastPage'); if(last&&last!=='dashboard'&&document.getElementById('page-'+last)) showPage(last); }catch(e){}
-  });
 }
 
 function _pinFail(){
@@ -5150,25 +5176,31 @@ function _pinFail(){
 }
 
 function pinLogout(){
-  if(!confirm('Sign out and return to the PIN screen?')) return;
-  localStorage.removeItem(_pinAuthKey());
+  if(!confirm('Lock the app and return to the manager code screen?')) return;
+  _sessionAuthed = false;
+  clearTimeout(_autoLockTimer);
   localStorage.removeItem('fpRole');
   document.body.classList.remove('crew-mode');
   showLoginScreen();
 }
 
 async function pinSaveSettings(){
-  const nc=document.getElementById('pin-new-crew').value.trim();
   const na=document.getElementById('pin-new-admin').value.trim();
-  if(nc.length<4||na.length<4){ showToast('PINs must be at least 4 digits.'); return; }
-  if(nc===na){ showToast('Crew and Admin PINs must be different.'); return; }
-  if(!/^\d+$/.test(nc)||!/^\d+$/.test(na)){ showToast('PINs must be numbers only.'); return; }
-  CREW_PIN=nc; ADMIN_PIN=na;
-  await sb.setKV('crew_pin',nc);
-  await sb.setKV('admin_pin',na);
-  document.getElementById('pin-new-crew').value='';
-  document.getElementById('pin-new-admin').value='';
-  showToast('✅ PINs updated successfully.');
+  const nc=document.getElementById('pin-new-crew').value.trim();
+  if(!na&&!nc){ showToast('Enter at least one code to update.'); return; }
+  if(na){
+    if(na.length<4){ showToast('Manager code must be at least 4 digits.'); return; }
+    if(!/^\d+$/.test(na)){ showToast('Manager code must be numbers only.'); return; }
+    if(na===CREW_PIN){ showToast('Manager and crew codes must be different.'); return; }
+  }
+  if(nc){
+    if(nc.length<4){ showToast('Crew code must be at least 4 digits.'); return; }
+    if(!/^\d+$/.test(nc)){ showToast('Crew code must be numbers only.'); return; }
+    if(nc===(na||ADMIN_PIN)){ showToast('Manager and crew codes must be different.'); return; }
+  }
+  if(na){ ADMIN_PIN=na; await sb.setKV('admin_pin',na); document.getElementById('pin-new-admin').value=''; }
+  if(nc){ CREW_PIN=nc; await sb.setKV('crew_pin',nc); document.getElementById('pin-new-crew').value=''; }
+  showToast('✅ Codes updated.');
 }
 
 function showPage(id){
@@ -7334,7 +7366,7 @@ async function handleWavePDF(event) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 1000,
         messages: [{
           role: 'user',
@@ -7795,7 +7827,7 @@ function updateSlotPreview(){
   }
 }
 
-function savePTO(){
+async function savePTO(){
   const crewIdx=parseInt(document.getElementById('pto-crew').value);
   const reason=document.getElementById('pto-reason').value;
 
@@ -7823,7 +7855,8 @@ function savePTO(){
     if(!ptoSlots[crewIdx]) ptoSlots[crewIdx]={};
     if(!ptoSlots[crewIdx][wOff]) ptoSlots[crewIdx][wOff]={};
     ptoSlots[crewIdx][wOff][dIdx]={label,type:'pto',partial:true,from,to};
-    dbSavePTOEntry(crewIdx,wOff,dIdx,label);
+    const _ptoRes1=await dbSavePTOEntry(crewIdx,wOff,dIdx,label);
+    if(!_ptoRes1) showSyncStatus('⚠ PTO save failed – check connection','var(--red)');
     closeModal('pto');renderSchedule();
     showToast(`✓ Time slot blocked for ${CREW[crewIdx].name} — ${label}`);
 
@@ -7854,22 +7887,22 @@ function savePTO(){
 
     if(conflicts.length>0){
       // Save the PTO first, then show conflict modal
-      toBlock.forEach(({wOff,dIdx})=>{
+      for(const {wOff,dIdx} of toBlock){
         if(!ptoSlots[crewIdx]) ptoSlots[crewIdx]={};
         if(!ptoSlots[crewIdx][wOff]) ptoSlots[crewIdx][wOff]={};
         ptoSlots[crewIdx][wOff][dIdx]={label:reason,type:'pto'};
-        dbSavePTOEntry(crewIdx,wOff,dIdx,reason);
-      });
+        await dbSavePTOEntry(crewIdx,wOff,dIdx,reason);
+      }
       closeModal('pto');
       renderSchedule();
       openConflictModal(crewIdx, null, null, reason, conflicts);
     } else {
-      toBlock.forEach(({wOff,dIdx})=>{
+      for(const {wOff,dIdx} of toBlock){
         if(!ptoSlots[crewIdx]) ptoSlots[crewIdx]={};
         if(!ptoSlots[crewIdx][wOff]) ptoSlots[crewIdx][wOff]={};
         ptoSlots[crewIdx][wOff][dIdx]={label:reason,type:'pto'};
-        dbSavePTOEntry(crewIdx,wOff,dIdx,reason);
-      });
+        await dbSavePTOEntry(crewIdx,wOff,dIdx,reason);
+      }
       closeModal('pto');renderSchedule();
       showToast(`✓ ${toBlock.length} day${toBlock.length!==1?'s':''} blocked for ${CREW[crewIdx].name}.`);
     }
