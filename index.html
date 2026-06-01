@@ -7871,38 +7871,63 @@ function buildWeekGrid(wOff,mon,dNames){
       body.appendChild(cell);
     });
 
-    // Spanning bars: find runs of consecutive days with the same job label + same ext status
-    let runStart=null, runLabel=null, runType=null, runIsExtra=false;
-    const flushRun=(endExcl)=>{
-      if(runStart===null) return;
-      const startDay=runStart;
+    // Spanning bars: collect runs then render with gradient connection between adjacent primary→extension bars
+    const _TYP_RGBA={epoxy:'26,115,232',flake:'26,115,232',concrete:'227,116,0',
+      overlay:'132,48,206',metallic:'132,48,206',prep:'0,151,167',newjob:'24,128,56'};
+    const COL_FR=[1,1,1,1,1,0.8,0.8]; // Mon-Fri=1fr, Sat-Sun=0.8fr — must match CSS grid
+    const TOTAL_FR=COL_FR.reduce((a,b)=>a+b,0);
+    // Pass 1: collect run segments
+    const _runs=[];
+    let rS=null,rL=null,rT=null,rX=false;
+    for(let d=0;d<=TOTAL_DAYS;d++){
+      if(d===TOTAL_DAYS){if(rS!==null)_runs.push({s:rS,e:d,l:rL,t:rT,x:rX});break;}
+      const{slot,isExtra}=days[d];
+      if(slot){
+        if(slot.l===rL&&isExtra===rX){/* extend */}
+        else{if(rS!==null)_runs.push({s:rS,e:d,l:rL,t:rT,x:rX});rS=d;rL=slot.l;rT=slot.t||'epoxy';rX=isExtra;}
+      }else{if(rS!==null)_runs.push({s:rS,e:d,l:rL,t:rT,x:rX});rS=null;rL=null;rT=null;rX=false;}
+    }
+    // Pass 2: render bars with adjacency-aware gradient styling
+    _runs.forEach((run,ri)=>{
+      const{s:startDay,e:endExcl,l:label,t:type,x:isExtra}=run;
       const span=endExcl-startDay;
       const jobId=SLOT_JOB_MAP[jcSlotKey(i,wOff,startDay)];
-      const jr=jobId?JOB_RECORDS.find(j=>j.id===jobId):JOB_RECORDS.find(j=>j.customer===runLabel);
+      const jr=jobId?JOB_RECORDS.find(j=>j.id===jobId):JOB_RECORDS.find(j=>j.customer===label);
       const isDone=jr?.status==='complete';
       const isWkndBar=startDay>=5;
+      const nxt=_runs[ri+1],prv=_runs[ri-1];
+      // Gradient connection: normal bar ending exactly where an extension of same job begins
+      const fadeToNext=!isExtra&&!isDone&&nxt&&nxt.x&&nxt.l===label&&nxt.s===endExcl;
+      const fadeFromPrev=isExtra&&!isDone&&prv&&!prv.x&&prv.l===label&&prv.e===startDay;
       const bar=document.createElement('div');
-      const extCls=runIsExtra&&!isDone?' extension':'';
-      bar.className='sch-span-bar '+(isDone?'done':(isWkndBar?'weekend-work ':(runType||'epoxy')))+extCls;
-      bar.textContent=(isDone?'✓ ':'')+runLabel;
+      let cls='sch-span-bar ';
+      if(isDone)cls+='done';
+      else if(isWkndBar)cls+='weekend-work';
+      else cls+=(type||'epoxy');
+      if(isExtra&&!isDone)cls+=' extension';
+      bar.className=cls;
+      bar.textContent=(isDone?'✓ ':'')+label;
       bar.title='Click to open';
-      const COL_FR=[1,1,1,1,1,0.8,0.8]; // Mon-Fri=1fr, Sat-Sun=0.8fr — must match CSS grid
-      const TOTAL_FR=COL_FR.reduce((a,b)=>a+b,0);
       const leftFr=COL_FR.slice(0,startDay).reduce((a,b)=>a+b,0);
       const widthFr=COL_FR.slice(startDay,startDay+span).reduce((a,b)=>a+b,0);
-      bar.style.cssText=`left:calc(${(leftFr/TOTAL_FR*100).toFixed(3)}% + 2px);width:calc(${(widthFr/TOTAL_FR*100).toFixed(3)}% - 6px);`;
+      const lp=(leftFr/TOTAL_FR*100).toFixed(3);
+      const wp=(widthFr/TOTAL_FR*100).toFixed(3);
+      let st;
+      if(fadeToNext){
+        // Primary bar leading into extension: fade right edge + flush right, no right radius
+        const rgb=_TYP_RGBA[type||'epoxy']||'26,115,232';
+        st=`left:calc(${lp}% + 2px);width:calc(${wp}% - 1px);border-radius:11px 0 0 11px;`
+          +`background:linear-gradient(to right,rgba(${rgb},1) 0%,rgba(${rgb},1) 70%,rgba(${rgb},.32) 100%);`;
+      }else if(fadeFromPrev){
+        // Extension bar following primary: flush left, no left radius (extension class handles opacity)
+        st=`left:calc(${lp}%);width:calc(${wp}% - 4px);border-radius:0 11px 11px 0;`;
+      }else{
+        st=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);`;
+      }
+      bar.style.cssText=st;
       bar.onclick=()=>openSlotEdit(i,wOff,startDay);
       body.appendChild(bar);
-      runStart=null; runLabel=null; runType=null; runIsExtra=false;
-    };
-    for(let d=0;d<=TOTAL_DAYS;d++){
-      if(d===TOTAL_DAYS){ flushRun(TOTAL_DAYS); break; }
-      const{pto,hol,slot,isExtra}=days[d];
-      if(slot){
-        if(slot.l===runLabel&&isExtra===runIsExtra){ /* extend run */ }
-        else{ flushRun(d); runStart=d; runLabel=slot.l; runType=slot.t||'epoxy'; runIsExtra=isExtra; }
-      } else { flushRun(d); }
-    }
+    });
 
     rowDiv.appendChild(body);
     wrap.appendChild(rowDiv);
