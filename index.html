@@ -2841,8 +2841,8 @@ async function jcSyncCrewSlots(job){
     for(const ds of allDates){
       const pos=cvDateToSlot(new Date(ds+'T00:00:00')); if(!pos) continue;
       const{w,d}=pos; const key=jcSlotKey(ci,w,d);
-      // Already has a slot for this job on this date — skip
-      if(SLOT_JOB_MAP[key]===job.id||(newSlots[ci]?.[w]?.[d]?.l===job.customer)) continue;
+      // Already has a slot for this job on this date AND the slot actually exists — skip
+      if((SLOT_JOB_MAP[key]===job.id&&newSlots[ci]?.[w]?.[d])||(newSlots[ci]?.[w]?.[d]?.l===job.customer)) continue;
       // Don't stomp a different job already on this day
       if(newSlots[ci]?.[w]?.[d]&&SLOT_JOB_MAP[key]&&SLOT_JOB_MAP[key]!==job.id) continue;
       await sePlaceSlot(ci,w,d,job.customer,job.jobType||'epoxy');
