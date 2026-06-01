@@ -3976,7 +3976,7 @@ function renderJobCosting(){
   let totalLaborCost=0;
   let totalHours=0;
   const laborRows=[];
-  const allDates=[...jcWeekdays(job.startDate,job.endDate),...(job.extraDays||[])].sort();
+  const allDates=[...new Set([...jcWeekdays(job.startDate,job.endDate),...(job.extraDays||[])])].sort();
 
   allDates.forEach(ds=>{
     const log=logs[ds]; if(!log) return;
