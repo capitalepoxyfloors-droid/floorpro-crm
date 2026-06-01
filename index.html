@@ -5487,7 +5487,7 @@ function renderSalesSchedule(){
       if(hol){
         cell.appendChild(mk('div','sch-job holiday',hol));
       } else {
-        const dayVisits=SALES_VISITS.filter(v=>v.date===dateStr);
+        const dayVisits=SALES_VISITS.filter(v=>v.date===dateStr).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
         if(dayVisits.length){
           dayVisits.forEach(v=>{
             const sc=SV_COLORS[v.type]||SV_COLORS['Other'];
