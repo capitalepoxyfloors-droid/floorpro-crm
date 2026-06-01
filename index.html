@@ -424,6 +424,11 @@
         <span>Mat. Requests</span>
         <span id="mr-nav-badge" style="display:none;position:absolute;top:4px;right:6px;background:var(--red,#e53e3e);color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:1px 5px;line-height:1.4;font-family:'DM Mono',monospace;"></span>
       </button>
+      <button class="nav-item" id="nav-ptoreqs" onclick="showPage('ptoreqs')" style="position:relative;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/><path d="M19 9l2 2 4-4"/></svg>
+        <span>PTO Requests</span>
+        <span id="pto-nav-badge" style="display:none;position:absolute;top:4px;right:6px;background:var(--red,#e53e3e);color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:1px 5px;line-height:1.4;font-family:'DM Mono',monospace;"></span>
+      </button>
       <div class="nav-label" style="margin-top:8px;">Settings</div>
       <button class="nav-item" onclick="showPage('reference')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/><path d="M9 7h6M9 11h6M9 15h4"/></svg>
@@ -812,6 +817,7 @@
         </div>
         <div style="display:flex;gap:8px;align-items:center;">
           <button class="cv-today-btn" onclick="cvGoToday()">Today</button>
+          <button class="cv-today-btn" onclick="openPtoRequestModal()" style="color:var(--accent);border-color:var(--accent);">✋ Request PTO</button>
           <button class="cv-lock-btn cv-today-btn" onclick="cvLockDevice()" style="color:var(--red);border-color:var(--red-dim);">🔒 Crew Mode</button>
         </div>
       </div>
@@ -847,6 +853,64 @@
       </div>
     </div>
     <div id="mr-page-list"></div>
+  </div>
+</div>
+
+<!-- PTO REQUEST MODAL -->
+<div class="modal-overlay" id="modal-ptorequest">
+  <div class="modal" style="max-width:480px;">
+    <div class="modal-header">
+      <div class="modal-title">✋ Request Time Off</div>
+      <button class="modal-close" onclick="closeModal('ptorequest')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Your Name</label>
+        <select class="form-select" id="ptoreq-crew">
+          <!-- populated by openPtoRequestModal() -->
+        </select>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">First Day Off</label>
+          <input class="form-input" id="ptoreq-start" type="date"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Last Day Off</label>
+          <input class="form-input" id="ptoreq-end" type="date"/>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Reason <span style="color:var(--text3);font-weight:400;">(optional)</span></label>
+        <input class="form-input" id="ptoreq-reason" placeholder="Vacation, appointment, personal..."/>
+      </div>
+      <div id="ptoreq-note" style="font-size:12px;color:var(--text3);margin-top:4px;line-height:1.5;">Your request will be sent to Will for approval. You'll see it on the calendar once approved.</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('ptorequest')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitPtoRequest()">Send Request</button>
+    </div>
+  </div>
+</div>
+
+<!-- PTO REQUESTS PAGE -->
+<div class="page" id="page-ptoreqs">
+  <div style="max-width:820px;margin:0 auto;padding:28px 20px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
+      <div>
+        <div style="font-size:22px;font-weight:800;color:var(--text);">✋ PTO Requests</div>
+        <div style="font-size:13px;color:var(--text3);margin-top:3px;">Review crew time-off requests. Approving publishes the block to the install schedule.</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <select id="ptoreq-filter" class="form-select" style="font-size:12px;padding:5px 10px;" onchange="renderPtoRequestsPage()">
+          <option value="pending">Pending</option>
+          <option value="approved">Approved</option>
+          <option value="denied">Denied</option>
+          <option value="all">All</option>
+        </select>
+      </div>
+    </div>
+    <div id="ptoreq-page-list"></div>
   </div>
 </div>
 
@@ -2066,7 +2130,7 @@ async function deduplicateSlotsByJobRecord(){
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
   try{
-    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadCrewAttachments(),loadMatRequests()]);
+    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests()]);
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
@@ -5353,7 +5417,7 @@ function showPage(id){
   if(localStorage.getItem('fpRole')==='crew'&&id!=='crewview') return;
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
-  const map={dashboard:0,pipeline:1,jobs:2,schedule:3,salesschedule:4,jobcosting:5,matreqs:6,reference:7,installers:8,materials:9,materialcalc:10,jobtypes:11,holidays:12,pinsettings:13,crewview:14};
+  const map={dashboard:0,pipeline:1,jobs:2,schedule:3,salesschedule:4,jobcosting:5,matreqs:6,ptoreqs:7,reference:8,installers:9,materials:10,materialcalc:11,jobtypes:12,holidays:13,pinsettings:14,crewview:15};
   document.querySelectorAll('.nav-item').forEach((n,i)=>n.classList.toggle('active',i===map[id]));
   if(id==='dashboard') renderDashboard();
   if(id==='schedule') renderSchedule();
@@ -5368,6 +5432,7 @@ function showPage(id){
   if(id==='jobtypes') renderJobTypes();
   if(id==='materialcalc') renderMaterialCalc();
   if(id==='matreqs') renderMatRequestsPage();
+  if(id==='ptoreqs') renderPtoRequestsPage();
   try{localStorage.setItem('fpLastPage',id);}catch(e){}
 }
 
@@ -5579,6 +5644,137 @@ function mrClearReceived(){
   MATERIAL_REQUESTS=MATERIAL_REQUESTS.filter(r=>r.status!=='received');
   saveMatRequests(); renderMatRequestsPage();
   showToast('Cleared.');
+}
+
+// ── PTO REQUESTS ───────────────────────────────────────────────────────────────
+let PTO_REQUESTS = [];
+
+async function loadPtoRequests(){
+  try{const v=await sb.getKV('pto_requests');if(v){try{PTO_REQUESTS=JSON.parse(v)||[];}catch(e){PTO_REQUESTS=[];}}}catch(e){}
+  _updatePtoBadge();
+}
+async function savePtoRequests(){
+  await sb.setKV('pto_requests',JSON.stringify(PTO_REQUESTS));
+  _updatePtoBadge();
+}
+
+function _updatePtoBadge(){
+  const count=PTO_REQUESTS.filter(r=>r.status==='pending').length;
+  const badge=document.getElementById('pto-nav-badge'); if(!badge) return;
+  badge.style.display=count?'inline-block':'none';
+  badge.textContent=count>9?'9+':count;
+}
+
+function openPtoRequestModal(){
+  // Populate crew dropdown — pre-select based on active crew view filter
+  const sel=document.getElementById('ptoreq-crew');
+  sel.innerHTML=CREW.map((c,i)=>`<option value="${i}">${c.full}</option>`).join('');
+  if(cvCrewIdx>=0&&cvCrewIdx<CREW.length) sel.value=cvCrewIdx;
+  // Default dates: next weekday + 1 day range
+  const today=new Date(); today.setHours(0,0,0,0);
+  const next=new Date(today); do{next.setDate(next.getDate()+1);}while(next.getDay()===0||next.getDay()===6);
+  const fmt=d=>d.toISOString().split('T')[0];
+  document.getElementById('ptoreq-start').value=fmt(next);
+  document.getElementById('ptoreq-end').value=fmt(next);
+  document.getElementById('ptoreq-reason').value='';
+  openModal('ptorequest');
+}
+
+function submitPtoRequest(){
+  const crewIdx=parseInt(document.getElementById('ptoreq-crew').value);
+  const startDate=document.getElementById('ptoreq-start').value;
+  const endDate=document.getElementById('ptoreq-end').value;
+  const reason=document.getElementById('ptoreq-reason').value.trim()||'PTO';
+  if(!startDate||!endDate){showToast('Please select dates.');return;}
+  if(endDate<startDate){showToast('End date must be on or after start date.');return;}
+  // Count weekdays in range
+  let wdCount=0;const cur=new Date(startDate+'T00:00:00'),end=new Date(endDate+'T00:00:00');
+  while(cur<=end){if(cur.getDay()!==0&&cur.getDay()!==6)wdCount++;cur.setDate(cur.getDate()+1);}
+  if(wdCount===0){showToast('No weekdays in that range.');return;}
+  const req={
+    id:Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,6),
+    crewIdx, crewName:CREW[crewIdx]?.full||'Unknown',
+    startDate, endDate,
+    reason, weekdays:wdCount,
+    status:'pending',
+    submittedDate:new Date().toISOString().split('T')[0],
+    reviewedDate:''
+  };
+  PTO_REQUESTS.push(req);
+  savePtoRequests();
+  closeModal('ptorequest');
+  showToast('✓ PTO request sent — Will will review it shortly.');
+}
+
+async function approvePtoRequest(id){
+  const req=PTO_REQUESTS.find(r=>r.id===id); if(!req) return;
+  const crewIdx=req.crewIdx;
+  if(crewIdx<0||crewIdx>=CREW.length){showToast('Crew member not found.');return;}
+  // Place PTO blocks for every weekday in the range
+  const cur=new Date(req.startDate+'T00:00:00'),end=new Date(req.endDate+'T00:00:00');
+  let placed=0;
+  while(cur<=end){
+    const dow=cur.getDay();
+    if(dow!==0&&dow!==6){
+      const wOff=Math.round((cur-BASE)/(7*24*60*60*1000));
+      const dIdx=dow-1;
+      if(!ptoSlots[crewIdx]) ptoSlots[crewIdx]={};
+      if(!ptoSlots[crewIdx][wOff]) ptoSlots[crewIdx][wOff]={};
+      ptoSlots[crewIdx][wOff][dIdx]={label:req.reason,type:'pto'};
+      await dbSavePTOEntry(crewIdx,wOff,dIdx,req.reason);
+      placed++;
+    }
+    cur.setDate(cur.getDate()+1);
+  }
+  req.status='approved'; req.reviewedDate=new Date().toISOString().split('T')[0];
+  await savePtoRequests();
+  renderSchedule();
+  if(document.getElementById('page-crewview')?.classList.contains('active')) renderCrewView();
+  renderPtoRequestsPage();
+  showToast(`✓ Approved — ${placed} day${placed!==1?'s':''} blocked for ${req.crewName}.`);
+}
+
+async function denyPtoRequest(id){
+  const req=PTO_REQUESTS.find(r=>r.id===id); if(!req) return;
+  if(!confirm(`Deny ${req.crewName}'s request for ${req.startDate} – ${req.endDate}?`)) return;
+  req.status='denied'; req.reviewedDate=new Date().toISOString().split('T')[0];
+  await savePtoRequests();
+  renderPtoRequestsPage();
+  showToast('Request denied.');
+}
+
+function renderPtoRequestsPage(){
+  const el=document.getElementById('ptoreq-page-list'); if(!el) return;
+  const filter=document.getElementById('ptoreq-filter')?.value||'pending';
+  const list=filter==='all'?[...PTO_REQUESTS]:PTO_REQUESTS.filter(r=>r.status===filter);
+  list.sort((a,b)=>{const sp={pending:0,approved:1,denied:2};return (sp[a.status]??3)-(sp[b.status]??3)||b.submittedDate.localeCompare(a.submittedDate);});
+  if(!list.length){
+    el.innerHTML=`<div style="text-align:center;padding:60px 20px;color:var(--text3);font-size:14px;">${filter==='pending'?'✅ No pending PTO requests.':'No requests found.'}</div>`;
+    return;
+  }
+  const statusColor={pending:'var(--accent)',approved:'var(--green)',denied:'var(--red)'};
+  const statusLabel={pending:'Pending',approved:'Approved',denied:'Denied'};
+  const fmtD=ds=>{const d=new Date(ds+'T00:00:00');return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});};
+  el.innerHTML=list.map(r=>`
+    <div style="background:var(--surface);border:1px solid var(--border2);border-left:4px solid ${statusColor[r.status]};border-radius:var(--radius);padding:16px 18px;margin-bottom:10px;display:flex;align-items:flex-start;gap:14px;">
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:5px;">
+          <span style="font-size:15px;font-weight:700;color:var(--text);">${r.crewName}</span>
+          <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;background:${statusColor[r.status]}22;color:${statusColor[r.status]};text-transform:uppercase;letter-spacing:.4px;">${statusLabel[r.status]}</span>
+        </div>
+        <div style="font-size:13px;font-weight:600;color:var(--text2);margin-bottom:3px;">${fmtD(r.startDate)}${r.endDate!==r.startDate?' – '+fmtD(r.endDate):''} <span style="color:var(--text3);font-weight:400;">(${r.weekdays} working day${r.weekdays!==1?'s':''})</span></div>
+        ${r.reason&&r.reason!=='PTO'?`<div style="font-size:12px;color:var(--text2);margin-bottom:4px;">💬 ${r.reason}</div>`:''}
+        <div style="font-size:11px;color:var(--text3);">Submitted ${r.submittedDate}${r.reviewedDate?' · Reviewed '+r.reviewedDate:''}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;flex-shrink:0;">
+        ${r.status==='pending'?`
+          <button class="btn btn-primary" style="font-size:11px;padding:5px 14px;white-space:nowrap;background:var(--green);border-color:var(--green);" onclick="approvePtoRequest('${r.id}')">✓ Approve</button>
+          <button class="btn btn-ghost" style="font-size:11px;padding:5px 14px;white-space:nowrap;color:var(--red);border-color:var(--red);" onclick="denyPtoRequest('${r.id}')">✕ Deny</button>
+        `:''}
+        ${r.status==='approved'?`<span style="font-size:11px;color:var(--green);font-weight:600;">✓ On calendar</span>`:''}
+        ${r.status==='denied'?`<span style="font-size:11px;color:var(--red);font-weight:600;">✕ Denied</span>`:''}
+      </div>
+    </div>`).join('');
 }
 
 async function loadSalesVisits(){
