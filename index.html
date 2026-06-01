@@ -873,6 +873,21 @@
           </select>
         </div>
       </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Reminder</label>
+          <select class="form-select" id="sv-reminder">
+            <option value="none">No reminder</option>
+            <option value="15">15 min before</option>
+            <option value="30" selected>30 min before</option>
+            <option value="60">1 hour before</option>
+            <option value="120">2 hours before</option>
+          </select>
+        </div>
+        <div class="form-group" style="display:flex;align-items:flex-end;">
+          <div id="sv-notif-badge" style="font-size:11px;color:var(--text3);padding-bottom:8px;"></div>
+        </div>
+      </div>
       <div class="form-group">
         <label class="form-label">Address</label>
         <div style="position:relative;">
@@ -2043,6 +2058,7 @@ async function loadAllFromSupabase(){
     renderMaterials();
     await loadJobs();
     await autoAdvanceJobsByDate();
+    initSalesNotifications();
     showSyncStatus('✓ Ready','var(--green)');
   }catch(e){
     showSyncStatus('⚠ Working offline','var(--red)');
@@ -5330,6 +5346,80 @@ function showPage(id){
 let SALES_VISITS = [];
 let salesWeekOffset = new Date().getDay()===0 ? 1 : 0; // Sunday → show next week
 
+// ── SALES VISIT NOTIFICATIONS ──────────────────────────────────────────────
+let _svNotifGranted = false;
+const _SV_NOTIF_SS_KEY = 'sv_fired_notifs';
+
+function _svFmt12(t){
+  if(!t) return '';
+  const[h,m]=t.split(':'); const hr=parseInt(h,10);
+  return (hr%12||12)+':'+m+(hr<12?' am':' pm');
+}
+
+function initSalesNotifications(){
+  if(!('Notification' in window)) return;
+  if(Notification.permission==='granted'){ _svNotifGranted=true; _svStartPoller(); }
+  _updateSvNotifBadge();
+}
+
+function requestSvNotifPermission(){
+  if(!('Notification' in window)) return;
+  if(Notification.permission==='granted'){ _svNotifGranted=true; _svStartPoller(); _updateSvNotifBadge(); return; }
+  if(Notification.permission==='denied'){ showToast('⚠ Browser notifications are blocked. Enable them in your browser settings to get visit reminders.'); return; }
+  Notification.requestPermission().then(p=>{
+    _svNotifGranted=(p==='granted');
+    if(_svNotifGranted){ _svStartPoller(); showToast('✓ Notifications enabled — you\'ll get a reminder before each visit.'); }
+    else { showToast('⚠ Notification permission denied. No reminders will fire.'); }
+    _updateSvNotifBadge();
+  });
+}
+
+function _svStartPoller(){
+  if(window._svNotifTimer) return;
+  checkSalesNotifications();
+  window._svNotifTimer=setInterval(checkSalesNotifications,60000);
+}
+
+function checkSalesNotifications(){
+  if(!_svNotifGranted) return;
+  const now=new Date();
+  const fired=_svGetFired();
+  let changed=false;
+  SALES_VISITS.forEach(v=>{
+    if(!v.date||!v.time||!v.reminder||v.reminder==='none') return;
+    const visitDt=new Date(v.date+'T'+v.time+':00');
+    const minsUntil=(visitDt-now)/60000;
+    const rem=parseInt(v.reminder,10);
+    const key=`${v.name}|${v.date}|${v.time}|${v.reminder}`;
+    if(minsUntil>0&&minsUntil<=rem&&!fired.has(key)){
+      fired.add(key); changed=true;
+      const remLabel=rem>=60?rem/60+'hr':rem+'min';
+      const title=`📅 Visit in ${remLabel} — ${v.name}`;
+      const body=`${v.type} · ${_svFmt12(v.time)}${v.address?'\n'+v.address:''}`;
+      try{
+        const n=new Notification(title,{body,icon:'icon.png',tag:key,requireInteraction:false});
+        n.onclick=()=>{ window.focus(); n.close(); };
+      }catch(e){}
+    }
+  });
+  if(changed) _svSaveFired(fired);
+}
+
+function _svGetFired(){
+  try{ const s=sessionStorage.getItem(_SV_NOTIF_SS_KEY); return new Set(s?JSON.parse(s):[]); }catch(e){ return new Set(); }
+}
+function _svSaveFired(set){
+  try{ sessionStorage.setItem(_SV_NOTIF_SS_KEY,JSON.stringify([...set])); }catch(e){}
+}
+
+function _updateSvNotifBadge(){
+  const el=document.getElementById('sv-notif-badge'); if(!el) return;
+  if(!('Notification' in window)){ el.textContent='Notifications not supported in this browser'; return; }
+  if(Notification.permission==='granted') el.innerHTML='🔔 Notifications <span style="color:var(--green)">on</span>';
+  else if(Notification.permission==='denied') el.innerHTML='🔕 Notifications <span style="color:var(--red)">blocked</span>';
+  else el.innerHTML='<span style="color:var(--text3)">Permission required to send reminders</span>';
+}
+
 async function loadSalesVisits(){
   try{
     const val = await sb.getKV('sales_visits');
@@ -5522,6 +5612,7 @@ function saveSalesVisit(){
     date:document.getElementById('sv-date').value,
     time:document.getElementById('sv-time').value,
     duration:document.getElementById('sv-duration').value,
+    reminder:document.getElementById('sv-reminder').value||'none',
     address:document.getElementById('sv-address').value.trim(),
     notes:document.getElementById('sv-notes').value.trim(),
     lead_idx: selVal!==''?parseInt(selVal):null,
@@ -5543,6 +5634,8 @@ function saveSalesVisit(){
       showToast('✓ Visit added to sales schedule!');
     }
   }
+  // Request notification permission if a reminder was set and we don't have it yet
+  if(visit.reminder && visit.reminder !== 'none') requestSvNotifPermission();
   closeModal('salesvisit');
   persistSalesVisits();
   renderSalesSchedule();
@@ -5557,10 +5650,12 @@ function editSalesVisit(idx){
   document.getElementById('sv-date').value=v.date||'';
   document.getElementById('sv-time').value=v.time||'09:00';
   document.getElementById('sv-duration').value=v.duration||'1 hour';
+  document.getElementById('sv-reminder').value=v.reminder||'none';
   document.getElementById('sv-address').value=v.address||'';
   document.getElementById('sv-notes').value=v.notes||'';
   document.getElementById('sv-title').textContent='Edit Sales Visit';
   openModal('salesvisit');
+  _updateSvNotifBadge();
 }
 
 function deleteSalesVisit(idx){
@@ -6480,8 +6575,10 @@ function openModal(id){
     ['sv-name','sv-address','sv-notes'].forEach(f=>{const el=document.getElementById(f);if(el)el.value='';});
     document.getElementById('sv-type').value='Estimate / Measure';
     document.getElementById('sv-duration').value='1 hour';
+    document.getElementById('sv-reminder').value='30';
     document.getElementById('sv-lead-select').value='';
     populateSvLeadDropdown();
+    _updateSvNotifBadge();
   }
   if(id==='addref' && editingRefIdx===null){
     document.getElementById('addref-title').textContent='Add Reference Entry';
