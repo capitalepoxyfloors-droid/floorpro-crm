@@ -4268,11 +4268,15 @@ function jcOpenMaps(){
 
 // Helper: return array of numDays weekday Date objects starting from startDateStr
 function getWorkingDaysFrom(startDateStr, numDays){
+  // If start is a weekend day, treat as a weekend job — count every calendar day.
+  // If start is a weekday, count only Mon–Fri (skip weekends).
+  const startDow=new Date(startDateStr+'T00:00:00').getDay();
+  const isWkndStart=startDow===0||startDow===6;
   const dates=[];
   const cur=new Date(startDateStr+'T00:00:00');
   while(dates.length<numDays){
     const dow=cur.getDay();
-    if(dow!==0&&dow!==6) dates.push(new Date(cur));
+    if(isWkndStart||(dow!==0&&dow!==6)) dates.push(new Date(cur));
     cur.setDate(cur.getDate()+1);
   }
   return dates;
@@ -4301,7 +4305,7 @@ function jcReschedulePreview(){
   const el=document.getElementById('rs-preview');
   if(!newStart){el.textContent='';return;}
   const startDow=new Date(newStart+'T00:00:00').getDay();
-  if(startDow===0||startDow===6){el.style.color='var(--red)';el.textContent='⚠ Start date is a weekend — pick a weekday.';return;}
+  const isWkndStart=startDow===0||startDow===6;
   el.style.color='var(--accent)';
   const workDays=getWorkingDaysFrom(newStart,duration);
   const newEnd=workDays[workDays.length-1];
@@ -4309,15 +4313,13 @@ function jcReschedulePreview(){
   const fmt=d=>MO[d.getMonth()]+' '+d.getDate();
   const startD=new Date(newStart+'T00:00:00');
   const sameDayStr=startD.getTime()===newEnd.getTime()?fmt(startD)+', '+startD.getFullYear():fmt(startD)+' – '+fmt(newEnd)+', '+newEnd.getFullYear();
-  el.textContent=sameDayStr+' · '+duration+' working day'+(duration!==1?'s':'');
+  el.textContent=sameDayStr+' · '+duration+' day'+(duration!==1?'s':'')+(isWkndStart?' (weekend job — all days counted)':'');
 }
 
 async function jcRescheduleConfirm(){
   const job=getJobRecord(_jcId); if(!job) return;
   const newStart=document.getElementById('rs-new-start').value;
   if(!newStart){showToast('Pick a new start date.');return;}
-  const startDow=new Date(newStart+'T00:00:00').getDay();
-  if(startDow===0||startDow===6){showToast('Start date must be a weekday (Mon–Fri).');return;}
   const duration=parseInt(document.getElementById('rs-duration').value,10)||1;
 
   // Collect distinct crew CIs that have slots for this job
