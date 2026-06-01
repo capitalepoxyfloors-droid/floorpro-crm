@@ -1177,6 +1177,56 @@
         </div>
       </div>
 
+      <!-- Employment History -->
+      <div style="border-top:1px solid var(--border2);margin:20px 0 16px;"></div>
+      <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:14px;">📋 Employment History</div>
+
+      <!-- Start Date -->
+      <div class="form-row" style="margin-bottom:4px;">
+        <div class="form-group">
+          <label class="form-label">Start Date</label>
+          <input class="form-input" id="ce-start-date" type="date" style="max-width:180px;"/>
+        </div>
+      </div>
+
+      <!-- Event log -->
+      <div id="ce-emp-log" style="display:flex;flex-direction:column;gap:6px;margin:14px 0 12px;"></div>
+
+      <!-- Add Event form -->
+      <div style="border:1px solid var(--border2);border-radius:var(--radius-sm);padding:14px;background:var(--surface2);">
+        <div style="font-size:11px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;">Add Event</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Date</label>
+            <input class="form-input" id="ce-ev-date" type="date"/>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Event Type</label>
+            <select class="form-input" id="ce-ev-type" onchange="ceEvTypeChange()">
+              <option value="review">Performance Review</option>
+              <option value="pay_change">Pay Change</option>
+              <option value="promotion">Promotion / Role Change</option>
+              <option value="warning">Write-Up / Warning</option>
+              <option value="other">Other Note</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row" id="ce-ev-rate-row" style="display:none;">
+          <div class="form-group">
+            <label class="form-label">New Hourly Rate</label>
+            <div style="position:relative;max-width:160px;">
+              <span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text2);font-weight:600;">$</span>
+              <input class="form-input" id="ce-ev-rate" type="number" min="0" step="0.01" placeholder="0.00" style="padding-left:26px;"/>
+            </div>
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="form-label">Notes</label>
+          <input class="form-input" id="ce-ev-note" placeholder="e.g. Strong performance, raise approved…"/>
+        </div>
+        <button class="btn btn-ghost" style="font-size:12px;padding:6px 14px;" onclick="ceAddEvent()">+ Add to History</button>
+      </div>
+
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('crewedit')">Cancel</button>
@@ -1941,7 +1991,7 @@ async function deduplicateSlotsByJobRecord(){
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
   try{
-    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories()]);
+    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory()]);
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
@@ -6492,8 +6542,16 @@ function openCrewEdit(idx){
   });
   document.getElementById('ce-results').style.display = 'none';
   document.getElementById('ce-pto-preview').textContent = '';
+  // Populate employment history
+  const _hKey = (CREW_DATA[idx].db_id?'id_'+CREW_DATA[idx].db_id:'name_'+(CREW_DATA[idx].full||'').toLowerCase().replace(/\s+/g,'_'));
+  document.getElementById('ce-start-date').value = CREW_HISTORY[_hKey]?.startDate||'';
+  document.getElementById('ce-ev-date').value = new Date().toISOString().split('T')[0];
+  document.getElementById('ce-ev-type').value = 'review';
+  document.getElementById('ce-ev-rate-row').style.display='none';
+  document.getElementById('ce-ev-note').value='';
   openModal('crewedit');
   calcBurden();
+  renderEmpLog();
 }
 
 function calcBurdenForCrew(c){
@@ -6595,10 +6653,105 @@ function saveCrewEdit(){
   c.specialties = Object.entries(spMap).filter(([key])=>document.getElementById('ce-sp-'+key).checked).map(([,val])=>val);
   CREW[editingCrewIdx].name = c.name;
   CREW[editingCrewIdx].full = c.full;
+  // Save start date to employment history
+  const startDateVal = document.getElementById('ce-start-date').value;
+  const hKey = ceHistoryKey();
+  if(!CREW_HISTORY[hKey]) CREW_HISTORY[hKey] = {startDate:'', events:[]};
+  CREW_HISTORY[hKey].startDate = startDateVal;
+  saveCrewHistory();
   closeModal('crewedit');
   dbSaveCrew(c, editingCrewIdx);
   renderCrewCards();
   showToast('✓ '+c.full+' updated!');
+}
+
+// ── EMPLOYMENT HISTORY ────────────────────────────────────────────────────────
+let CREW_HISTORY = {}; // { "crewKey": { startDate: "", events: [{id,date,type,note,rate}] } }
+
+function ceHistoryKey(){
+  const c = CREW_DATA[editingCrewIdx];
+  return c.db_id ? 'id_'+c.db_id : 'name_'+(c.full||'').toLowerCase().replace(/\s+/g,'_');
+}
+
+async function loadCrewHistory(){
+  const v = await sb.getKV('crew_history');
+  if(v){ try{ CREW_HISTORY=JSON.parse(v)||{}; }catch(e){ console.error('loadCrewHistory parse error:',e); } }
+}
+async function saveCrewHistory(){
+  await sb.setKV('crew_history', JSON.stringify(CREW_HISTORY));
+}
+
+function ceEvTypeChange(){
+  const t = document.getElementById('ce-ev-type').value;
+  document.getElementById('ce-ev-rate-row').style.display = t==='pay_change' ? '' : 'none';
+  if(t!=='pay_change') document.getElementById('ce-ev-rate').value='';
+}
+
+function ceAddEvent(){
+  const date = document.getElementById('ce-ev-date').value;
+  const type = document.getElementById('ce-ev-type').value;
+  const note = document.getElementById('ce-ev-note').value.trim();
+  const rate = document.getElementById('ce-ev-rate').value;
+  if(!date){ showToast('Pick a date for this event.'); return; }
+  if(!note){ showToast('Add a note describing this event.'); return; }
+  if(type==='pay_change'&&!rate){ showToast('Enter the new hourly rate for a pay change.'); return; }
+  const hKey = ceHistoryKey();
+  if(!CREW_HISTORY[hKey]) CREW_HISTORY[hKey]={startDate:'',events:[]};
+  const ev = {
+    id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36)+Math.random().toString(36).slice(2),
+    date, type, note,
+    rate: type==='pay_change' ? parseFloat(rate) : null
+  };
+  CREW_HISTORY[hKey].events.push(ev);
+  CREW_HISTORY[hKey].events.sort((a,b)=>a.date.localeCompare(b.date));
+  saveCrewHistory();
+  // Clear inputs
+  document.getElementById('ce-ev-note').value='';
+  document.getElementById('ce-ev-rate').value='';
+  document.getElementById('ce-ev-rate-row').style.display='none';
+  document.getElementById('ce-ev-type').value='review';
+  renderEmpLog();
+  showToast('✓ Event added.');
+}
+
+function ceDeleteEvent(evId){
+  if(!confirm('Remove this entry from the history?')) return;
+  const hKey = ceHistoryKey();
+  if(!CREW_HISTORY[hKey]) return;
+  CREW_HISTORY[hKey].events = CREW_HISTORY[hKey].events.filter(e=>e.id!==evId);
+  saveCrewHistory();
+  renderEmpLog();
+}
+
+function renderEmpLog(){
+  const wrap = document.getElementById('ce-emp-log');
+  if(!wrap) return;
+  const hKey = ceHistoryKey();
+  const hist = CREW_HISTORY[hKey];
+  const events = hist?.events||[];
+  if(!events.length){ wrap.innerHTML='<div style="font-size:12px;color:var(--text3);padding:4px 0;">No events recorded yet.</div>'; return; }
+  const typeInfo = {
+    review:     {label:'Review',      color:'var(--accent)',  bg:'var(--accent-dim)'},
+    pay_change: {label:'Pay Change',  color:'var(--green)',   bg:'#16a34a22'},
+    promotion:  {label:'Promotion',   color:'#a855f7',        bg:'#a855f722'},
+    warning:    {label:'Write-Up',    color:'var(--red)',     bg:'#ef444422'},
+    other:      {label:'Note',        color:'var(--text3)',   bg:'var(--surface3)'},
+  };
+  const fmt = d=>{ const [y,m,day]=d.split('-'); const mo=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']; return mo[+m-1]+' '+parseInt(day)+', '+y; };
+  wrap.innerHTML = [...events].reverse().map(ev=>{
+    const ti = typeInfo[ev.type]||typeInfo.other;
+    return `<div style="display:flex;gap:10px;align-items:flex-start;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:10px 12px;">
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:3px;">
+          <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;background:${ti.bg};color:${ti.color};font-family:'DM Mono',monospace;white-space:nowrap;">${ti.label}</span>
+          <span style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;">${fmt(ev.date)}</span>
+          ${ev.rate?`<span style="font-size:11px;font-weight:700;color:var(--green);font-family:'DM Mono',monospace;">→ $${ev.rate.toFixed(2)}/hr</span>`:''}
+        </div>
+        <div style="font-size:12.5px;color:var(--text2);">${ev.note.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
+      </div>
+      <button onclick="ceDeleteEvent('${ev.id}')" style="background:none;border:none;color:var(--text3);font-size:16px;cursor:pointer;padding:0;line-height:1;flex-shrink:0;" title="Remove">×</button>
+    </div>`;
+  }).join('');
 }
 function renderCrewShareList(){
   const wrap = document.getElementById('crew-share-list');
