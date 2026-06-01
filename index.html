@@ -870,14 +870,41 @@
           <!-- populated by openPtoRequestModal() -->
         </select>
       </div>
+      <!-- Full / Partial toggle -->
+      <div class="form-group">
+        <label class="form-label">Type</label>
+        <div style="display:flex;gap:8px;">
+          <button id="ptoreq-btn-full" onclick="ptoreqSetType('full')"
+            style="flex:1;padding:7px;border-radius:var(--radius-sm);font-size:13px;font-weight:600;cursor:pointer;border:2px solid var(--accent);background:var(--accent);color:#fff;font-family:'DM Sans',sans-serif;transition:all .15s;">
+            Full Day
+          </button>
+          <button id="ptoreq-btn-partial" onclick="ptoreqSetType('partial')"
+            style="flex:1;padding:7px;border-radius:var(--radius-sm);font-size:13px;font-weight:600;cursor:pointer;border:2px solid var(--border2);background:var(--surface2);color:var(--text3);font-family:'DM Sans',sans-serif;transition:all .15s;">
+            Partial Day
+          </button>
+        </div>
+      </div>
       <div class="form-row">
         <div class="form-group">
-          <label class="form-label">First Day Off</label>
+          <label class="form-label" id="ptoreq-start-lbl">First Day Off</label>
           <input class="form-input" id="ptoreq-start" type="date"/>
         </div>
-        <div class="form-group">
+        <div class="form-group" id="ptoreq-end-grp">
           <label class="form-label">Last Day Off</label>
           <input class="form-input" id="ptoreq-end" type="date"/>
+        </div>
+      </div>
+      <!-- Partial time row — hidden unless partial selected -->
+      <div id="ptoreq-time-row" style="display:none;">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">From</label>
+            <input class="form-input" id="ptoreq-from" type="time" value="07:00"/>
+          </div>
+          <div class="form-group">
+            <label class="form-label">To</label>
+            <input class="form-input" id="ptoreq-to" type="time" value="12:00"/>
+          </div>
         </div>
       </div>
       <div class="form-group">
@@ -5669,28 +5696,54 @@ function _updatePtoBadge(){
   badge.textContent=count>9?'9+':count;
 }
 
+function ptoreqSetType(type){
+  const isPartial=type==='partial';
+  // Toggle button styles
+  const full=document.getElementById('ptoreq-btn-full');
+  const part=document.getElementById('ptoreq-btn-partial');
+  if(full){full.style.background=isPartial?'var(--surface2)':'var(--accent)';full.style.color=isPartial?'var(--text3)':'#fff';full.style.borderColor=isPartial?'var(--border2)':'var(--accent)';}
+  if(part){part.style.background=isPartial?'var(--accent)':'var(--surface2)';part.style.color=isPartial?'#fff':'var(--text3)';part.style.borderColor=isPartial?'var(--accent)':'var(--border2)';}
+  // Show/hide time row and end-date group
+  const timeRow=document.getElementById('ptoreq-time-row');
+  const endGrp=document.getElementById('ptoreq-end-grp');
+  const startLbl=document.getElementById('ptoreq-start-lbl');
+  if(timeRow) timeRow.style.display=isPartial?'':'none';
+  if(endGrp) endGrp.style.display=isPartial?'none':'';  // partial = single day only
+  if(startLbl) startLbl.textContent=isPartial?'Date':'First Day Off';
+  document.getElementById('ptoreq-btn-full').dataset.type=type;
+}
+
 function openPtoRequestModal(){
   // Populate crew dropdown — pre-select based on active crew view filter
   const sel=document.getElementById('ptoreq-crew');
   sel.innerHTML=CREW.map((c,i)=>`<option value="${i}">${c.full}</option>`).join('');
   if(cvCrewIdx>=0&&cvCrewIdx<CREW.length) sel.value=cvCrewIdx;
-  // Default dates: next weekday + 1 day range
+  // Default dates: next weekday
   const today=new Date(); today.setHours(0,0,0,0);
   const next=new Date(today); do{next.setDate(next.getDate()+1);}while(next.getDay()===0||next.getDay()===6);
   const fmt=d=>d.toISOString().split('T')[0];
   document.getElementById('ptoreq-start').value=fmt(next);
   document.getElementById('ptoreq-end').value=fmt(next);
   document.getElementById('ptoreq-reason').value='';
+  document.getElementById('ptoreq-from').value='07:00';
+  document.getElementById('ptoreq-to').value='12:00';
+  ptoreqSetType('full'); // reset to full day
   openModal('ptorequest');
 }
 
 function submitPtoRequest(){
   const crewIdx=parseInt(document.getElementById('ptoreq-crew').value);
   const startDate=document.getElementById('ptoreq-start').value;
-  const endDate=document.getElementById('ptoreq-end').value;
+  const isPartial=document.getElementById('ptoreq-btn-full').dataset.type==='partial';
+  const endDate=isPartial?startDate:document.getElementById('ptoreq-end').value;
   const reason=document.getElementById('ptoreq-reason').value.trim()||'PTO';
-  if(!startDate||!endDate){showToast('Please select dates.');return;}
-  if(endDate<startDate){showToast('End date must be on or after start date.');return;}
+  if(!startDate){showToast('Please select a date.');return;}
+  if(!isPartial&&endDate<startDate){showToast('End date must be on or after start date.');return;}
+  // Validate times if partial
+  const fromTime=isPartial?document.getElementById('ptoreq-from').value:'';
+  const toTime=isPartial?document.getElementById('ptoreq-to').value:'';
+  if(isPartial&&(!fromTime||!toTime)){showToast('Please enter both From and To times.');return;}
+  if(isPartial&&toTime<=fromTime){showToast('To time must be after From time.');return;}
   // Count weekdays in range
   let wdCount=0;const cur=new Date(startDate+'T00:00:00'),end=new Date(endDate+'T00:00:00');
   while(cur<=end){if(cur.getDay()!==0&&cur.getDay()!==6)wdCount++;cur.setDate(cur.getDate()+1);}
@@ -5700,6 +5753,7 @@ function submitPtoRequest(){
     crewIdx, crewName:CREW[crewIdx]?.full||'Unknown',
     startDate, endDate,
     reason, weekdays:wdCount,
+    partial:isPartial, fromTime, toTime,
     status:'pending',
     submittedDate:new Date().toISOString().split('T')[0],
     reviewedDate:''
@@ -5714,6 +5768,11 @@ async function approvePtoRequest(id){
   const req=PTO_REQUESTS.find(r=>r.id===id); if(!req) return;
   const crewIdx=req.crewIdx;
   if(crewIdx<0||crewIdx>=CREW.length){showToast('Crew member not found.');return;}
+  // Build label — partial gets "(7:00am–12:00pm)" suffix matching savePTO slot format
+  const _fmtT=t=>{if(!t)return '';const[h,m]=t.split(':');const hr=parseInt(h);return(hr%12||12)+':'+m+(hr<12?'am':'pm');};
+  const label=req.partial&&req.fromTime&&req.toTime
+    ? req.reason+' ('+_fmtT(req.fromTime)+'–'+_fmtT(req.toTime)+')'
+    : req.reason;
   // Place PTO blocks for every weekday in the range
   const cur=new Date(req.startDate+'T00:00:00'),end=new Date(req.endDate+'T00:00:00');
   let placed=0;
@@ -5724,8 +5783,8 @@ async function approvePtoRequest(id){
       const dIdx=dow-1;
       if(!ptoSlots[crewIdx]) ptoSlots[crewIdx]={};
       if(!ptoSlots[crewIdx][wOff]) ptoSlots[crewIdx][wOff]={};
-      ptoSlots[crewIdx][wOff][dIdx]={label:req.reason,type:'pto'};
-      await dbSavePTOEntry(crewIdx,wOff,dIdx,req.reason);
+      ptoSlots[crewIdx][wOff][dIdx]={label,type:'pto',partial:!!req.partial,from:req.fromTime||'',to:req.toTime||''};
+      await dbSavePTOEntry(crewIdx,wOff,dIdx,label);
       placed++;
     }
     cur.setDate(cur.getDate()+1);
