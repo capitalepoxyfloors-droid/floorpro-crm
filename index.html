@@ -8387,7 +8387,112 @@ function skipReplacement(){
   selectedReplacement=null; conflictData=null;
 }
 
+// ── SEARCHABLE SELECT — replaces every <select> in the app ────────────────
+(function(){
+  let _ov=null, _sel=null, _hIdx=-1;
 
+  function _open(sel){
+    if(_ov) _close();
+    _sel=sel; _hIdx=-1;
+    // Build overlay
+    const ov=document.createElement('div');
+    ov.id='srch-sel-ov';
+    ov.innerHTML=
+      '<div style="padding:8px 8px 6px;">'
+      +'<input id="srch-sel-q" placeholder="🔍 Search…" autocomplete="off" '
+      +'style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid var(--border2);'
+      +'border-radius:var(--radius-sm);background:var(--surface2);color:var(--text);font-size:13px;outline:none;"/>'
+      +'</div>'
+      +'<div id="srch-sel-list" style="max-height:240px;overflow-y:auto;padding:4px 0;"></div>';
+    ov.style.cssText='position:fixed;z-index:999999;background:var(--surface);border:1px solid var(--border2);'
+      +'border-radius:var(--radius);box-shadow:0 8px 32px rgba(0,0,0,.24);overflow:hidden;';
+    document.body.appendChild(ov);
+    _ov=ov;
+    // Position
+    const r=sel.getBoundingClientRect();
+    const w=Math.max(r.width,220);
+    const left=Math.min(r.left, window.innerWidth-w-8);
+    const spaceBelow=window.innerHeight-r.bottom-8;
+    ov.style.width=w+'px';
+    ov.style.left=Math.max(4,left)+'px';
+    ov.style.top=(spaceBelow>=220?r.bottom+3:Math.max(4,r.top-290))+'px';
+    _render('');
+    requestAnimationFrame(()=>{
+      const q=document.getElementById('srch-sel-q');
+      if(q){q.focus();q.addEventListener('input',()=>_render(q.value));q.addEventListener('keydown',_key);}
+    });
+    document.addEventListener('mousedown',_outside,true);
+  }
+
+  function _render(q){
+    const list=document.getElementById('srch-sel-list'); if(!list) return;
+    const term=q.toLowerCase();
+    const opts=[..._sel.options];
+    const filtered=opts.filter(o=>!term||o.text.toLowerCase().includes(term));
+    if(!filtered.length){list.innerHTML='<div style="padding:10px 14px;font-size:13px;color:var(--text3);">No matches</div>';_hIdx=-1;return;}
+    list.innerHTML=filtered.map((o,i)=>{
+      const isCur=o.value===_sel.value;
+      const hl=term?o.text.replace(new RegExp('('+term.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi'),'<strong>$1</strong>'):o.text;
+      return '<div class="srch-opt" data-val="'+o.value.replace(/"/g,'&quot;')+'" data-i="'+i+'" '
+        +'style="padding:8px 14px;cursor:pointer;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'
+        +(isCur?'background:var(--accent-soft,rgba(26,115,232,.12));color:var(--accent);font-weight:600;':'color:var(--text);')
+        +'">'+hl+'</div>';
+    }).join('');
+    _hIdx=-1;
+    list.querySelectorAll('.srch-opt').forEach(el=>{
+      el.addEventListener('mousedown',ev=>{ev.preventDefault();_pick(el.dataset.val);});
+      el.addEventListener('mouseover',()=>{_hIdx=+el.dataset.i;_highlight();});
+    });
+    // scroll selected into view
+    const cur=list.querySelector('[style*="font-weight:600"]');
+    if(cur) setTimeout(()=>cur.scrollIntoView({block:'nearest'}),0);
+  }
+
+  function _highlight(){
+    if(!_ov) return;
+    _ov.querySelectorAll('.srch-opt').forEach(el=>{
+      const isCur=el.dataset.val===_sel.value;
+      el.style.background=+el.dataset.i===_hIdx?'var(--surface2)':(isCur?'var(--accent-soft,rgba(26,115,232,.12))':'');
+    });
+  }
+
+  function _key(e){
+    const items=[...((_ov&&_ov.querySelectorAll('.srch-opt'))||[])];
+    if(!items.length) return;
+    if(e.key==='ArrowDown'){e.preventDefault();_hIdx=Math.min(_hIdx+1,items.length-1);_highlight();items[_hIdx].scrollIntoView({block:'nearest'});}
+    else if(e.key==='ArrowUp'){e.preventDefault();_hIdx=Math.max(_hIdx-1,0);_highlight();items[_hIdx].scrollIntoView({block:'nearest'});}
+    else if(e.key==='Enter'){e.preventDefault();if(_hIdx>=0&&items[_hIdx])_pick(items[_hIdx].dataset.val);}
+    else if(e.key==='Escape'){e.preventDefault();_close();}
+    else if(e.key==='Tab'){_close();}
+  }
+
+  function _pick(val){
+    if(!_sel) return;
+    _sel.value=val;
+    _sel.dispatchEvent(new Event('change',{bubbles:true}));
+    _sel.dispatchEvent(new Event('input',{bubbles:true}));
+    _close();
+  }
+
+  function _close(){
+    if(_ov){_ov.remove();_ov=null;}
+    document.removeEventListener('mousedown',_outside,true);
+    _sel=null; _hIdx=-1;
+  }
+
+  function _outside(e){
+    if(_ov&&!_ov.contains(e.target)&&e.target!==_sel) _close();
+  }
+
+  // Intercept all mousedown events on any <select>
+  document.addEventListener('mousedown',function(e){
+    const sel=e.target.closest('select');
+    if(!sel||sel.disabled||sel.size>1) return;
+    e.preventDefault();
+    if(_ov&&_sel===sel){_close();return;}
+    _open(sel);
+  },true);
+})();
 
 </script>
 <!-- ADD WAVE JOB MODAL — Manual Entry -->
