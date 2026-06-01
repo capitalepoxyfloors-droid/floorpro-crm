@@ -1227,6 +1227,39 @@
         <button class="btn btn-ghost" style="font-size:12px;padding:6px 14px;" onclick="ceAddEvent()">+ Add to History</button>
       </div>
 
+      <!-- Documents & Attachments -->
+      <div style="border-top:1px solid var(--border2);margin:20px 0 16px;"></div>
+      <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:14px;">📎 Documents & Attachments</div>
+
+      <!-- Attachment list -->
+      <div id="ce-attach-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;"></div>
+
+      <!-- Add attachment form -->
+      <div style="border:1px solid var(--border2);border-radius:var(--radius-sm);padding:14px;background:var(--surface2);">
+        <div style="font-size:11px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;">Add Document</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Category</label>
+            <select class="form-input" id="ce-at-category">
+              <option value="w4_tax">W-4 / I-9 / Tax Doc</option>
+              <option value="cert">Certification / License</option>
+              <option value="contract">Contract / Offer Letter</option>
+              <option value="writeup">Write-Up / Warning</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Display Name</label>
+            <input class="form-input" id="ce-at-name" placeholder="e.g. Signed I-9 Form"/>
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="form-label">Link / URL</label>
+          <input class="form-input" id="ce-at-url" type="url" placeholder="https://drive.google.com/…"/>
+        </div>
+        <button class="btn btn-ghost" style="font-size:12px;padding:6px 14px;" onclick="ceAddAttachment()">+ Add Document</button>
+      </div>
+
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('crewedit')">Cancel</button>
@@ -1991,7 +2024,7 @@ async function deduplicateSlotsByJobRecord(){
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
   try{
-    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory()]);
+    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadCrewAttachments()]);
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
@@ -6549,9 +6582,14 @@ function openCrewEdit(idx){
   document.getElementById('ce-ev-type').value = 'review';
   document.getElementById('ce-ev-rate-row').style.display='none';
   document.getElementById('ce-ev-note').value='';
+  // Reset add-document form
+  document.getElementById('ce-at-category').value='w4_tax';
+  document.getElementById('ce-at-name').value='';
+  document.getElementById('ce-at-url').value='';
   openModal('crewedit');
   calcBurden();
   renderEmpLog();
+  renderAttachmentList();
 }
 
 function calcBurdenForCrew(c){
@@ -6753,6 +6791,84 @@ function renderEmpLog(){
     </div>`;
   }).join('');
 }
+// ── CREW ATTACHMENTS (link/URL-based) ─────────────────────────────────────────
+let CREW_ATTACHMENTS = {}; // { "crewKey": [{id,date,category,name,url}] }
+
+async function loadCrewAttachments(){
+  const v = await sb.getKV('crew_attachments');
+  if(v){ try{ CREW_ATTACHMENTS=JSON.parse(v)||{}; }catch(e){ console.error('loadCrewAttachments parse error:',e); } }
+}
+async function saveCrewAttachments(){
+  await sb.setKV('crew_attachments', JSON.stringify(CREW_ATTACHMENTS));
+}
+
+function ceAddAttachment(){
+  const category = document.getElementById('ce-at-category').value;
+  const name     = document.getElementById('ce-at-name').value.trim();
+  const url      = document.getElementById('ce-at-url').value.trim();
+  if(!name){ showToast('Enter a display name for this document.'); return; }
+  if(!url){ showToast('Paste a link/URL for this document.'); return; }
+  if(!url.startsWith('http://') && !url.startsWith('https://')){ showToast('URL must start with http:// or https://'); return; }
+  const hKey = ceHistoryKey();
+  if(!CREW_ATTACHMENTS[hKey]) CREW_ATTACHMENTS[hKey]=[];
+  const att = {
+    id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36)+Math.random().toString(36).slice(2),
+    date: new Date().toISOString().split('T')[0],
+    category, name, url
+  };
+  CREW_ATTACHMENTS[hKey].push(att);
+  saveCrewAttachments();
+  document.getElementById('ce-at-name').value='';
+  document.getElementById('ce-at-url').value='';
+  document.getElementById('ce-at-category').value='w4_tax';
+  renderAttachmentList();
+  showToast('✓ Document added.');
+}
+
+function ceDeleteAttachment(attId){
+  if(!confirm('Remove this document link?')) return;
+  const hKey = ceHistoryKey();
+  if(!CREW_ATTACHMENTS[hKey]) return;
+  CREW_ATTACHMENTS[hKey] = CREW_ATTACHMENTS[hKey].filter(a=>a.id!==attId);
+  saveCrewAttachments();
+  renderAttachmentList();
+}
+
+function renderAttachmentList(){
+  const wrap = document.getElementById('ce-attach-list');
+  if(!wrap) return;
+  const hKey = ceHistoryKey();
+  const atts = CREW_ATTACHMENTS[hKey]||[];
+  if(!atts.length){
+    wrap.innerHTML='<div style="font-size:12px;color:var(--text3);padding:4px 0;">No documents attached yet.</div>';
+    return;
+  }
+  const catInfo = {
+    w4_tax:   {label:'W-4 / Tax',  color:'var(--accent)', bg:'var(--accent-dim)'},
+    cert:     {label:'Cert',       color:'var(--green)',  bg:'#16a34a22'},
+    contract: {label:'Contract',   color:'#a855f7',       bg:'#a855f722'},
+    writeup:  {label:'Write-Up',   color:'var(--red)',    bg:'#ef444422'},
+    other:    {label:'Other',      color:'var(--text3)',  bg:'var(--surface3)'},
+  };
+  const fmt = d=>{ const [y,m,day]=d.split('-'); const mo=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']; return mo[+m-1]+' '+parseInt(day)+', '+y; };
+  wrap.innerHTML = [...atts].reverse().map(att=>{
+    const ci = catInfo[att.category]||catInfo.other;
+    const safeName = att.name.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const safeUrl  = att.url.replace(/"/g,'&quot;');
+    return `<div style="display:flex;gap:10px;align-items:center;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:10px 12px;">
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:3px;">
+          <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;background:${ci.bg};color:${ci.color};font-family:'DM Mono',monospace;white-space:nowrap;">${ci.label}</span>
+          <span style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;">${fmt(att.date)}</span>
+        </div>
+        <div style="font-size:12.5px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${safeName}</div>
+      </div>
+      <a href="${safeUrl}" target="_blank" rel="noopener noreferrer" style="flex-shrink:0;font-size:12px;font-weight:600;color:var(--accent);text-decoration:none;padding:4px 10px;border:1px solid var(--accent);border-radius:6px;white-space:nowrap;">🔗 Open</a>
+      <button onclick="ceDeleteAttachment('${att.id}')" style="background:none;border:none;color:var(--text3);font-size:16px;cursor:pointer;padding:0 4px;line-height:1;flex-shrink:0;" title="Remove">×</button>
+    </div>`;
+  }).join('');
+}
+
 function renderCrewShareList(){
   const wrap = document.getElementById('crew-share-list');
   wrap.innerHTML = '';
