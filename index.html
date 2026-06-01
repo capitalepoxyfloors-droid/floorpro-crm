@@ -419,6 +419,11 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/><path d="M8 14h4M8 10h2"/></svg>
         <span>Job Costing</span>
       </button>
+      <button class="nav-item" id="nav-matreqs" onclick="showPage('matreqs')" style="position:relative;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 3H8a2 2 0 00-2 2v2h12V5a2 2 0 00-2-2z"/><path d="M12 13v4M10 15h4"/></svg>
+        <span>Mat. Requests</span>
+        <span id="mr-nav-badge" style="display:none;position:absolute;top:4px;right:6px;background:var(--red,#e53e3e);color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:1px 5px;line-height:1.4;font-family:'DM Mono',monospace;"></span>
+      </button>
       <div class="nav-label" style="margin-top:8px;">Settings</div>
       <button class="nav-item" onclick="showPage('reference')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/><path d="M9 7h6M9 11h6M9 15h4"/></svg>
@@ -820,6 +825,28 @@
       </div>
     </div>
 
+  </div>
+</div>
+
+<!-- MATERIAL REQUESTS PAGE -->
+<div class="page" id="page-matreqs">
+  <div style="max-width:820px;margin:0 auto;padding:28px 20px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
+      <div>
+        <div style="font-size:22px;font-weight:800;color:var(--text);">📦 Material Requests</div>
+        <div style="font-size:13px;color:var(--text3);margin-top:3px;">Crew-submitted requests — review and mark ordered or received.</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <select id="mr-filter" class="form-select" style="font-size:12px;padding:5px 10px;" onchange="renderMatRequestsPage()">
+          <option value="pending">Pending</option>
+          <option value="ordered">Ordered</option>
+          <option value="received">Received</option>
+          <option value="all">All</option>
+        </select>
+        <button class="btn btn-ghost" style="font-size:12px;padding:5px 12px;" onclick="mrClearReceived()">Clear Received</button>
+      </div>
+    </div>
+    <div id="mr-page-list"></div>
   </div>
 </div>
 
@@ -2039,7 +2066,7 @@ async function deduplicateSlotsByJobRecord(){
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
   try{
-    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadCrewAttachments()]);
+    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadCrewAttachments(),loadMatRequests()]);
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
@@ -2997,6 +3024,7 @@ function jcTab(name){
   if(name==='materials') jcRenderMaterials();
   if(name==='log'){
     jcRenderDayLogs();
+    jcRenderMatRequests();  // render in-card request list
     // Pre-fill the "add day" picker with the next weekday after the job's last day
     const job=getJobRecord(_jcId);
     if(job){
@@ -5325,7 +5353,7 @@ function showPage(id){
   if(localStorage.getItem('fpRole')==='crew'&&id!=='crewview') return;
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
-  const map={dashboard:0,pipeline:1,jobs:2,schedule:3,salesschedule:4,jobcosting:5,reference:6,installers:7,materials:8,materialcalc:9,jobtypes:10,holidays:11,pinsettings:12,crewview:13};
+  const map={dashboard:0,pipeline:1,jobs:2,schedule:3,salesschedule:4,jobcosting:5,matreqs:6,reference:7,installers:8,materials:9,materialcalc:10,jobtypes:11,holidays:12,pinsettings:13,crewview:14};
   document.querySelectorAll('.nav-item').forEach((n,i)=>n.classList.toggle('active',i===map[id]));
   if(id==='dashboard') renderDashboard();
   if(id==='schedule') renderSchedule();
@@ -5339,6 +5367,7 @@ function showPage(id){
   if(id==='crewview') renderCrewView();
   if(id==='jobtypes') renderJobTypes();
   if(id==='materialcalc') renderMaterialCalc();
+  if(id==='matreqs') renderMatRequestsPage();
   try{localStorage.setItem('fpLastPage',id);}catch(e){}
 }
 
@@ -5418,6 +5447,138 @@ function _updateSvNotifBadge(){
   if(Notification.permission==='granted') el.innerHTML='🔔 Notifications <span style="color:var(--green)">on</span>';
   else if(Notification.permission==='denied') el.innerHTML='🔕 Notifications <span style="color:var(--red)">blocked</span>';
   else el.innerHTML='<span style="color:var(--text3)">Permission required to send reminders</span>';
+}
+
+// ── MATERIAL REQUESTS ──────────────────────────────────────────────────────────
+let MATERIAL_REQUESTS = [];
+
+async function loadMatRequests(){
+  try{const v=await sb.getKV('material_requests');if(v){try{MATERIAL_REQUESTS=JSON.parse(v)||[];}catch(e){MATERIAL_REQUESTS=[];}}}catch(e){}
+  _updateMrBadge();
+}
+async function saveMatRequests(){
+  await sb.setKV('material_requests',JSON.stringify(MATERIAL_REQUESTS));
+  _updateMrBadge();
+}
+
+function _updateMrBadge(){
+  const count=MATERIAL_REQUESTS.filter(r=>r.status==='pending').length;
+  const badge=document.getElementById('mr-nav-badge'); if(!badge) return;
+  badge.style.display=count?'inline-block':'none';
+  badge.textContent=count>9?'9+':count;
+}
+
+function _mrGenId(){ return Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7); }
+
+function jcSubmitMatRequest(){
+  const job=getJobRecord(_jcId); if(!job) return;
+  const mat=document.getElementById('jcmr-material').value.trim();
+  if(!mat){showToast('Enter the material name.');return;}
+  const req={
+    id:_mrGenId(),
+    jobId:_jcId,
+    jobName:job.customer||'Unknown Job',
+    submittedDate:new Date().toISOString().split('T')[0],
+    material:mat,
+    qty:document.getElementById('jcmr-qty').value.trim(),
+    unit:document.getElementById('jcmr-unit').value.trim(),
+    notes:document.getElementById('jcmr-notes').value.trim(),
+    status:'pending'
+  };
+  MATERIAL_REQUESTS.push(req);
+  saveMatRequests();
+  // Clear form
+  ['jcmr-material','jcmr-qty','jcmr-unit','jcmr-notes'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+  jcRenderMatRequests();
+  showToast('✓ Request submitted — Will will be notified.');
+}
+
+function jcRenderMatRequests(){
+  const el=document.getElementById('jc-mr-list'); if(!el) return;
+  const jobReqs=MATERIAL_REQUESTS.filter(r=>r.jobId===_jcId);
+  if(!jobReqs.length){
+    el.innerHTML='<div style="font-size:12px;color:var(--text3);font-style:italic;">No requests for this job yet.</div>';
+    return;
+  }
+  const statusColor={pending:'var(--red)',ordered:'var(--accent)',received:'var(--green)'};
+  el.innerHTML=jobReqs.map(r=>`
+    <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius-sm);">
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13px;font-weight:600;color:var(--text);">${r.material}${r.qty?' — '+r.qty+(r.unit?' '+r.unit:''):''}</div>
+        ${r.notes?`<div style="font-size:11px;color:var(--text3);margin-top:2px;">${r.notes}</div>`:''}
+        <div style="font-size:11px;color:var(--text3);margin-top:2px;">${r.submittedDate}</div>
+      </div>
+      <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;background:${statusColor[r.status]}22;color:${statusColor[r.status]};text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;">${r.status}</span>
+      <button onclick="jcDeleteMatRequest('${r.id}')" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;padding:2px 4px;line-height:1;" title="Remove">✕</button>
+    </div>`).join('');
+}
+
+function jcDeleteMatRequest(id){
+  if(!confirm('Remove this material request?')) return;
+  MATERIAL_REQUESTS=MATERIAL_REQUESTS.filter(r=>r.id!==id);
+  saveMatRequests();
+  jcRenderMatRequests();
+}
+
+function renderMatRequestsPage(){
+  const el=document.getElementById('mr-page-list'); if(!el) return;
+  const filter=document.getElementById('mr-filter')?.value||'pending';
+  const list=filter==='all'?[...MATERIAL_REQUESTS]:MATERIAL_REQUESTS.filter(r=>r.status===filter);
+  // Sort: pending first, then by date desc
+  list.sort((a,b)=>{
+    const sp={pending:0,ordered:1,received:2};
+    return (sp[a.status]??3)-(sp[b.status]??3)||b.submittedDate.localeCompare(a.submittedDate);
+  });
+  if(!list.length){
+    el.innerHTML=`<div style="text-align:center;padding:60px 20px;color:var(--text3);font-size:14px;">${filter==='pending'?'✅ No pending material requests.':'No requests found.'}</div>`;
+    return;
+  }
+  const statusColor={pending:'var(--red)',ordered:'var(--accent)',received:'var(--green)'};
+  const statusLabel={pending:'Pending',ordered:'Ordered',received:'Received'};
+  el.innerHTML=list.map(r=>`
+    <div style="background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);padding:16px 18px;margin-bottom:10px;display:flex;align-items:flex-start;gap:14px;">
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
+          <span style="font-size:15px;font-weight:700;color:var(--text);">${r.material}</span>
+          ${r.qty?`<span style="font-size:13px;color:var(--text2);">${r.qty}${r.unit?' '+r.unit:''}</span>`:''}
+          <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;background:${statusColor[r.status]}22;color:${statusColor[r.status]};text-transform:uppercase;letter-spacing:.4px;">${statusLabel[r.status]}</span>
+        </div>
+        <div style="font-size:12px;color:var(--accent);font-weight:600;margin-bottom:3px;">📋 ${r.jobName}</div>
+        ${r.notes?`<div style="font-size:12px;color:var(--text2);margin-bottom:4px;">${r.notes}</div>`:''}
+        <div style="font-size:11px;color:var(--text3);">Submitted ${r.submittedDate}${r.orderedDate?' · Ordered '+r.orderedDate:''}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
+        ${r.status==='pending'?`<button class="btn btn-primary" style="font-size:11px;padding:4px 12px;white-space:nowrap;" onclick="mrMarkOrdered('${r.id}')">Mark Ordered</button>`:''}
+        ${r.status==='ordered'?`<button class="btn btn-ghost" style="font-size:11px;padding:4px 12px;white-space:nowrap;color:var(--green);border-color:var(--green);" onclick="mrMarkReceived('${r.id}')">Mark Received</button>`:''}
+        <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;color:var(--red);" onclick="mrDelete('${r.id}')">✕</button>
+      </div>
+    </div>`).join('');
+}
+
+function mrMarkOrdered(id){
+  const r=MATERIAL_REQUESTS.find(x=>x.id===id); if(!r) return;
+  r.status='ordered'; r.orderedDate=new Date().toISOString().split('T')[0];
+  saveMatRequests(); renderMatRequestsPage();
+  showToast('✓ Marked as ordered.');
+}
+function mrMarkReceived(id){
+  const r=MATERIAL_REQUESTS.find(x=>x.id===id); if(!r) return;
+  r.status='received';
+  saveMatRequests(); renderMatRequestsPage();
+  showToast('✓ Marked as received.');
+}
+function mrDelete(id){
+  if(!confirm('Delete this request?')) return;
+  MATERIAL_REQUESTS=MATERIAL_REQUESTS.filter(x=>x.id!==id);
+  saveMatRequests(); renderMatRequestsPage();
+}
+function mrClearReceived(){
+  const count=MATERIAL_REQUESTS.filter(r=>r.status==='received').length;
+  if(!count){showToast('No received items to clear.');return;}
+  if(!confirm(`Clear ${count} received item${count!==1?'s':''}?`)) return;
+  MATERIAL_REQUESTS=MATERIAL_REQUESTS.filter(r=>r.status!=='received');
+  saveMatRequests(); renderMatRequestsPage();
+  showToast('Cleared.');
 }
 
 async function loadSalesVisits(){
@@ -8715,6 +8876,37 @@ function skipReplacement(){
     <!-- Daily Log Pane -->
     <div id="jc-pane-log" class="modal-body" style="display:none;">
       <div style="font-size:12.5px;color:var(--text3);margin-bottom:16px;line-height:1.6;">Crew fills this in each day — who was on site, what was done, what was actually used, and hours worked.</div>
+
+      <!-- ── MATERIAL REQUESTS ── -->
+      <div style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius);padding:14px 16px;margin-bottom:20px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <div style="font-size:13px;font-weight:700;color:var(--text);">📦 Material Requests</div>
+          <div style="font-size:11px;color:var(--text3);">Low on something? Submit a request below.</div>
+        </div>
+        <div id="jc-mr-list" style="margin-bottom:10px;display:flex;flex-direction:column;gap:6px;"></div>
+        <div style="border-top:1px solid var(--border2);padding-top:12px;">
+          <div class="form-row" style="margin-bottom:8px;">
+            <div class="form-group" style="margin:0;flex:2;">
+              <label class="form-label">Material Needed</label>
+              <input class="form-input" id="jcmr-material" placeholder="e.g. Hyperflex Urethane" style="font-size:13px;"/>
+            </div>
+            <div class="form-group" style="margin:0;flex:1;">
+              <label class="form-label">Qty</label>
+              <input class="form-input" id="jcmr-qty" placeholder="e.g. 2" style="font-size:13px;"/>
+            </div>
+            <div class="form-group" style="margin:0;flex:1;">
+              <label class="form-label">Unit</label>
+              <input class="form-input" id="jcmr-unit" placeholder="gal / bag / box" style="font-size:13px;"/>
+            </div>
+          </div>
+          <div class="form-group" style="margin-bottom:10px;">
+            <label class="form-label">Notes / Urgency</label>
+            <input class="form-input" id="jcmr-notes" placeholder="How urgent, what it's for..." style="font-size:13px;"/>
+          </div>
+          <button class="btn btn-primary" style="font-size:12px;padding:6px 16px;" onclick="jcSubmitMatRequest()">+ Submit Request</button>
+        </div>
+      </div>
+
       <div id="jc-day-logs"></div>
       <div style="margin-top:8px;padding-top:14px;border-top:1px solid var(--border2);">
         <div style="font-size:12px;color:var(--text3);margin-bottom:8px;">Need to add a day that wasn't originally scheduled?</div>
