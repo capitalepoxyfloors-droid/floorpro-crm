@@ -6085,14 +6085,20 @@ function renderPtoRequestsPage(){
   const statusColor={pending:'var(--accent)',approved:'var(--green)',denied:'var(--red)'};
   const statusLabel={pending:'Pending',approved:'Approved',denied:'Denied'};
   const fmtD=ds=>{const d=new Date(ds+'T00:00:00');return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});};
-  el.innerHTML=list.map(r=>`
+  const fmtT=t=>{if(!t)return '';const[h,m]=t.split(':');const hr=parseInt(h);return(hr%12||12)+':'+m+(hr<12?'am':'pm');};
+  el.innerHTML=list.map(r=>{
+    const dateRange=r.partial
+      ? `${fmtD(r.startDate)} <span style="color:var(--accent);font-weight:700;">${fmtT(r.fromTime)}–${fmtT(r.toTime)}</span> <span style="color:var(--text3);font-weight:400;">(partial day)</span>`
+      : `${fmtD(r.startDate)}${r.endDate!==r.startDate?' – '+fmtD(r.endDate):''} <span style="color:var(--text3);font-weight:400;">(${r.weekdays} working day${r.weekdays!==1?'s':''})</span>`;
+    return `
     <div style="background:var(--surface);border:1px solid var(--border2);border-left:4px solid ${statusColor[r.status]};border-radius:var(--radius);padding:16px 18px;margin-bottom:10px;display:flex;align-items:flex-start;gap:14px;">
       <div style="flex:1;min-width:0;">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:5px;">
           <span style="font-size:15px;font-weight:700;color:var(--text);">${r.crewName}</span>
           <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;background:${statusColor[r.status]}22;color:${statusColor[r.status]};text-transform:uppercase;letter-spacing:.4px;">${statusLabel[r.status]}</span>
+          ${r.partial?`<span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;background:var(--accent-dim);color:var(--accent);text-transform:uppercase;letter-spacing:.4px;">⏱ Partial</span>`:''}
         </div>
-        <div style="font-size:13px;font-weight:600;color:var(--text2);margin-bottom:3px;">${fmtD(r.startDate)}${r.endDate!==r.startDate?' – '+fmtD(r.endDate):''} <span style="color:var(--text3);font-weight:400;">(${r.weekdays} working day${r.weekdays!==1?'s':''})</span></div>
+        <div style="font-size:13px;font-weight:600;color:var(--text2);margin-bottom:3px;">${dateRange}</div>
         ${r.reason&&r.reason!=='PTO'?`<div style="font-size:12px;color:var(--text2);margin-bottom:4px;">💬 ${r.reason}</div>`:''}
         <div style="font-size:11px;color:var(--text3);">Submitted ${r.submittedDate}${r.reviewedDate?' · Reviewed '+r.reviewedDate:''}</div>
       </div>
@@ -6104,7 +6110,7 @@ function renderPtoRequestsPage(){
         ${r.status==='approved'?`<span style="font-size:11px;color:var(--green);font-weight:600;">✓ On calendar</span>`:''}
         ${r.status==='denied'?`<span style="font-size:11px;color:var(--red);font-weight:600;">✕ Denied</span>`:''}
       </div>
-    </div>`).join('');
+    </div>`;}).join('');
 }
 
 async function loadSalesVisits(){
