@@ -4920,15 +4920,17 @@ function cvBuildWeek(weekSun,today){
     }else{
       sty=`left:${leftPct}%;width:calc(${widthPct}% - 3px);top:${topPx}px;height:${BAR_H}px;`;
     }
+    // Quote the jobId string in the onclick — raw UUIDs without quotes are invalid JS
+    const _jArg=ev.jobId?`'${ev.jobId}'`:'null';
     if(ev.isHoliday){
       barsHtml+=`<div class="cv-event-bar holiday" style="${sty}">${ev.label}</div>`;
     } else if(ev.isPTO){
       barsHtml+=`<div class="cv-event-bar pto" style="${sty}">🚫 ${ev.label}</div>`;
     } else if(ev.isComplete){
-      barsHtml+=`<div class="cv-event-bar done" style="${sty}" onclick="cvTapEvent(${ev.jobId||'null'},${ev.ci},${ev.w},${ev.d},'${tapDate}')">✓ ${ev.label}</div>`;
+      barsHtml+=`<div class="cv-event-bar done" style="${sty}" onclick="cvTapEvent(${_jArg},${ev.ci},${ev.w},${ev.d},'${tapDate}')">✓ ${ev.label}</div>`;
     } else {
       const extCls=ev.isExtra?' extension':'';
-      barsHtml+=`<div class="cv-event-bar ${ev.type}${extCls}" style="${sty}" onclick="cvTapEvent(${ev.jobId||'null'},${ev.ci},${ev.w},${ev.d},'${tapDate}')">${ev.label}</div>`;
+      barsHtml+=`<div class="cv-event-bar ${ev.type}${extCls}" style="${sty}" onclick="cvTapEvent(${_jArg},${ev.ci},${ev.w},${ev.d},'${tapDate}')">${ev.label}</div>`;
     }
   }
 
