@@ -2014,12 +2014,13 @@ async function loadScheduledSlots(){
     if(!newSlots[r.crew_idx][r.week_offset])newSlots[r.crew_idx][r.week_offset]={};
     if(!newSlots[r.crew_idx][r.week_offset][r.day_idx]){
       newSlots[r.crew_idx][r.week_offset][r.day_idx]={l:r.label,t:r.job_type,db_id:r.id};
-    } else {
-      // Second+ row for same crew/day = double-booked slot
+    } else if(newSlots[r.crew_idx][r.week_offset][r.day_idx].l !== r.label){
+      // Different label = genuinely double-booked slot → put in multiSlots
       const k=_msKey(r.crew_idx,r.week_offset,r.day_idx);
       if(!multiSlots[k]) multiSlots[k]=[];
       multiSlots[k].push({l:r.label,t:r.job_type,db_id:r.id,jobId:null});
     }
+    // Same label = harmless duplicate DB row (old data repair) — silently ignore
   });
 }
 
@@ -4753,15 +4754,22 @@ function cvGetWeekSpanEvents(weekSun){
         const isDone=jr?.status==='complete';
         jobMap[key]={key,jobId,ci,w,d,label:slot.l||'Job',type:slot.t||'epoxy',colStart:col,colEnd:col,isComplete:isDone,isExtra};
       }
-      // Extra (double-booked) slots for this same crew/day
+      // Extra (double-booked) slots — add directly to dedupedMap, bypassing byLabel merge
       for(const ex of getExtraSlots(ci,w,d)){
         const exJobId=ex.jobId||(JOB_RECORDS.find(j=>j.customer===ex.l)?.id)||null;
         const exJr=exJobId?JOB_RECORDS.find(j=>j.id===exJobId):JOB_RECORDS.find(j=>j.customer===(ex.l||''));
-        const exKey='_extra_'+(exJobId||ex.l)+'_'+ci+'_'+col;
-        if(!jobMap[exKey]){
-          jobMap[exKey]={key:exKey,jobId:exJobId,ci,w,d,label:ex.l||'Job',type:ex.t||'epoxy',colStart:col,colEnd:col,isComplete:exJr?.status==='complete',isExtra:false};
+        let exIsExtra=false;
+        if(exJr?.extraDays?.includes(dtStr)){
+          const eSD=new Date((exJr.startDate||'')+'T00:00:00').getDay(),eED=new Date((exJr.endDate||'')+'T00:00:00').getDay();
+          const eWk=(eSD===0||eSD===6||eED===0||eED===6);
+          const eSched=new Set(exJr?.startDate&&exJr?.endDate?(eWk?jcAllDays(exJr.startDate,exJr.endDate):jcWeekdays(exJr.startDate,exJr.endDate)):[]);
+          exIsExtra=!eSched.has(dtStr);
+        }
+        const exKey='_extra_'+(exJobId||ex.l)+'_'+ci+'_'+col+(exIsExtra?'_ext':'_org');
+        if(!dedupedMap[exKey]){
+          dedupedMap[exKey]={key:exKey,jobId:exJobId,ci,w,d,label:ex.l||'Job',type:ex.t||'epoxy',colStart:col,colEnd:col,isComplete:exJr?.status==='complete',isExtra:exIsExtra};
         } else {
-          jobMap[exKey].colEnd=col;
+          dedupedMap[exKey].colEnd=col;
         }
       }
     }
