@@ -1473,6 +1473,11 @@
             <div id="sj-exclude-chips" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
           </div>
           <div id="sj-auto-result" style="display:none;margin-top:10px;font-size:12.5px;color:var(--accent);font-family:'DM Mono',monospace;"></div>
+          <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border2);display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span style="font-size:12px;color:var(--text3);white-space:nowrap;">⚡ Force start on:</span>
+            <input type="date" id="sj-force-date" class="form-input" style="flex:1;min-width:130px;font-size:12px;padding:5px 8px;"/>
+            <button class="btn btn-ghost" onclick="sjForceStart()" style="font-size:12px;color:var(--red,#e53e3e);border-color:var(--red,#e53e3e);white-space:nowrap;">Force Schedule →</button>
+          </div>
         </div>
         <div class="info-box" style="margin-bottom:12px;">
           Or pick crew manually — each member shows their <strong>earliest available start</strong>. Tap to select.
@@ -2201,6 +2206,9 @@ function sjLoadStep2(){
   const earliestStr=document.getElementById('sj-earliest').value;
   sjBuildExcludeChips();
   document.getElementById('sj-auto-result').style.display='none';
+  // Pre-fill force-start date with whatever was entered in Step 1
+  const fd=document.getElementById('sj-force-date');
+  if(fd&&!fd.value) fd.value=earliestStr||new Date().toISOString().split('T')[0];
   const list=document.getElementById('sj-crew-list');
   list.innerHTML='<div style="font-size:12px;color:var(--text3);padding:6px 0;">Checking availability…</div>';
   setTimeout(()=>{
@@ -2444,6 +2452,43 @@ function sjAutoFind(){
 }
 
 function sjIncludeWeekends(){ return !!(document.getElementById('sj-weekends')?.checked); }
+
+function sjForceStart(){
+  if(!sjCrew.length){ showToast('Select at least one crew member first.'); return; }
+  const forceDate=document.getElementById('sj-force-date')?.value;
+  if(!forceDate){ showToast('Enter a start date in the force-start field.'); return; }
+  const pos=seDateToPos(forceDate);
+  const days=Math.max(1,parseInt(document.getElementById('sj-days').value)||1);
+  const wknd=sjIncludeWeekends();
+  const MAX_D=wknd?6:4;
+  // Walk forward to compute end date
+  let endW=pos.w, endD=pos.d;
+  for(let i=0;i<days-1;i++){ endD++; if(endD>MAX_D){endD=0;endW++;} }
+  const endMon=getMonday(endW);
+  const endDate=new Date(endMon); endDate.setDate(endDate.getDate()+endD);
+  const startDate=new Date(forceDate+'T00:00:00');
+  // Count how many slots have conflicts
+  let conflictSlots=0;
+  let curW=pos.w, curD=pos.d;
+  for(let i=0;i<days;i++){
+    if(curD>MAX_D){curW++;curD=0;}
+    for(const ci of sjCrew){ if(isBooked(ci,curW,curD)) conflictSlots++; }
+    curD++;
+  }
+  sjFound={w:pos.w, start:pos.d, days, startDate, endDate, weekends:wknd};
+  const names=sjCrew.map(i=>CREW[i].name).join(' + ');
+  const endStr=days>1?' – '+fmtDate(endDate):'';
+  const warnStr=conflictSlots>0
+    ?`<div style="color:var(--red,#e53e3e);font-size:12px;margin-top:6px;">⚠ ${conflictSlots} slot${conflictSlots!==1?' are':' is'} already booked — affected crew will be on both jobs those day${conflictSlots!==1?'s':''}.</div>`
+    :'';
+  const res=document.getElementById('sj-result');
+  res.style.display='block';
+  res.className='scheduler-result found';
+  res.innerHTML=`<div class="result-badge found" style="background:var(--red,#e53e3e);border-color:var(--red,#e53e3e);color:#fff;">⚡ Force Start</div><div class="result-date">${fmtDate(startDate)}${endStr} · ${days} day${days>1?'s':''}</div><div class="result-crew">Crew: ${names}</div>${warnStr}`;
+  const btn=document.getElementById('sj-next');
+  btn.textContent='Confirm Dates →'; btn.disabled=false; btn.className='btn btn-green';
+  sjUpdateWindowHighlights();
+}
 
 function findWindow(crew,days,earliestStr){
   const wknd=sjIncludeWeekends();
