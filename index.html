@@ -8660,10 +8660,12 @@ function buildWeekGrid(wOff,mon,dNames){
         const _rawJr=slotJobId?JOB_RECORDS.find(j=>j.id===slotJobId):null;
         // Verify mapped job matches slot label (stale when a double-book overwrote the map entry)
         const jr=(_rawJr&&_rawJr.customer===slot.l)?_rawJr:JOB_RECORDS.find(j=>j.customer===slot.l);
+        if(cr.name==='Seth') console.log('[DBG Seth] d='+d+' sdStr='+sdStr+' slot.l='+slot.l+' slotJobId='+slotJobId+' rawCust='+(_rawJr?.customer||'null')+' jr.customer='+(jr?.customer||'null')+' extraDays='+JSON.stringify(jr?.extraDays)+' startDate='+jr?.startDate+' endDate='+jr?.endDate);
         if(jr?.extraDays?.includes(sdStr)){
           const jrSD=new Date((jr.startDate||'')+'T00:00:00').getDay(),jrED=new Date((jr.endDate||'')+'T00:00:00').getDay();
           const jrWk=(jrSD===0||jrSD===6||jrED===0||jrED===6);
           const origSched=new Set(jr.startDate&&jr.endDate?(jrWk?jcAllDays(jr.startDate,jr.endDate):jcWeekdays(jr.startDate,jr.endDate)):[]);
+          if(cr.name==='Seth') console.log('[DBG Seth] d='+d+' origSched='+JSON.stringify([...origSched])+' has='+origSched.has(sdStr)+' isExtra='+!origSched.has(sdStr));
           isExtra=!origSched.has(sdStr);
         }
       }
