@@ -1609,6 +1609,10 @@ const BASE = getCurrentMonday();
 // slots[crewIdx][weekOffset][dayIdx 0=Mon..4=Fri]
 const slots = {};
 const newSlots = {};
+// Extra slots for double-booked days: "ci_w_d" → [{l, t, db_id, jobId}]
+const multiSlots = {};
+function _msKey(ci,w,d){ return `${ci}_${w}_${d}`; }
+function getExtraSlots(ci,w,d){ return multiSlots[_msKey(ci,w,d)]||[]; }
 let weekOffset = 0;
 
 function getMonday(off){const d=new Date(BASE);d.setDate(d.getDate()+off*7);return d;}
@@ -1997,9 +2001,26 @@ async function dbSaveSlot(crewIdx,weekOff,dayIdx,label,jobType){
   const res=await sb.insert('scheduled_slots',{crew_idx:crewIdx,week_offset:weekOff,day_idx:dayIdx,label:label,job_type:jobType});
   return res&&res[0]?res[0].id:null;
 }
+async function dbAddExtraSlot(ci,w,d,label,type,jobId){
+  const dbId=await dbSaveSlot(ci,w,d,label,type);
+  const k=_msKey(ci,w,d);
+  if(!multiSlots[k]) multiSlots[k]=[];
+  multiSlots[k].push({l:label,t:type,db_id:dbId,jobId:jobId||null});
+}
 async function loadScheduledSlots(){
   const rows=await sb.get('scheduled_slots');
-  rows.forEach(r=>{if(!newSlots[r.crew_idx])newSlots[r.crew_idx]={};if(!newSlots[r.crew_idx][r.week_offset])newSlots[r.crew_idx][r.week_offset]={};newSlots[r.crew_idx][r.week_offset][r.day_idx]={l:r.label,t:r.job_type,db_id:r.id};});
+  rows.forEach(r=>{
+    if(!newSlots[r.crew_idx])newSlots[r.crew_idx]={};
+    if(!newSlots[r.crew_idx][r.week_offset])newSlots[r.crew_idx][r.week_offset]={};
+    if(!newSlots[r.crew_idx][r.week_offset][r.day_idx]){
+      newSlots[r.crew_idx][r.week_offset][r.day_idx]={l:r.label,t:r.job_type,db_id:r.id};
+    } else {
+      // Second+ row for same crew/day = double-booked slot
+      const k=_msKey(r.crew_idx,r.week_offset,r.day_idx);
+      if(!multiSlots[k]) multiSlots[k]=[];
+      multiSlots[k].push({l:r.label,t:r.job_type,db_id:r.id,jobId:null});
+    }
+  });
 }
 
 async function dbSaveSettings(){
@@ -2616,21 +2637,28 @@ function sjConfirm(){
   const cssType=sjTypeMatch?sjTypeMatch.key:'epoxy';
   const{w,start,days,weekends:wkndBooked}=sjFound;
   const BOOK_MD=wkndBooked?6:4;
+  // Generate job ID first so we can associate extra slots correctly
+  const jobId = (typeof crypto!=='undefined'&&crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2));
+
   // Book slots across week boundaries (supports multi-week jobs)
   {let curW=w,curD=start;
   for(let i=0;i<days;i++){
     if(curD>BOOK_MD){curW++;curD=0;}
     sjCrew.forEach(ci=>{
-      if(!newSlots[ci]) newSlots[ci]={};
-      if(!newSlots[ci][curW]) newSlots[ci][curW]={};
-      newSlots[ci][curW][curD]={l:cust,t:cssType};
-      dbSaveSlot(ci,curW,curD,cust,cssType);
+      if(newSlots[ci]?.[curW]?.[curD]){
+        // Already occupied — double-book as extra slot
+        dbAddExtraSlot(ci,curW,curD,cust,cssType,jobId);
+      } else {
+        if(!newSlots[ci]) newSlots[ci]={};
+        if(!newSlots[ci][curW]) newSlots[ci][curW]={};
+        newSlots[ci][curW][curD]={l:cust,t:cssType};
+        dbSaveSlot(ci,curW,curD,cust,cssType);
+      }
     });
     curD++;
   }}
 
-  // Create a job record so clicking the slot opens the full job card
-  const jobId = (typeof crypto!=='undefined'&&crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2));
+  // Create a job record so clicking the slot opens the full job card (jobId generated above)
   const jobRecord = {
     id: jobId,
     customer: cust,
@@ -2841,10 +2869,17 @@ async function seRemoveSlot(ci, w, d){
   if(s?.db_id){
     await sb.delete('scheduled_slots', s.db_id);
   } else {
-    // Fallback: delete by column values for slots missing a db_id
     await sb.deleteWhere('scheduled_slots',{crew_idx:ci,week_offset:w,day_idx:d});
   }
   if(newSlots[ci]?.[w]) delete newSlots[ci][w][d];
+  // Also remove any extra (double-booked) slots for this crew/day
+  const k=_msKey(ci,w,d);
+  if(multiSlots[k]){
+    for(const ex of multiSlots[k]){
+      if(ex.db_id) await sb.delete('scheduled_slots',ex.db_id);
+    }
+    delete multiSlots[k];
+  }
 }
 
 async function sePlaceSlot(ci, w, d, label, type){
@@ -3031,7 +3066,10 @@ async function jcSyncCrewSlots(job, force=false){
       // Conflict: a different job already has this crew member on this day
       if(newSlots[ci]?.[w]?.[d]&&SLOT_JOB_MAP[key]&&SLOT_JOB_MAP[key]!==job.id){
         if(!force){ _jcConflicts.push({crewName:name, date:ds}); continue; }
-        // force=true — override and place anyway
+        // force=true — add as a double-booked extra slot, don't overwrite primary
+        await dbAddExtraSlot(ci,w,d,job.customer,job.jobType||'epoxy',job.id);
+        added++;
+        continue;
       }
       await sePlaceSlot(ci,w,d,job.customer,job.jobType||'epoxy');
       SLOT_JOB_MAP[key]=job.id; added++;
@@ -4713,6 +4751,17 @@ function cvGetWeekSpanEvents(weekSun){
       } else {
         const isDone=jr?.status==='complete';
         jobMap[key]={key,jobId,ci,w,d,label:slot.l||'Job',type:slot.t||'epoxy',colStart:col,colEnd:col,isComplete:isDone,isExtra};
+      }
+      // Extra (double-booked) slots for this same crew/day
+      for(const ex of getExtraSlots(ci,w,d)){
+        const exJobId=ex.jobId||(JOB_RECORDS.find(j=>j.customer===ex.l)?.id)||null;
+        const exJr=exJobId?JOB_RECORDS.find(j=>j.id===exJobId):JOB_RECORDS.find(j=>j.customer===(ex.l||''));
+        const exKey='_extra_'+(exJobId||ex.l)+'_'+ci+'_'+col;
+        if(!jobMap[exKey]){
+          jobMap[exKey]={key:exKey,jobId:exJobId,ci,w,d,label:ex.l||'Job',type:ex.t||'epoxy',colStart:col,colEnd:col,isComplete:exJr?.status==='complete',isExtra:false};
+        } else {
+          jobMap[exKey].colEnd=col;
+        }
       }
     }
   }
@@ -8691,6 +8740,36 @@ function buildWeekGrid(wOff,mon,dNames){
       bar.onclick=()=>openSlotEdit(i,wOff,startDay);
       body.appendChild(bar);
     });
+
+    // Extra (double-booked) slots — render as a second row of single-day bars
+    const extraDays=[];
+    for(let d=0;d<TOTAL_DAYS;d++){
+      const extras=getExtraSlots(i,wOff,d);
+      if(extras.length) extraDays.push({d,extras});
+    }
+    if(extraDays.length){
+      body.style.minHeight='82px'; // expand row to accommodate second bar row
+      extraDays.forEach(({d,extras})=>{
+        extras.forEach((ex,ei)=>{
+          const leftFr=COL_FR.slice(0,d).reduce((a,b)=>a+b,0);
+          const widthFr=COL_FR[d];
+          const lp=(leftFr/TOTAL_FR*100).toFixed(3);
+          const wp=(widthFr/TOTAL_FR*100).toFixed(3);
+          const topPx=38+(ei*28);
+          const exJobId=ex.jobId||(JOB_RECORDS.find(j=>j.customer===ex.l)?.id)||null;
+          const exJr=exJobId?JOB_RECORDS.find(j=>j.id===exJobId):JOB_RECORDS.find(j=>j.customer===ex.l);
+          const isDone=exJr?.status==='complete';
+          let cls='sch-span-bar '+(isDone?'done':(ex.t||'epoxy'));
+          const bar=document.createElement('div');
+          bar.className=cls;
+          bar.textContent=(isDone?'✓ ':'')+ex.l;
+          bar.title='Double-booked · click to open';
+          bar.style.cssText=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);top:${topPx}px;`;
+          bar.onclick=()=>{ if(exJobId) openJobCard(exJobId); else openSlotEdit(i,wOff,d); };
+          body.appendChild(bar);
+        });
+      });
+    }
 
     rowDiv.appendChild(body);
     wrap.appendChild(rowDiv);
