@@ -6044,7 +6044,7 @@ async function approvePtoRequest(id){
   while(cur<=end){
     const dow=cur.getDay();
     if(dow!==0&&dow!==6){
-      const wOff=Math.round((cur-BASE)/(7*24*60*60*1000));
+      const wOff=Math.floor((cur-BASE)/(7*24*60*60*1000)); // floor not round — round shifts Fridays to next week
       const dIdx=dow-1;
       if(!ptoSlots[crewIdx]) ptoSlots[crewIdx]={};
       if(!ptoSlots[crewIdx][wOff]) ptoSlots[crewIdx][wOff]={};
