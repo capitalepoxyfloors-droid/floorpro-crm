@@ -4789,6 +4789,17 @@ function cvGetWeekSpanEvents(weekSun){
       if(!ex.jobId&&ev.jobId){ex.jobId=ev.jobId;ex.ci=ev.ci;ex.w=ev.w;ex.d=ev.d;}
     } else { byLabel[mergeKey]=ev; dedupedMap[ev.key]=ev; }
   }
+  // Merge adjacent primary→extension bar pairs into one seamless bar with internal gradient.
+  // Without this, the lane algorithm puts them in different rows when another job fills the gap.
+  for(const [mk,orgEv] of Object.entries(byLabel)){
+    if(orgEv.isExtra||orgEv.isPTO||orgEv.isHoliday) continue; // only process _org events
+    const extEv=byLabel[orgEv.label+'_ext'];
+    if(extEv&&extEv.colStart===orgEv.colEnd+1){
+      orgEv.fadeCol=extEv.colStart; // column index where the fade begins
+      orgEv.colEnd=extEv.colEnd;    // extend primary bar to cover extension days
+      delete dedupedMap[extEv.key]; // remove standalone extension bar
+    }
+  }
 
   // ── 2. PTO — merge consecutive weekday runs per crew member ──────────
   const ptoByCI={};
@@ -4886,12 +4897,18 @@ function cvBuildWeek(weekSun,today){
     const tapDt=new Date(weekSun); tapDt.setDate(weekSun.getDate()+ev.colStart);
     const tapDate=tapDt.toISOString().split('T')[0];
     // Detect gradient connection: primary bar ending exactly where extension of same job begins
-    const fadeToNext=!ev.isExtra&&!ev.isComplete&&!ev.isHoliday&&!ev.isPTO&&
+    const fadeToNext=ev.fadeCol===undefined&&!ev.isExtra&&!ev.isComplete&&!ev.isHoliday&&!ev.isPTO&&
       spanEvts.some(o=>o.isExtra&&o.label===ev.label&&o.colStart===ev.colEnd+1);
     const fadeFromPrev=ev.isExtra&&!ev.isComplete&&
       spanEvts.some(o=>!o.isExtra&&!o.isComplete&&o.label===ev.label&&o.colEnd+1===ev.colStart);
     let sty;
-    if(fadeToNext){
+    if(ev.fadeCol!==undefined&&!ev.isComplete){
+      // Merged primary+extension: one seamless bar with internal gradient at the transition column
+      const rgb=_CV_TYP_RGBA[ev.type||'epoxy']||'26,115,232';
+      const fadePct=((ev.fadeCol-ev.colStart)/span*100).toFixed(1);
+      sty=`left:${leftPct}%;width:calc(${widthPct}% - 3px);top:${topPx}px;height:${BAR_H}px;`
+        +`background:linear-gradient(to right,rgba(${rgb},1) 0%,rgba(${rgb},1) ${fadePct}%,rgba(${rgb},.32) 100%);`;
+    }else if(fadeToNext){
       const rgb=_CV_TYP_RGBA[ev.type||'epoxy']||'26,115,232';
       sty=`left:${leftPct}%;width:calc(${widthPct}% + 1px);top:${topPx}px;height:${BAR_H}px;border-radius:11px 0 0 11px;`
         +`background:linear-gradient(to right,rgba(${rgb},1) 0%,rgba(${rgb},1) 70%,rgba(${rgb},.32) 100%);`;
