@@ -4789,6 +4789,21 @@ function cvGetWeekSpanEvents(weekSun){
       if(!ex.jobId&&ev.jobId){ex.jobId=ev.jobId;ex.ci=ev.ci;ex.w=ev.w;ex.d=ev.d;}
     } else { byLabel[mergeKey]=ev; dedupedMap[ev.key]=ev; }
   }
+  // Merge extra-slot (double-booked) bars into their corresponding primary byLabel bar.
+  // Handles the case where a job is the extra/double-booked slot on some days and the primary
+  // slot on other days in the same week (e.g. GBH extra on Wed-Thu when Seth has State Tech
+  // primary, then GBH primary on Fri). Without this they appear as 3 separate 1-day fragments.
+  for(const key of Object.keys(dedupedMap)){
+    if(!key.startsWith('_extra_')) continue;
+    const exEv=dedupedMap[key];
+    const mergeKey=exEv.label+(exEv.isExtra?'_ext':'_org');
+    const primEv=byLabel[mergeKey];
+    if(!primEv) continue; // no primary bar for this label this week — keep standalone
+    primEv.colStart=Math.min(primEv.colStart,exEv.colStart);
+    primEv.colEnd=Math.max(primEv.colEnd,exEv.colEnd);
+    delete dedupedMap[key];
+  }
+
   // Merge adjacent primary→extension bar pairs into one seamless bar with internal gradient.
   // Without this, the lane algorithm puts them in different rows when another job fills the gap.
   for(const [mk,orgEv] of Object.entries(byLabel)){
