@@ -4903,11 +4903,14 @@ function cvBuildWeek(weekSun,today){
       spanEvts.some(o=>!o.isExtra&&!o.isComplete&&o.label===ev.label&&o.colEnd+1===ev.colStart);
     let sty;
     if(ev.fadeCol!==undefined&&!ev.isComplete){
-      // Merged primary+extension: one seamless bar with internal gradient at the transition column
+      // Merged primary+extension: solid primary portion fades at its right edge, then flat translucent extension
+      // Mirrors install schedule: primary fades over its last 30%, extension stays flat at .32 opacity
       const rgb=_CV_TYP_RGBA[ev.type||'epoxy']||'26,115,232';
-      const fadePct=((ev.fadeCol-ev.colStart)/span*100).toFixed(1);
+      const primaryRatio=(ev.fadeCol-ev.colStart)/span;
+      const solidPct=(primaryRatio*70).toFixed(1);   // solid until 70% of the primary portion
+      const fadePct=(primaryRatio*100).toFixed(1);   // fully faded by the end of the primary portion
       sty=`left:${leftPct}%;width:calc(${widthPct}% - 3px);top:${topPx}px;height:${BAR_H}px;`
-        +`background:linear-gradient(to right,rgba(${rgb},1) 0%,rgba(${rgb},1) ${fadePct}%,rgba(${rgb},.32) 100%);`;
+        +`background:linear-gradient(to right,rgba(${rgb},1) 0%,rgba(${rgb},1) ${solidPct}%,rgba(${rgb},.32) ${fadePct}%,rgba(${rgb},.32) 100%);`;
     }else if(fadeToNext){
       const rgb=_CV_TYP_RGBA[ev.type||'epoxy']||'26,115,232';
       sty=`left:${leftPct}%;width:calc(${widthPct}% + 1px);top:${topPx}px;height:${BAR_H}px;border-radius:11px 0 0 11px;`
