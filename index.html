@@ -139,6 +139,8 @@
   .sch-span-bar.extension{opacity:.32;}
   .cv-event-bar.extension{opacity:.32;}
   .sch-header.weekend{color:var(--orange);opacity:.85;}
+  .sch-header.sch-today{color:var(--accent);font-weight:800;}
+  .sch-cell.sch-today{background:rgba(37,99,235,.07);}
   .sch-cell.wknd{background:repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(255,255,255,.02) 4px,rgba(255,255,255,.02) 8px);}
   .sch-job.weekend-work{background:#e37400;color:#fff;border:none;}
   .sch-empty{color:var(--text3);font-size:11px;text-align:center;padding:6px 0;}
@@ -6148,14 +6150,16 @@ function renderSalesSchedule(){
     container.appendChild(weekLabel);
 
     // Header
+    const _salesTodayMs=(()=>{const t=new Date();t.setHours(0,0,0,0);return t.getTime();})();
     const h0=mk('div','sch-header','Will');
     h0.style.cssText='text-align:left;padding-left:14px;';
     container.appendChild(h0);
     for(let d=0;d<5;d++){
       const dd=new Date(mon); dd.setDate(dd.getDate()+d);
       const hol=isHoliday(dd);
-      const hdr=mk('div','sch-header',dNames[d]+' '+(dd.getMonth()+1)+'/'+dd.getDate());
-      if(hol) hdr.style.color='var(--orange)';
+      const _isTodaySH=dd.getTime()===_salesTodayMs;
+      const hdr=mk('div','sch-header'+(_isTodaySH?' sch-today':''),dNames[d]+' '+(dd.getMonth()+1)+'/'+dd.getDate());
+      if(hol&&!_isTodaySH) hdr.style.color='var(--orange)';
       container.appendChild(hdr);
     }
 
@@ -6165,8 +6169,9 @@ function renderSalesSchedule(){
     container.appendChild(nameCell);
 
     for(let d=0;d<5;d++){
-      const cell=mk('div','sch-cell');
       const dd=new Date(mon); dd.setDate(dd.getDate()+d);
+      const _isTodaySC=dd.getTime()===_salesTodayMs;
+      const cell=mk('div','sch-cell'+(_isTodaySC?' sch-today':''));
       const hol=isHoliday(dd);
       const dateStr=dd.toISOString().split('T')[0];
       if(hol){
@@ -8712,15 +8717,19 @@ function buildWeekGrid(wOff,mon,dNames){
   const wrap=document.createElement('div');
   wrap.className='schedule-block';
 
+  // Today's midnight timestamp for column highlighting
+  const _todayMs=(()=>{const t=new Date();t.setHours(0,0,0,0);return t.getTime();})();
+
   // Header row
   const hdrGrid=document.createElement('div');
   hdrGrid.className='schedule-week';
   const h0=mk('div','sch-header','Crew');h0.style.cssText='text-align:left;padding-left:14px;';hdrGrid.appendChild(h0);
   for(let d=0;d<TOTAL_DAYS;d++){
     const dd=new Date(mon);dd.setDate(dd.getDate()+d);
-    const cls='sch-header'+(d>=5?' weekend':'');
+    const _isTodayHdr=dd.getTime()===_todayMs;
+    const cls='sch-header'+(d>=5?' weekend':'')+((_isTodayHdr)?' sch-today':'');
     const hdr=mk('div',cls,dNames[d]+' '+(dd.getMonth()+1)+'/'+dd.getDate());
-    if(d<5&&isHoliday(dd)) hdr.style.color='var(--orange)';
+    if(d<5&&isHoliday(dd)&&!_isTodayHdr) hdr.style.color='var(--orange)';
     hdrGrid.appendChild(hdr);
   }
   wrap.appendChild(hdrGrid);
@@ -8758,14 +8767,15 @@ function buildWeekGrid(wOff,mon,dNames){
           isExtra=!origSched.has(sdStr);
         }
       }
-      days.push({pto,hol,slot,isWknd,isExtra});
+      const _dd=new Date(slotMon); _dd.setDate(slotMon.getDate()+d); _dd.setHours(0,0,0,0);
+      days.push({pto,hol,slot,isWknd,isExtra,isToday:_dd.getTime()===_todayMs});
     }
 
     // Events body — 7 background cells + absolutely positioned spanning bars
     const body=mk('div','sch-row-body');
 
-    days.forEach(({pto,hol,slot,isWknd},dIdx)=>{
-      const cell=mk('div','sch-cell'+(isWknd?' wknd':''));
+    days.forEach(({pto,hol,slot,isWknd,isToday},dIdx)=>{
+      const cell=mk('div','sch-cell'+(isWknd?' wknd':'')+(isToday?' sch-today':''));
       if(hol){
         cell.appendChild(mk('div','sch-job holiday',hol));
       } else if(pto){
