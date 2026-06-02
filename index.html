@@ -5019,9 +5019,10 @@ function cvTapEvent(jobId,ci,w,d,dateStr){
     setTimeout(()=>{
       const container=document.getElementById('jc-day-logs');
       if(!container) return;
-      const target=jcFmtDate(dateStr);
+      // Scroll to today's date — if today isn't in the log (future/past job) don't scroll at all
+      const todayLabel=jcFmtDate(new Date().toISOString().split('T')[0]);
       for(const sec of container.children){
-        if(sec.textContent.includes(target)){
+        if(sec.textContent.includes(todayLabel)){
           sec.scrollIntoView({behavior:'smooth',block:'start'}); break;
         }
       }
