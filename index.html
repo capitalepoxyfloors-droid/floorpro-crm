@@ -2991,6 +2991,55 @@ async function loadSlotJobMap(){ const v=await sb.getKV('slot_job_map'); if(v){t
 async function saveSlotJobMap(){ await sb.setKV('slot_job_map',JSON.stringify(SLOT_JOB_MAP)); }
 
 function getJobRecord(id){ return JOB_RECORDS.find(j=>j.id===id)||null; }
+
+// ── EMERGENCY LOG RECOVERY ────────────────────────────────────────────────────
+// Run recoverMisroutedLogs() in the browser console to move daily-log entries
+// that landed in the wrong job (due to stale SLOT_JOB_MAP) back to the right one.
+// Usage: await recoverMisroutedLogs('GBH', 'State Tech')
+//   first arg = job whose log has the data BY MISTAKE (partial customer name, case-insensitive)
+//   second arg = job the data SHOULD belong to
+async function recoverMisroutedLogs(fromLabel, toLabel) {
+  const fromJob = JOB_RECORDS.find(j => j.customer && j.customer.toLowerCase().includes(fromLabel.toLowerCase()));
+  const toJob   = JOB_RECORDS.find(j => j.customer && j.customer.toLowerCase().includes(toLabel.toLowerCase()));
+  if (!fromJob) { console.error('Source job not found. Jobs:', JOB_RECORDS.map(j=>j.customer)); return; }
+  if (!toJob)   { console.error('Target job not found. Jobs:', JOB_RECORDS.map(j=>j.customer)); return; }
+  console.log('FROM:', fromJob.customer, '(id:', fromJob.id+')');
+  console.log('TO:  ', toJob.customer,   '(id:', toJob.id+')');
+  const fromDates = Object.keys(fromJob.dayLogs || {});
+  if (!fromDates.length) { console.warn('Source job has no daily log entries.'); return; }
+  // Build the full scheduled date set for the target job
+  const toSchedule = new Set();
+  if (toJob.startDate && toJob.endDate) {
+    const cur = new Date(toJob.startDate+'T00:00:00'), end = new Date(toJob.endDate+'T00:00:00');
+    while (cur <= end) { toSchedule.add(cur.toISOString().split('T')[0]); cur.setDate(cur.getDate()+1); }
+  }
+  (toJob.extraDays||[]).forEach(d => toSchedule.add(d));
+  const moveable = fromDates.filter(d => toSchedule.has(d));
+  console.log('\nSource log dates:', fromDates);
+  console.log('Target schedule: ', [...toSchedule].sort());
+  console.log('Dates to move:   ', moveable);
+  if (!moveable.length) {
+    console.warn('No overlap found. Check startDate/endDate on the target job, or pass exact date strings as third arg: recoverMisroutedLogs("GBH","State Tech",["2026-06-03","2026-06-04"])');
+    return;
+  }
+  console.log('\nAbout to move', moveable.length, 'log entries from', fromJob.customer, '→', toJob.customer);
+  console.log('Call recoverMisroutedLogs.confirm() to proceed, or recoverMisroutedLogs.cancel() to abort.');
+  recoverMisroutedLogs._pending = { fromJob, toJob, moveable };
+}
+recoverMisroutedLogs.confirm = async function() {
+  const p = recoverMisroutedLogs._pending; if (!p) { console.warn('No pending migration.'); return; }
+  const { fromJob, toJob, moveable } = p;
+  if (!toJob.dayLogs) toJob.dayLogs = {};
+  for (const date of moveable) {
+    if (toJob.dayLogs[date]) console.warn('Target already has entry for', date, '— overwriting');
+    toJob.dayLogs[date] = fromJob.dayLogs[date];
+    delete fromJob.dayLogs[date];
+  }
+  await saveJobRecords();
+  recoverMisroutedLogs._pending = null;
+  console.log('✓ Done — moved', moveable.length, 'entries. Refresh the page and open', toJob.customer, 'to verify.');
+};
+recoverMisroutedLogs.cancel = function() { recoverMisroutedLogs._pending = null; console.log('Cancelled.'); };
 function jcSlotKey(ci,w,d){ return ci+'_'+w+'_'+d; }
 
 // Retroactively fill SLOT_JOB_MAP for any existing slots that match this job's
