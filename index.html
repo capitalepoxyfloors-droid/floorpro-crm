@@ -2516,11 +2516,30 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.getElementById('pto-slot-date').value=today;
   // Render dashboard immediately
   renderDashboard();
-  // Always require manager code on every page load — no saved sessions
-  localStorage.removeItem(_pinAuthKey()); // erase any old localStorage auth tokens
-  localStorage.removeItem('fpRole');
-  showLoginScreen();
-  // Reset the auto-lock countdown on any user interaction
+  // Check for a saved session within the last 24 hours
+  const _savedRole = checkLoginSession();
+  if(_savedRole){
+    _sessionAuthed = true;
+    _resetAutoLockTimer();
+    if(_savedRole === 'crew'){
+      localStorage.setItem('fpRole','crew');
+      document.body.classList.add('crew-mode');
+      const ml = document.getElementById('cv-manager-link');
+      if(ml) ml.style.display = 'block';
+      loadAllFromSupabase().then(()=>{ showPage('crewview'); });
+    } else {
+      localStorage.removeItem('fpRole');
+      document.body.classList.remove('crew-mode');
+      loadAllFromSupabase().then(()=>{
+        try{ const last=localStorage.getItem('fpLastPage'); if(last&&document.getElementById('page-'+last)) showPage(last); }catch(e){}
+      });
+    }
+  } else {
+    localStorage.removeItem(_pinAuthKey());
+    localStorage.removeItem('fpRole');
+    showLoginScreen();
+  }
+  // Refresh the 24-hour window on any user interaction
   ['click','keydown','touchstart','mousemove'].forEach(ev=>
     document.addEventListener(ev, _resetAutoLockTimer, {passive:true})
   );
@@ -5319,25 +5338,43 @@ function renderMaterialCalc(){
 
 // ── PIN AUTH ─────────────────────────────────────────────────────────────────
 let ADMIN_PIN='0061', CREW_PIN='1234', _pinBuf='';
-let _sessionAuthed = false;   // in-memory only — always false on page load/refresh
+let _sessionAuthed = false;
 let _autoLockTimer  = null;
-const AUTO_LOCK_MS  = 20 * 60 * 1000; // 20 minutes
+const AUTO_LOCK_MS  = 24 * 60 * 60 * 1000; // 24 hours since last activity
 
-function _pinAuthKey(){ return 'fpAuth_v1'; }
+function _pinAuthKey(){ return 'fpAuth_v2'; }
 
-// Always returns null on a fresh page load — no saved sessions ever
-function checkLoginSession(){ return null; }
+// Returns role ('admin'|'crew') if saved session is within 24 hours, else null
+function checkLoginSession(){
+  try{
+    const raw=localStorage.getItem(_pinAuthKey());
+    if(!raw) return null;
+    const {role,ts}=JSON.parse(raw);
+    if(Date.now()-ts < AUTO_LOCK_MS) return role||'admin';
+  }catch(e){}
+  return null;
+}
 
-function _saveSession(){
+function _saveSession(role){
   _sessionAuthed = true;
+  try{ localStorage.setItem(_pinAuthKey(), JSON.stringify({role:role||'admin', ts:Date.now()})); }catch(e){}
   _resetAutoLockTimer();
 }
 
 function _resetAutoLockTimer(){
   if(!_sessionAuthed) return;
+  // Throttle localStorage timestamp refresh to once per minute
+  try{
+    const raw=localStorage.getItem(_pinAuthKey());
+    if(raw){
+      const d=JSON.parse(raw);
+      if(Date.now()-d.ts > 60000){ d.ts=Date.now(); localStorage.setItem(_pinAuthKey(), JSON.stringify(d)); }
+    }
+  }catch(e){}
   clearTimeout(_autoLockTimer);
   _autoLockTimer = setTimeout(()=>{
     _sessionAuthed = false;
+    localStorage.removeItem(_pinAuthKey());
     localStorage.removeItem('fpRole');
     document.body.classList.remove('crew-mode');
     showLoginScreen();
@@ -5385,7 +5422,7 @@ function pinSubmit(){
 }
 
 function _pinSuccess(role){
-  _saveSession();
+  _saveSession(role);
   _hideLoginScreen();
   if(role==='crew'){
     localStorage.setItem('fpRole','crew');
@@ -5417,6 +5454,7 @@ function pinLogout(){
   if(!confirm('Lock the app and return to the manager code screen?')) return;
   _sessionAuthed = false;
   clearTimeout(_autoLockTimer);
+  localStorage.removeItem(_pinAuthKey());
   localStorage.removeItem('fpRole');
   document.body.classList.remove('crew-mode');
   showLoginScreen();
