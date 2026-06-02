@@ -2960,7 +2960,9 @@ async function jcCleanOrphanedSlots(job){
 // For every crew member listed in job.crewNames, check if they have actual schedule
 // slots for this job's dates. If not, create them automatically. This fixes jobs
 // where crewNames was set manually but slots were never saved (old workflow).
-async function jcSyncCrewSlots(job){
+let _jcConflicts = []; // [{crewName, date}] — slots skipped due to another job being booked
+
+async function jcSyncCrewSlots(job, force=false){
   if(!job||!job.startDate||!job.endDate||!job.crewNames) return;
   const names=(job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean);
   if(!names.length) return;
@@ -2981,8 +2983,11 @@ async function jcSyncCrewSlots(job){
       const{w,d}=pos; const key=jcSlotKey(ci,w,d);
       // Already has a slot for this job on this date AND the slot actually exists — skip
       if((SLOT_JOB_MAP[key]===job.id&&newSlots[ci]?.[w]?.[d])||(newSlots[ci]?.[w]?.[d]?.l===job.customer)) continue;
-      // Don't stomp a different job already on this day
-      if(newSlots[ci]?.[w]?.[d]&&SLOT_JOB_MAP[key]&&SLOT_JOB_MAP[key]!==job.id) continue;
+      // Conflict: a different job already has this crew member on this day
+      if(newSlots[ci]?.[w]?.[d]&&SLOT_JOB_MAP[key]&&SLOT_JOB_MAP[key]!==job.id){
+        if(!force){ _jcConflicts.push({crewName:name, date:ds}); continue; }
+        // force=true — override and place anyway
+      }
       await sePlaceSlot(ci,w,d,job.customer,job.jobType||'epoxy');
       SLOT_JOB_MAP[key]=job.id; added++;
     }
@@ -2992,6 +2997,27 @@ async function jcSyncCrewSlots(job){
     if(document.getElementById('page-schedule')?.classList.contains('active')) renderSchedule();
     if(document.getElementById('page-crewview')?.classList.contains('active')) renderCrewView();
   }
+  _jcUpdateConflictWarn();
+}
+
+function _jcUpdateConflictWarn(){
+  const el=document.getElementById('jc-conflict-warn'); if(!el) return;
+  if(!_jcConflicts.length){ el.style.display='none'; return; }
+  const fmtD=ds=>new Date(ds+'T00:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+  const uniqueNames=[...new Set(_jcConflicts.map(c=>c.crewName))];
+  const uniqueDates=[...new Set(_jcConflicts.map(c=>c.date))].sort();
+  const dateStr=uniqueDates.length<=3?uniqueDates.map(fmtD).join(', '):uniqueDates.length+' days';
+  document.getElementById('jc-conflict-msg').textContent=
+    uniqueNames.join(', ')+' '+(uniqueNames.length>1?'are':'is')+' already booked on '+dateStr+
+    ' by another job — '+(uniqueDates.length===1?'that slot was':'those slots were')+' skipped.';
+  el.style.display='';
+}
+
+async function jcForceOverride(){
+  const job=getJobRecord(_jcId); if(!job) return;
+  _jcConflicts=[];
+  await jcSyncCrewSlots(job, true);
+  if(!_jcConflicts.length) showToast('✓ Override applied — all days scheduled.');
 }
 
 function jcWeekdays(s,e){
@@ -3011,6 +3037,7 @@ function jcFmtDate(ds){ return new Date(ds+'T00:00:00').toLocaleDateString('en-U
 function openJobCard(jobId){
   const job=getJobRecord(jobId); if(!job) return;
   _jcId=jobId;
+  _jcConflicts=[];  // clear any stale conflicts from previous card
   jcBackfillSlotMap(job);    // heal legacy slots missing from SLOT_JOB_MAP
   jcSyncCrewSlots(job);      // create any missing slots for crew listed in crewNames
   jcCleanOrphanedSlots(job); // remove slots for crew members no longer on this job
@@ -3079,6 +3106,7 @@ function jcRenderCrewPicker(){
 // Toggle a crew member on/off this job — also syncs their schedule slots automatically
 async function jcToggleCrew(i){
   const job=getJobRecord(_jcId); if(!job) return;
+  _jcConflicts=[];  // reset so new conflicts are detected fresh
   const name=CREW[i].full;
   const names=(job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean);
   const idx=names.indexOf(name);
@@ -9148,6 +9176,11 @@ function skipReplacement(){
         <label class="form-label">Crew on This Job</label>
         <div id="jc-crew-picker" style="display:flex;flex-wrap:wrap;gap:7px;margin-top:4px;"></div>
         <div style="font-size:11px;color:var(--text3);margin-top:7px;">Tap to add or remove crew members.</div>
+      </div>
+      <!-- Double-booking conflict warning — shown by jcSyncCrewSlots when slots were skipped -->
+      <div id="jc-conflict-warn" style="display:none;background:var(--red-dim,#fff0f0);border:1px solid var(--red,#e53e3e);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:10px;">
+        <div id="jc-conflict-msg" style="font-size:12.5px;color:var(--red,#e53e3e);margin-bottom:8px;line-height:1.5;"></div>
+        <button class="btn" onclick="jcForceOverride()" style="background:var(--red,#e53e3e);color:#fff;font-size:12px;padding:5px 14px;border-color:var(--red,#e53e3e);">⚡ Override &amp; Schedule Anyway</button>
       </div>
       <div id="jc-dates-row" style="font-size:12px;color:var(--text3);padding:2px 0 10px;font-family:'DM Mono',monospace;"></div>
     </div>
