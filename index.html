@@ -8752,8 +8752,37 @@ function buildWeekGrid(wOff,mon,dNames){
         else{if(rS!==null)_runs.push({s:rS,e:d,l:rL,t:rT,x:rX});rS=d;rL=slot.l;rT=slot.t||'epoxy';rX=isExtra;}
       }else{if(rS!==null)_runs.push({s:rS,e:d,l:rL,t:rT,x:rX});rS=null;rL=null;rT=null;rX=false;}
     }
+    // Pre-collect extra slots so the merge pass below can reference them
+    const extraDays=[];
+    for(let d=0;d<TOTAL_DAYS;d++){
+      const extras=getExtraSlots(i,wOff,d);
+      if(extras.length) extraDays.push({d,extras});
+    }
+    // Merge extra-slot days adjacent to a primary run of the same label into one span bar.
+    // Handles cases like GBH extra on Wed-Thu + GBH primary on Fri → one Wed-Fri span in row 2.
+    const suppressedRunIdxs=new Set();
+    const suppressedExtraKeys=new Set();
+    const mergedExtraSpans=[];
+    _runs.forEach((run,ri)=>{
+      const exCols=[];
+      extraDays.forEach(({d,extras})=>{
+        if(extras.some(ex=>ex.l===run.l)) exCols.push(d);
+      });
+      if(!exCols.length) return;
+      const runCols=[];
+      for(let c=run.s;c<run.e;c++) runCols.push(c);
+      const allCols=[...new Set([...exCols,...runCols])].sort((a,b)=>a-b);
+      let contig=true;
+      for(let k=1;k<allCols.length;k++){if(allCols[k]!==allCols[k-1]+1){contig=false;break;}}
+      if(!contig) return;
+      suppressedRunIdxs.add(ri);
+      exCols.forEach(c=>suppressedExtraKeys.add(c+'_'+run.l));
+      mergedExtraSpans.push({s:allCols[0],e:allCols[allCols.length-1]+1,l:run.l,t:run.t});
+    });
+
     // Pass 2: render bars with adjacency-aware gradient styling
     _runs.forEach((run,ri)=>{
+      if(suppressedRunIdxs.has(ri)) return; // this run's days merged into a row-2 span bar
       const{s:startDay,e:endExcl,l:label,t:type,x:isExtra}=run;
       const span=endExcl-startDay;
       const jobId=SLOT_JOB_MAP[jcSlotKey(i,wOff,startDay)];
@@ -8794,16 +8823,13 @@ function buildWeekGrid(wOff,mon,dNames){
       body.appendChild(bar);
     });
 
-    // Extra (double-booked) slots — render as a second row of single-day bars
-    const extraDays=[];
-    for(let d=0;d<TOTAL_DAYS;d++){
-      const extras=getExtraSlots(i,wOff,d);
-      if(extras.length) extraDays.push({d,extras});
-    }
-    if(extraDays.length){
+    // Extra (double-booked) slots — render as a second row of bars.
+    // Slots whose days were merged into a span bar (mergedExtraSpans) are skipped here.
+    if(extraDays.length||mergedExtraSpans.length){
       body.style.minHeight='82px'; // expand row to accommodate second bar row
       extraDays.forEach(({d,extras})=>{
         extras.forEach((ex,ei)=>{
+          if(suppressedExtraKeys.has(d+'_'+ex.l)) return; // merged into a span bar below
           const leftFr=COL_FR.slice(0,d).reduce((a,b)=>a+b,0);
           const widthFr=COL_FR[d];
           const lp=(leftFr/TOTAL_FR*100).toFixed(3);
@@ -8821,6 +8847,23 @@ function buildWeekGrid(wOff,mon,dNames){
           bar.onclick=()=>{ if(exJobId) openJobCard(exJobId); else openSlotEdit(i,wOff,d); };
           body.appendChild(bar);
         });
+      });
+      // Merged span bars (extra days + adjacent primary run combined into one continuous bar)
+      mergedExtraSpans.forEach(({s,e,l,t})=>{
+        const leftFr=COL_FR.slice(0,s).reduce((a,b)=>a+b,0);
+        const widthFr=COL_FR.slice(s,e).reduce((a,b)=>a+b,0);
+        const lp=(leftFr/TOTAL_FR*100).toFixed(3);
+        const wp=(widthFr/TOTAL_FR*100).toFixed(3);
+        const exJr=JOB_RECORDS.find(j=>j.customer===l)||null;
+        const exJobId=exJr?.id||null;
+        const isDone=exJr?.status==='complete';
+        const bar=document.createElement('div');
+        bar.className='sch-span-bar '+(isDone?'done':(t||'epoxy'));
+        bar.textContent=(isDone?'✓ ':'')+l;
+        bar.title='Click to open';
+        bar.style.cssText=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);top:38px;`;
+        bar.onclick=()=>{ if(exJobId) openJobCard(exJobId); else openSlotEdit(i,wOff,s); };
+        body.appendChild(bar);
       });
     }
 
