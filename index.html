@@ -4730,7 +4730,8 @@ function cvGetWeekSpanEvents(weekSun){
     const dt=new Date(weekSun); dt.setDate(weekSun.getDate()+col); dt.setHours(0,0,0,0);
     const dtStr=dt.toISOString().split('T')[0];
     const{w,d}=cvDateToSlot(dt);
-    const crewList=cvCrewIdx===-1?CREW.map((_,i)=>i):[cvCrewIdx];
+    // Always show ALL crew members' jobs — any crew member can tap any job
+    const crewList=CREW.map((_,i)=>i);
     for(const ci of crewList){
       const slot=newSlots[ci]?.[w]?.[d]||getSlot(ci,w,d); if(!slot) continue;
       const jobId=SLOT_JOB_MAP[jcSlotKey(ci,w,d)]||null;
