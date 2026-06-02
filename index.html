@@ -2681,7 +2681,8 @@ function sjConfirm(){
   {let curW=w,curD=start;
   for(let i=0;i<days;i++){
     if(curD>BOOK_MD){curW++;curD=0;}
-    sjCrew.forEach(ci=>{ SLOT_JOB_MAP[jcSlotKey(ci,curW,curD)]=jobId; });
+    // Only map crew that got a primary slot — skip those that were double-booked into multiSlots
+    sjCrew.forEach(ci=>{ if(newSlots[ci]?.[curW]?.[curD]?.l===cust) SLOT_JOB_MAP[jcSlotKey(ci,curW,curD)]=jobId; });
     curD++;
   }}
   saveJobRecords(); saveSlotJobMap();
@@ -4735,8 +4736,11 @@ function cvGetWeekSpanEvents(weekSun){
     const crewList=CREW.map((_,i)=>i);
     for(const ci of crewList){
       const slot=newSlots[ci]?.[w]?.[d]||getSlot(ci,w,d); if(!slot) continue;
-      const jobId=SLOT_JOB_MAP[jcSlotKey(ci,w,d)]||null;
-      const jr=jobId?JOB_RECORDS.find(j=>j.id===jobId):JOB_RECORDS.find(j=>j.customer===(slot.l||''));
+      const rawJobId=SLOT_JOB_MAP[jcSlotKey(ci,w,d)]||null;
+      const rawJr=rawJobId?JOB_RECORDS.find(j=>j.id===rawJobId):null;
+      // Verify the mapped job matches the slot label — if not (stale map from double-book overwrite), fall back to label search
+      const jr=(rawJr&&rawJr.customer===(slot.l||''))?rawJr:JOB_RECORDS.find(j=>j.customer===(slot.l||''));
+      const jobId=jr?.id||null; // use the verified job ID so key and isExtra detection are correct
       // Is this an extension day? (in extraDays but NOT in the original scheduled weekdays)
       let isExtra=false;
       if(jr?.extraDays?.includes(dtStr)){
@@ -8653,7 +8657,9 @@ function buildWeekGrid(wOff,mon,dNames){
         const sd=new Date(slotMon); sd.setDate(slotMon.getDate()+d); sd.setHours(0,0,0,0);
         const sdStr=sd.toISOString().split('T')[0];
         const slotJobId=SLOT_JOB_MAP[jcSlotKey(i,wOff,d)];
-        const jr=slotJobId?JOB_RECORDS.find(j=>j.id===slotJobId):JOB_RECORDS.find(j=>j.customer===slot.l);
+        const _rawJr=slotJobId?JOB_RECORDS.find(j=>j.id===slotJobId):null;
+        // Verify mapped job matches slot label (stale when a double-book overwrote the map entry)
+        const jr=(_rawJr&&_rawJr.customer===slot.l)?_rawJr:JOB_RECORDS.find(j=>j.customer===slot.l);
         if(jr?.extraDays?.includes(sdStr)){
           const jrSD=new Date((jr.startDate||'')+'T00:00:00').getDay(),jrED=new Date((jr.endDate||'')+'T00:00:00').getDay();
           const jrWk=(jrSD===0||jrSD===6||jrED===0||jrED===6);
