@@ -2771,7 +2771,11 @@ function openSlotEdit(ci, w, d){
   if(!slot) return;
   // Route to job card if a record exists, unless we're coming from the Reschedule button
   if(!_seForceOpen){
-    const jobId = SLOT_JOB_MAP[jcSlotKey(ci,w,d)];
+    const rawJobId = SLOT_JOB_MAP[jcSlotKey(ci,w,d)];
+    const rawJr = rawJobId ? JOB_RECORDS.find(j=>j.id===rawJobId) : null;
+    // Verify mapped job matches slot label — stale when a double-book overwrote the map entry
+    const jobId = (rawJr && rawJr.customer===slot.l) ? rawJobId
+      : (JOB_RECORDS.find(j=>j.customer===slot.l)?.id || null);
     if(jobId && getJobRecord(jobId)){ openJobCard(jobId); return; }
   }
   _seForceOpen = false;
