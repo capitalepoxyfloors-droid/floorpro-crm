@@ -8938,6 +8938,10 @@ function buildWeekGrid(wOff,mon,dNames){
       mergedExtraSpans.push({s:allCols[0],e:allCols[allCols.length-1]+1,l:run.l,t:run.t});
     });
 
+    // Pre-compute PTO+job days so Pass 2 can flush border-radius on connecting edges
+    const ptoPlusLabelMap=new Map(); // day index -> job label
+    days.forEach(({pto,slotRaw},d)=>{ if(pto&&slotRaw) ptoPlusLabelMap.set(d,slotRaw.l); });
+
     // Pass 2: render bars with adjacency-aware gradient styling
     _runs.forEach((run,ri)=>{
       if(suppressedRunIdxs.has(ri)) return; // this run's days merged into a row-2 span bar
@@ -8951,6 +8955,9 @@ function buildWeekGrid(wOff,mon,dNames){
       // Gradient connection: normal bar ending exactly where an extension of same job begins
       const fadeToNext=!isExtra&&!isDone&&nxt&&nxt.x&&nxt.l===label&&nxt.s===endExcl;
       const fadeFromPrev=isExtra&&!isDone&&prv&&!prv.x&&prv.l===label&&prv.e===startDay;
+      // PTO+job adjacency: flush the border-radius on sides that touch a PTO+job bar
+      const connectsRightToPTO=!fadeToNext&&ptoPlusLabelMap.get(endExcl)===label;
+      const connectsLeftToPTO=!fadeFromPrev&&ptoPlusLabelMap.get(startDay-1)===label;
       const bar=document.createElement('div');
       let cls='sch-span-bar ';
       if(isDone)cls+='done';
@@ -8971,8 +8978,18 @@ function buildWeekGrid(wOff,mon,dNames){
         st=`left:calc(${lp}% + 2px);width:calc(${wp}% - 1px);border-radius:11px 0 0 11px;`
           +`background:linear-gradient(to right,rgba(${rgb},1) 0%,rgba(${rgb},1) 70%,rgba(${rgb},.32) 100%);`;
       }else if(fadeFromPrev){
-        // Extension bar following primary: flush left, no left radius (extension class handles opacity)
+        // Extension bar following primary: flush left; also flush right if it touches a PTO+job bar
+        if(connectsRightToPTO){
+          st=`left:calc(${lp}%);width:calc(${wp}%);border-radius:0;`;
+        }else{
+          st=`left:calc(${lp}%);width:calc(${wp}% - 4px);border-radius:0 11px 11px 0;`;
+        }
+      }else if(connectsLeftToPTO&&connectsRightToPTO){
+        st=`left:calc(${lp}%);width:calc(${wp}%);border-radius:0;`;
+      }else if(connectsLeftToPTO){
         st=`left:calc(${lp}%);width:calc(${wp}% - 4px);border-radius:0 11px 11px 0;`;
+      }else if(connectsRightToPTO){
+        st=`left:calc(${lp}% + 2px);width:calc(${wp}% - 2px);border-radius:11px 0 0 11px;`;
       }else{
         st=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);`;
       }
@@ -9037,6 +9054,9 @@ function buildWeekGrid(wOff,mon,dNames){
         const widthFr=COL_FR[d];
         const lp=(leftFr/TOTAL_FR*100).toFixed(3);
         const wp=(widthFr/TOTAL_FR*100).toFixed(3);
+        // Detect adjacent days with the same job so the job bar connects flush
+        const prevHasSameJob=(d>0)&&(days[d-1].slot?.l===slotRaw.l||(days[d-1].pto&&days[d-1].slotRaw?.l===slotRaw.l));
+        const nextHasSameJob=(d+1<TOTAL_DAYS)&&(days[d+1]?.slot?.l===slotRaw.l||(days[d+1]?.pto&&days[d+1]?.slotRaw?.l===slotRaw.l));
         // Row 1 — job bar (top:10px from CSS; same look as normal span bars)
         const pjJobId=SLOT_JOB_MAP[jcSlotKey(i,wOff,d)];
         const pjJr=pjJobId?JOB_RECORDS.find(j=>j.id===pjJobId):JOB_RECORDS.find(j=>j.customer===slotRaw.l);
@@ -9049,7 +9069,18 @@ function buildWeekGrid(wOff,mon,dNames){
         jobBar.className=jcls.trim();
         jobBar.textContent=(pjDone?'✓ ':'')+slotRaw.l;
         jobBar.title='Click to open';
-        jobBar.style.cssText=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);`;
+        // Flush the sides that connect to adjacent bars with the same job
+        let jst;
+        if(prevHasSameJob&&nextHasSameJob){
+          jst=`left:calc(${lp}%);width:calc(${wp}%);border-radius:0;`;
+        }else if(prevHasSameJob){
+          jst=`left:calc(${lp}%);width:calc(${wp}% - 4px);border-radius:0 11px 11px 0;`;
+        }else if(nextHasSameJob){
+          jst=`left:calc(${lp}% + 2px);width:calc(${wp}% - 2px);border-radius:11px 0 0 11px;`;
+        }else{
+          jst=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);`;
+        }
+        jobBar.style.cssText=jst;
         jobBar.onclick=()=>openSlotEdit(i,wOff,d);
         body.appendChild(jobBar);
         // Row 2 — PTO bar
