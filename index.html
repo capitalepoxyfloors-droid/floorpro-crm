@@ -861,7 +861,7 @@
   <div class="modal" style="max-width:480px;">
     <div class="modal-header">
       <div class="modal-title">✋ Request Time Off</div>
-      <button class="modal-close" onclick="closeModal('ptorequest')">×</button>
+      <button class="modal-close" onclick="closePtoRequestModal()">×</button>
     </div>
     <div class="modal-body">
       <div class="form-group">
@@ -914,8 +914,8 @@
       <div id="ptoreq-note" style="font-size:12px;color:var(--text3);margin-top:4px;line-height:1.5;">Your request will be sent to Will for approval. You'll see it on the calendar once approved.</div>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-ghost" onclick="closeModal('ptorequest')">Cancel</button>
-      <button class="btn btn-primary" onclick="submitPtoRequest()">Send Request</button>
+      <button class="btn btn-ghost" onclick="closePtoRequestModal()">Cancel</button>
+      <button class="btn btn-primary" id="ptoreq-submit-btn" onclick="submitPtoRequest()">Send Request</button>
     </div>
   </div>
 </div>
@@ -5998,6 +5998,37 @@ function openPtoRequestModal(){
   openModal('ptorequest');
 }
 
+let _editingPtoReqId=null;
+
+function closePtoRequestModal(){
+  _editingPtoReqId=null;
+  document.querySelector('#modal-ptorequest .modal-title').textContent='✋ Request Time Off';
+  document.getElementById('ptoreq-submit-btn').textContent='Send Request';
+  document.getElementById('ptoreq-note').style.display='';
+  closeModal('ptorequest');
+}
+
+function editPtoRequest(id){
+  const req=PTO_REQUESTS.find(r=>r.id===id); if(!req) return;
+  _editingPtoReqId=id;
+  // Pre-fill crew
+  const sel=document.getElementById('ptoreq-crew');
+  sel.innerHTML=CREW.map((c,i)=>`<option value="${i}">${c.full}</option>`).join('');
+  sel.value=req.crewIdx;
+  // Pre-fill dates & times
+  document.getElementById('ptoreq-start').value=req.startDate;
+  document.getElementById('ptoreq-end').value=req.endDate||req.startDate;
+  document.getElementById('ptoreq-from').value=req.fromTime||'07:00';
+  document.getElementById('ptoreq-to').value=req.toTime||'12:00';
+  document.getElementById('ptoreq-reason').value=req.reason||'';
+  ptoreqSetType(req.partial?'partial':'full');
+  // Update modal chrome
+  document.querySelector('#modal-ptorequest .modal-title').textContent='✏️ Edit PTO Request';
+  document.getElementById('ptoreq-submit-btn').textContent='Save Changes';
+  document.getElementById('ptoreq-note').style.display='none';
+  openModal('ptorequest');
+}
+
 function submitPtoRequest(){
   const crewIdx=parseInt(document.getElementById('ptoreq-crew').value);
   const startDate=document.getElementById('ptoreq-start').value;
@@ -6025,6 +6056,21 @@ function submitPtoRequest(){
     submittedDate:new Date().toISOString().split('T')[0],
     reviewedDate:''
   };
+  if(_editingPtoReqId){
+    // Edit mode — update existing request in place
+    const existing=PTO_REQUESTS.find(r=>r.id===_editingPtoReqId);
+    if(existing){
+      existing.crewIdx=crewIdx; existing.crewName=CREW[crewIdx]?.full||'Unknown';
+      existing.startDate=startDate; existing.endDate=endDate;
+      existing.reason=reason; existing.weekdays=wdCount;
+      existing.partial=isPartial; existing.fromTime=fromTime; existing.toTime=toTime;
+    }
+    savePtoRequests();
+    closePtoRequestModal();
+    renderPtoRequestsPage();
+    showToast('✓ Request updated.');
+    return;
+  }
   PTO_REQUESTS.push(req);
   savePtoRequests();
   closeModal('ptorequest');
@@ -6106,6 +6152,7 @@ function renderPtoRequestsPage(){
         ${r.status==='pending'?`
           <button class="btn btn-primary" style="font-size:11px;padding:5px 14px;white-space:nowrap;background:var(--green);border-color:var(--green);" onclick="approvePtoRequest('${r.id}')">✓ Approve</button>
           <button class="btn btn-ghost" style="font-size:11px;padding:5px 14px;white-space:nowrap;color:var(--red);border-color:var(--red);" onclick="denyPtoRequest('${r.id}')">✕ Deny</button>
+          <button class="btn btn-ghost" style="font-size:11px;padding:5px 14px;white-space:nowrap;" onclick="editPtoRequest('${r.id}')">✏️ Edit</button>
         `:''}
         ${r.status==='approved'?`<span style="font-size:11px;color:var(--green);font-weight:600;">✓ On calendar</span>`:''}
         ${r.status==='denied'?`<span style="font-size:11px;color:var(--red);font-weight:600;">✕ Denied</span>`:''}
