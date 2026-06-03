@@ -136,6 +136,7 @@
   .sch-span-bar.prep{background:#0097a7;color:#fff;border:none;}
   .sch-span-bar.newjob{background:#188038;color:#fff;border:none;}
   .sch-span-bar.done{background:#bdc1c6;color:#fff;border:none;opacity:.85;}
+  .sch-span-bar.pto{background:#d93025;color:#fff;border:none;}
   .sch-span-bar.extension{opacity:.32;}
   .cv-event-bar.extension{opacity:.32;}
   .sch-header.weekend{color:var(--orange);opacity:.85;}
@@ -8840,16 +8841,17 @@ function buildWeekGrid(wOff,mon,dNames){
       const isWknd=d>=5;
       const pto=ptoSlots[i]?.[wOff]?.[d];
       const hol=(!isWknd)?getHolidayForCell(wOff,d):null;
-      const slot=(!pto&&!hol)?(getSlot(i,wOff,d)||getNew(i,wOff,d)):null;
+      const slotRaw=(!hol)?(getSlot(i,wOff,d)||getNew(i,wOff,d)):null; // always fetch — PTO days too
+      const slot=(!pto&&!hol)?slotRaw:null; // for cell display only — suppressed by PTO/holiday
       // Detect extension days (in job.extraDays but outside original date range)
       let isExtra=false;
-      if(slot){
+      if(slotRaw){  // use slotRaw so PTO-day jobs still get correct isExtra flag
         const sd=new Date(slotMon); sd.setDate(slotMon.getDate()+d); sd.setHours(0,0,0,0);
         const sdStr=sd.toISOString().split('T')[0];
         const slotJobId=SLOT_JOB_MAP[jcSlotKey(i,wOff,d)];
         const _rawJr=slotJobId?JOB_RECORDS.find(j=>j.id===slotJobId):null;
         // Verify mapped job matches slot label (stale when a double-book overwrote the map entry)
-        const jr=(_rawJr&&_rawJr.customer===slot.l)?_rawJr:JOB_RECORDS.find(j=>j.customer===slot.l);
+        const jr=(_rawJr&&_rawJr.customer===slotRaw.l)?_rawJr:JOB_RECORDS.find(j=>j.customer===slotRaw.l);
         if(jr?.extraDays?.includes(sdStr)){
           const jrSD=new Date((jr.startDate||'')+'T00:00:00').getDay(),jrED=new Date((jr.endDate||'')+'T00:00:00').getDay();
           const jrWk=(jrSD===0||jrSD===6||jrED===0||jrED===6);
@@ -8858,16 +8860,19 @@ function buildWeekGrid(wOff,mon,dNames){
         }
       }
       const _dd=new Date(slotMon); _dd.setDate(slotMon.getDate()+d); _dd.setHours(0,0,0,0);
-      days.push({pto,hol,slot,isWknd,isExtra,isToday:_dd.getTime()===_todayMs});
+      days.push({pto,hol,slot,slotRaw,isWknd,isExtra,isToday:_dd.getTime()===_todayMs});
     }
 
     // Events body — 7 background cells + absolutely positioned spanning bars
     const body=mk('div','sch-row-body');
 
-    days.forEach(({pto,hol,slot,isWknd,isToday},dIdx)=>{
+    days.forEach(({pto,hol,slot,slotRaw,isWknd,isToday},dIdx)=>{
       const cell=mk('div','sch-cell'+(isWknd?' wknd':'')+(isToday?' sch-today':''));
       if(hol){
         cell.appendChild(mk('div','sch-job holiday',hol));
+      } else if(pto && slotRaw){
+        // PTO + job coexist: leave cell empty — job renders as span bar (top:10px),
+        // PTO renders as second-row absolute bar (top:38px) added after the spans block below
       } else if(pto){
         const ptoEl=mk('div','sch-job pto','🚫 '+pto.label);
         ptoEl.style.cursor='pointer';
@@ -8899,7 +8904,8 @@ function buildWeekGrid(wOff,mon,dNames){
     let rS=null,rL=null,rT=null,rX=false;
     for(let d=0;d<=TOTAL_DAYS;d++){
       if(d===TOTAL_DAYS){if(rS!==null)_runs.push({s:rS,e:d,l:rL,t:rT,x:rX});break;}
-      const{slot,isExtra}=days[d];
+      const{slotRaw,isExtra}=days[d];
+      const slot=slotRaw; // use slotRaw so PTO days don't fracture a multi-day run
       if(slot){
         if(slot.l===rL&&isExtra===rX){/* extend */}
         else{if(rS!==null)_runs.push({s:rS,e:d,l:rL,t:rT,x:rX});rS=d;rL=slot.l;rT=slot.t||'epoxy';rX=isExtra;}
@@ -9017,6 +9023,26 @@ function buildWeekGrid(wOff,mon,dNames){
         bar.style.cssText=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);top:38px;`;
         bar.onclick=()=>{ if(exJobId) openJobCard(exJobId); else openSlotEdit(i,wOff,s); };
         body.appendChild(bar);
+      });
+    }
+
+    // PTO bars that coexist with a job — rendered as second-row absolute bars below the job span
+    const ptoPlusDays=[];
+    days.forEach(({pto,slotRaw},d)=>{ if(pto&&slotRaw) ptoPlusDays.push({pto,d}); });
+    if(ptoPlusDays.length){
+      body.style.minHeight='82px';
+      ptoPlusDays.forEach(({pto,d})=>{
+        const leftFr=COL_FR.slice(0,d).reduce((a,b)=>a+b,0);
+        const widthFr=COL_FR[d];
+        const lp=(leftFr/TOTAL_FR*100).toFixed(3);
+        const wp=(widthFr/TOTAL_FR*100).toFixed(3);
+        const ptoBar=document.createElement('div');
+        ptoBar.className='sch-span-bar pto';
+        ptoBar.textContent='🚫 '+pto.label;
+        ptoBar.title='Click to edit PTO';
+        ptoBar.style.cssText=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);top:38px;`;
+        (function(ci,wo,di){ ptoBar.onclick=()=>openPtoDayEdit(ci,wo,di); })(i,wOff,d);
+        body.appendChild(ptoBar);
       });
     }
 
