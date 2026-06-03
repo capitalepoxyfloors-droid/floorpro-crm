@@ -8904,8 +8904,7 @@ function buildWeekGrid(wOff,mon,dNames){
     let rS=null,rL=null,rT=null,rX=false;
     for(let d=0;d<=TOTAL_DAYS;d++){
       if(d===TOTAL_DAYS){if(rS!==null)_runs.push({s:rS,e:d,l:rL,t:rT,x:rX});break;}
-      const{slotRaw,isExtra}=days[d];
-      const slot=slotRaw; // use slotRaw so PTO days don't fracture a multi-day run
+      const{slot,isExtra}=days[d]; // use slot (not slotRaw) — preserves existing run/gradient/isDone logic
       if(slot){
         if(slot.l===rL&&isExtra===rX){/* extend */}
         else{if(rS!==null)_runs.push({s:rS,e:d,l:rL,t:rT,x:rX});rS=d;rL=slot.l;rT=slot.t||'epoxy';rX=isExtra;}
@@ -9026,16 +9025,34 @@ function buildWeekGrid(wOff,mon,dNames){
       });
     }
 
-    // PTO bars that coexist with a job — rendered as second-row absolute bars below the job span
+    // PTO days that also have a job — render a standalone job bar at row-1 (top from CSS)
+    // and a PTO bar at row-2 (top:38px).  The run algorithm (Pass 1) uses `slot` not `slotRaw`,
+    // so PTO days still break runs.  These bars fill the visual gap without touching isDone logic.
     const ptoPlusDays=[];
-    days.forEach(({pto,slotRaw},d)=>{ if(pto&&slotRaw) ptoPlusDays.push({pto,d}); });
+    days.forEach(({pto,slotRaw,isExtra},d)=>{ if(pto&&slotRaw) ptoPlusDays.push({pto,slotRaw,isExtra,d}); });
     if(ptoPlusDays.length){
       body.style.minHeight='82px';
-      ptoPlusDays.forEach(({pto,d})=>{
+      ptoPlusDays.forEach(({pto,slotRaw,isExtra,d})=>{
         const leftFr=COL_FR.slice(0,d).reduce((a,b)=>a+b,0);
         const widthFr=COL_FR[d];
         const lp=(leftFr/TOTAL_FR*100).toFixed(3);
         const wp=(widthFr/TOTAL_FR*100).toFixed(3);
+        // Row 1 — job bar (top:10px from CSS; same look as normal span bars)
+        const pjJobId=SLOT_JOB_MAP[jcSlotKey(i,wOff,d)];
+        const pjJr=pjJobId?JOB_RECORDS.find(j=>j.id===pjJobId):JOB_RECORDS.find(j=>j.customer===slotRaw.l);
+        const pjDone=pjJr?.status==='complete';
+        const jobBar=document.createElement('div');
+        let jcls='sch-span-bar ';
+        if(pjDone) jcls+='done';
+        else jcls+=(slotRaw.t||'epoxy');
+        if(isExtra&&!pjDone) jcls+=' extension';
+        jobBar.className=jcls.trim();
+        jobBar.textContent=(pjDone?'✓ ':'')+slotRaw.l;
+        jobBar.title='Click to open';
+        jobBar.style.cssText=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);`;
+        jobBar.onclick=()=>openSlotEdit(i,wOff,d);
+        body.appendChild(jobBar);
+        // Row 2 — PTO bar
         const ptoBar=document.createElement('div');
         ptoBar.className='sch-span-bar pto';
         ptoBar.textContent='🚫 '+pto.label;
