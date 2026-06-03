@@ -4148,8 +4148,13 @@ function jcHours(key,ds){
 }
 
 // Returns the best available burdened rate for a daily-log crew entry.
-// Tries: stored burdenedRate → live CREW_DATA calculation → base hourly → 0
-function jcGetBurdenedRate(c){
+// Tries: prevailing wage override → stored burdenedRate → live CREW_DATA calculation → base hourly → 0
+function jcGetBurdenedRate(c, job){
+  // Prevailing wage override — same flat rate for every crew member on this job
+  if(job && job.prevailingWage){
+    const pw=parseFloat(job.prevailingWageRate);
+    if(pw>0) return pw;
+  }
   const stored=parseFloat(c.burdenedRate);
   if(stored>0) return stored;
   if(c.crewIdx>=0&&CREW_DATA[c.crewIdx]){
@@ -4159,6 +4164,19 @@ function jcGetBurdenedRate(c){
     if(base>0) return base;
   }
   return 0;
+}
+
+async function jcSetPrevailingWage(checked){
+  const job=getJobRecord(_jcId); if(!job) return;
+  job.prevailingWage=!!checked;
+  await saveJobRecords();
+  renderJobCosting();
+}
+async function jcSetPrevailingWageRate(val){
+  const job=getJobRecord(_jcId); if(!job) return;
+  job.prevailingWageRate=parseFloat(val)||0;
+  await saveJobRecords();
+  renderJobCosting();
 }
 
 // ── JOB COSTING PAGE ──────────────────────────────────────────────────────────
@@ -4193,7 +4211,7 @@ function renderJobCostingPage(){
           const hrs=jcGetCrewMemberHrs(c,log);
           if(hrs>0){
             totalHrs+=hrs;
-            const rate=jcGetBurdenedRate(c);
+            const rate=jcGetBurdenedRate(c,job);
             laborCost+=hrs*rate;
           }
         });
@@ -4299,7 +4317,7 @@ function renderJobCosting(){
       // Deduplicate by name — catches same person added as both custom + CREW_DATA entry
       if(seenThisDay.has(effectiveName.toLowerCase())) return;
       seenThisDay.add(effectiveName.toLowerCase());
-      const rate=jcGetBurdenedRate(c);
+      const rate=jcGetBurdenedRate(c,job);
       const cost=Math.round(hrs*rate*100)/100;
       totalLaborCost+=cost;
       totalHours+=hrs;
@@ -4363,6 +4381,25 @@ function renderJobCosting(){
   const sec=(title,color='var(--text3)')=>`<div style="font-size:10px;font-family:'DM Mono',monospace;color:${color};text-transform:uppercase;letter-spacing:.8px;margin:18px 0 8px;padding-bottom:4px;border-bottom:1px solid var(--border2);">${title}</div>`;
 
   let html='';
+
+  // Prevailing Wage Override
+  const pwActive=!!(job.prevailingWage);
+  const pwRate=parseFloat(job.prevailingWageRate)||0;
+  html+=`<div style="background:${pwActive?'rgba(234,179,8,.07)':'var(--surface2)'};border:1px solid ${pwActive?'rgba(234,179,8,.35)':'var(--border2)'};border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:4px;">
+    <label style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;">
+      <input type="checkbox" ${pwActive?'checked':''} onchange="jcSetPrevailingWage(this.checked)" style="width:16px;height:16px;accent-color:#f59e0b;cursor:pointer;flex-shrink:0;">
+      <span style="font-size:13px;font-weight:600;color:var(--text);">Prevailing Wage Job</span>
+      ${pwActive?`<span style="font-size:10px;font-family:'DM Mono',monospace;color:#f59e0b;background:rgba(234,179,8,.18);padding:1px 8px;border-radius:20px;letter-spacing:.4px;">ACTIVE</span>`:''}
+    </label>
+    ${pwActive?`<div style="display:flex;align-items:center;gap:6px;margin-top:9px;padding-left:26px;flex-wrap:wrap;">
+      <span style="font-size:12px;color:var(--text2);">Wage rate:</span>
+      <span style="font-size:11px;color:var(--text3);">$</span>
+      <input type="number" min="0" step="0.01" value="${pwRate||''}" placeholder="0.00"
+        onchange="jcSetPrevailingWageRate(this.value)"
+        style="width:80px;font-size:13px;text-align:center;border:1px solid rgba(234,179,8,.4);border-radius:4px;padding:3px 6px;background:var(--surface);color:var(--text);font-family:'DM Mono',monospace;">
+      <span style="font-size:12px;color:var(--text3);">/hr &nbsp;·&nbsp; overrides all individual crew rates</span>
+    </div>`:`<div style="font-size:11px;color:var(--text3);margin-top:5px;padding-left:26px;">Check to override all crew wages with a single prevailing wage rate for this job.</div>`}
+  </div>`;
 
   // Revenue
   html+=sec('Revenue');
