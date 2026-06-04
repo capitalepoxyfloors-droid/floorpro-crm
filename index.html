@@ -7348,6 +7348,10 @@ function saveMaterial(){
 // Set today as default price date when opening add modal
 function openModal(id){
   document.getElementById('modal-'+id).classList.add('open');
+  if(id==='pto'){
+    const sel=document.getElementById('pto-crew');
+    sel.innerHTML=CREW.map((c,i)=>`<option value="${i}">${c.full}</option>`).join('');
+  }
   if(id==='crewshare') renderCrewShareList();
   if(id==='salesvisit' && editingSvIdx===null){
     document.getElementById('sv-title').textContent='Add Sales Visit';
@@ -9891,13 +9895,7 @@ function skipReplacement(){
       <!-- Crew -->
       <div class="form-group">
         <label class="form-label">Crew Member</label>
-        <select class="form-select" id="pto-crew">
-          <option value="0">Will Bradford</option>
-          <option value="1">Seth West</option>
-          <option value="2">Brendon Bennett</option>
-          <option value="3">Cody Faulkner</option>
-          <option value="4">Hunter Schuler</option>
-        </select>
+        <select class="form-select" id="pto-crew"></select>
       </div>
 
       <!-- Full Day vs Time Slot toggle -->
