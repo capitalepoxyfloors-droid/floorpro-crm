@@ -1946,7 +1946,8 @@ async function autoAdvanceJobsByDate(){
   for(const job of JOB_RECORDS){
     if(!job.startDate) continue;
     const start = new Date(job.startDate+'T00:00:00');
-    const end   = job.endDate ? new Date(job.endDate+'T00:00:00') : start;
+    const effectiveEndStr = [...(job.extraDays||[]), job.endDate||''].filter(Boolean).sort().pop();
+    const end   = effectiveEndStr ? new Date(effectiveEndStr+'T00:00:00') : start;
 
     let newBoardStatus = null;
     let newRecordStatus = null;
