@@ -220,6 +220,9 @@
   .todo-text{flex:1;font-size:13.5px;color:var(--text);line-height:1.4;}
   .todo-del{background:none;border:none;color:var(--text3);cursor:pointer;font-size:18px;line-height:1;padding:0;width:24px;height:24px;display:flex;align-items:center;justify-content:center;flex-shrink:0;border-radius:4px;transition:all .15s;}
   .todo-del:hover{color:var(--red);background:var(--red-dim);}
+  .todo-edit{background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;line-height:1;padding:0;width:24px;height:24px;display:flex;align-items:center;justify-content:center;flex-shrink:0;border-radius:4px;transition:all .15s;opacity:0;}
+  .todo-item:hover .todo-edit{opacity:1;}
+  .todo-edit:hover{color:var(--accent);background:var(--accent-dim);}
   /* Scheduler */
   .crew-picker{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px;}
   .crew-option{background:var(--surface2);border:2px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;cursor:pointer;transition:all .15s;display:flex;align-items:center;gap:10px;user-select:none;}
@@ -1778,6 +1781,7 @@ async function loadDashOrder(){
 
 // ── TO-DO CHECKLIST ────────────────────────────────────────────────────────────
 let TODOS = [];
+let _editingTodoId = null;
 
 async function addTodo(){
   const input = document.getElementById('todo-input');
@@ -1816,14 +1820,48 @@ function renderTodos(){
   }
   // Show incomplete first, then done
   const sorted = [...TODOS.filter(t=>!t.done), ...TODOS.filter(t=>t.done)];
-  list.innerHTML = sorted.map(t=>`
-    <div class="todo-item ${t.done?'done':''}">
-      <div class="todo-check ${t.done?'checked':''}" onclick="toggleTodo(${t.id})" style="flex-shrink:0;">${t.done?'<svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#000" stroke-width="2"><polyline points="2,6 5,9 10,3"/></svg>':''}</div>
-      <div class="todo-text">${t.text}</div>
+  list.innerHTML = sorted.map(t=>{
+    const chk=`<div class="todo-check ${t.done?'checked':''}" onclick="toggleTodo(${t.id})" style="flex-shrink:0;">${t.done?'<svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#000" stroke-width="2"><polyline points="2,6 5,9 10,3"/></svg>':''}</div>`;
+    if(_editingTodoId===t.id){
+      return `<div class="todo-item" style="gap:8px;">
+        ${chk}
+        <input id="todo-edit-${t.id}" class="form-input" value="${t.text.replace(/"/g,'&quot;').replace(/</g,'&lt;')}" style="flex:1;margin:0;font-size:13.5px;padding:5px 8px;"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();saveTodoEdit(${t.id},false);}else if(event.key==='Escape'){saveTodoEdit(${t.id},true);}"
+          onblur="saveTodoEdit(${t.id},false)"/>
+      </div>`;
+    }
+    return `<div class="todo-item ${t.done?'done':''}">
+      ${chk}
+      <div class="todo-text" ondblclick="editTodo(${t.id})">${t.text}</div>
+      <button class="todo-edit" onclick="editTodo(${t.id})" title="Edit task">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+      </button>
       <button class="todo-del" onclick="deleteTodo(${t.id})">×</button>
-    </div>`).join('');
+    </div>`;
+  }).join('');
+  if(_editingTodoId!==null){
+    setTimeout(()=>{ const inp=document.getElementById('todo-edit-'+_editingTodoId); if(inp){inp.focus();inp.select();} },0);
+  }
 }
 
+function editTodo(id){
+  _editingTodoId = id;
+  renderTodos();
+}
+async function saveTodoEdit(id, cancelled){
+  // If cancelled (Escape), just close the edit mode
+  if(cancelled){ _editingTodoId=null; renderTodos(); return; }
+  // Guard: input may already be gone if Escape fired before blur
+  const inp = document.getElementById('todo-edit-'+id); if(!inp) return;
+  const val = inp.value.trim();
+  if(val){
+    const t = TODOS.find(t=>t.id===id);
+    if(t) t.text = val;
+    await dbSaveTodos();
+  }
+  _editingTodoId = null;
+  renderTodos();
+}
 async function dbSaveTodos(){
   await sb.setKV('todos', JSON.stringify(TODOS));
 }
