@@ -4234,7 +4234,7 @@ function renderJobCostingPage(){
     const consCost=Math.round(matCost*consPct/100*100)/100;
     const mileOneWay=parseFloat(job.mileageOneWay)||0;
     const mileRate=parseFloat(job.mileageRate!==undefined?job.mileageRate:0.70);
-    const wDays=allDates.filter(ds=>{const l=logs[ds];return l&&jcGetLogHrs(l)>0;}).length;
+    const wDays=allDates.filter(ds=>{const l=logs[ds];if(!l)return false;if(jcGetLogHrs(l)>0)return true;return(Array.isArray(l.crewPresent)?l.crewPresent:[]).some(c=>jcGetCrewMemberHrs(c,l)>0);}).length;
     const mileCost=Math.round(mileOneWay*2*wDays*mileRate*100)/100;
     const totalCost=Math.round((laborCost+matCost+consCost+mileCost)*100)/100;
     const profit=Math.round((revenue-totalCost)*100)/100;
@@ -4307,8 +4307,6 @@ function renderJobCosting(){
 
   allDates.forEach(ds=>{
     const log=logs[ds]; if(!log) return;
-    const hrs=jcGetLogHrs(log);
-    if(hrs<=0) return;
     const crew=Array.isArray(log.crewPresent)?log.crewPresent:[];
     const seenThisDay=new Set();
     crew.forEach(c=>{
@@ -4318,6 +4316,9 @@ function renderJobCosting(){
       // Deduplicate by name — catches same person added as both custom + CREW_DATA entry
       if(seenThisDay.has(effectiveName.toLowerCase())) return;
       seenThisDay.add(effectiveName.toLowerCase());
+      // Use per-crew-member times when set; fall back to day-level times
+      const hrs=jcGetCrewMemberHrs(c,log);
+      if(hrs<=0) return;
       const rate=jcGetBurdenedRate(c,job);
       const cost=Math.round(hrs*rate*100)/100;
       totalLaborCost+=cost;
@@ -4365,7 +4366,7 @@ function renderJobCosting(){
   const consCost=Math.round(totalMatCost*consPct/100*100)/100;
 
   // ── MILEAGE ──
-  const workDays=allDates.filter(ds=>{ const l=logs[ds]; return l&&jcGetLogHrs(l)>0; }).length;
+  const workDays=allDates.filter(ds=>{ const l=logs[ds]; if(!l) return false; if(jcGetLogHrs(l)>0) return true; return (Array.isArray(l.crewPresent)?l.crewPresent:[]).some(c=>jcGetCrewMemberHrs(c,l)>0); }).length;
   const mileageOneWay=parseFloat(job.mileageOneWay)||0;
   const irsRate=parseFloat(job.mileageRate!==undefined?job.mileageRate:0.70);
   const totalMiles=Math.round(mileageOneWay*2*workDays*10)/10;
