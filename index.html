@@ -1123,6 +1123,7 @@
             <option>5 Gallon</option>
             <option>15 Gallon</option>
             <option>Lbs</option>
+            <option>LF</option>
             <option>Container</option>
           </select>
         </div>
@@ -7235,7 +7236,7 @@ function costPerSqft(m){
   if(!m.price||!m.coverage||m.coverage<=0) return null;
   let unitsPerGallon = 1;
   // Extract gallons from unit
-  const unitMap = {'Gallon':1,'2 Gallon':2,'3 Gallon':3,'5 Gallon':5,'15 Gallon':15,'Lbs':1,'Container':1};
+  const unitMap = {'Gallon':1,'2 Gallon':2,'3 Gallon':3,'5 Gallon':5,'15 Gallon':15,'Lbs':1,'LF':1,'Container':1};
   const gallons = unitMap[m.unit] || 1;
   const pricePerGallon = m.price / gallons;
 
