@@ -571,6 +571,14 @@
             + Add Wave Job
           </button>
           <button class="btn btn-primary" onclick="openModal('schedulejob')">+ Schedule Job</button>
+          <div style="display:flex;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);overflow:hidden;flex-shrink:0;">
+            <button id="jobs-view-board" onclick="setJobsView('board')" title="Board view" style="padding:6px 10px;border:none;cursor:pointer;background:var(--accent);color:#fff;line-height:1;transition:all .15s;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+            </button>
+            <button id="jobs-view-list" onclick="setJobsView('list')" title="List view" style="padding:6px 10px;border:none;cursor:pointer;background:transparent;color:var(--text2);line-height:1;transition:all .15s;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+            </button>
+          </div>
         </div>
       </div>
       <!-- 4 column board matching pipeline style -->
@@ -619,6 +627,9 @@
             </div>
           </div>
         </div>
+
+        <!-- List view — shown instead of board when toggle is set to list -->
+        <div id="jobs-list-view" style="display:none;"></div>
 
         <!-- Invoiced jobs — collapsible section below the board -->
         <div id="jobs-invoiced-section" style="display:none;margin-top:24px;padding:18px 20px;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);border-left:3px solid var(--blue);">
@@ -2248,6 +2259,7 @@ async function loadAllFromSupabase(){
     renderMaterials();
     await loadJobs();
     await autoAdvanceJobsByDate();
+    setJobsView(_jobsViewMode);
     initSalesNotifications();
     showSyncStatus('✓ Ready','var(--green)');
   }catch(e){
@@ -6745,6 +6757,132 @@ function updateJobCounts(){
   });
 }
 
+// ── Jobs List View ────────────────────────────────────────────────────────────
+let _jobsViewMode = localStorage.getItem('jobs_view_mode') || 'board';
+
+function setJobsView(mode){
+  _jobsViewMode = mode;
+  localStorage.setItem('jobs_view_mode', mode);
+  const board    = document.getElementById('jobs-board');
+  const listView = document.getElementById('jobs-list-view');
+  const btnBoard = document.getElementById('jobs-view-board');
+  const btnList  = document.getElementById('jobs-view-list');
+  if(!board || !listView) return;
+  if(mode === 'list'){
+    board.style.display    = 'none';
+    listView.style.display = 'block';
+    renderJobsListView();
+    if(btnBoard){ btnBoard.style.background='transparent'; btnBoard.style.color='var(--text2)'; }
+    if(btnList){  btnList.style.background='var(--accent)';  btnList.style.color='#fff'; }
+  } else {
+    board.style.display    = '';
+    listView.style.display = 'none';
+    if(btnBoard){ btnBoard.style.background='var(--accent)'; btnBoard.style.color='#fff'; }
+    if(btnList){  btnList.style.background='transparent';    btnList.style.color='var(--text2)'; }
+  }
+}
+
+function renderJobsListView(){
+  const container = document.getElementById('jobs-list-view');
+  if(!container || _jobsViewMode !== 'list') return;
+  const statusOrder  = ['inprogress','approved','scheduled','complete'];
+  const statusLabels = {approved:'Approved',scheduled:'Scheduled',inprogress:'In Progress',complete:'Complete'};
+  const statusColors = {approved:'var(--accent)',scheduled:'var(--blue)',inprogress:'var(--green)',complete:'var(--text3)'};
+  const nextStages   = {approved:'scheduled',scheduled:'inprogress',inprogress:'complete'};
+  const nextLabels   = {approved:'→ Scheduled',scheduled:'→ In Progress',inprogress:'→ Complete'};
+
+  // Read data from the always-rendered (but hidden) kanban columns
+  const allJobs = [];
+  statusOrder.forEach(status=>{
+    const col = document.getElementById('jobs-col-'+status);
+    if(!col) return;
+    col.querySelectorAll('.lead-card').forEach(card=>{
+      const customer = card.querySelector('.lead-name')?.textContent.trim()||'';
+      if(!customer) return;
+      const dets     = card.querySelectorAll('.lead-detail');
+      const jobLabel = dets[0]?.textContent.trim()||'';
+      const detail   = dets[1]?.textContent.trim()||'';
+      const displayVal = card.querySelector('.lead-value')?.textContent.trim()||'—';
+      const dbId     = card.dataset.dbId||'';
+      allJobs.push({customer,jobLabel,detail,displayVal,status,dbId});
+    });
+  });
+
+  if(!allJobs.length){
+    container.innerHTML='<div style="padding:40px;text-align:center;color:var(--text3);font-size:13px;">No jobs yet — add one above.</div>';
+    return;
+  }
+
+  let html='<div style="display:flex;flex-direction:column;">';
+  statusOrder.forEach(status=>{
+    const jobs=allJobs.filter(j=>j.status===status);
+    if(!jobs.length) return;
+    const color=statusColors[status];
+    const next=nextStages[status];
+    const nextLbl=nextLabels[status];
+    html+=`<div style="font-size:10px;font-family:'DM Mono',monospace;color:${color};text-transform:uppercase;letter-spacing:.7px;font-weight:700;padding:14px 2px 6px;">${statusLabels[status]} &nbsp;·&nbsp; ${jobs.length}</div>`;
+    jobs.forEach(job=>{
+      const sid=job.dbId.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      const sc=job.customer.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      html+=`<div style="display:flex;align-items:center;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius-sm);margin-bottom:5px;overflow:hidden;cursor:pointer;transition:background .12s;min-height:54px;"
+           onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background='var(--surface)'"
+           onclick="listJobOpen('${sid}','${sc}')">
+        <div style="width:4px;align-self:stretch;background:${color};flex-shrink:0;"></div>
+        <div style="flex:1;padding:10px 16px;min-width:0;overflow:hidden;">
+          <div style="font-size:13.5px;font-weight:600;color:var(--text);line-height:1.2;">${job.customer}</div>
+          ${(job.jobLabel||job.detail)?`<div style="font-size:11px;color:var(--text2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${[job.jobLabel,job.detail].filter(Boolean).join(' &nbsp;·&nbsp; ')}</div>`:''}
+        </div>
+        <div style="font-family:'DM Mono',monospace;font-size:13px;font-weight:700;color:var(--accent);padding:0 16px;flex-shrink:0;white-space:nowrap;">${job.displayVal}</div>
+        <div style="display:flex;align-items:center;gap:4px;padding:0 10px 0 0;flex-shrink:0;" onclick="event.stopPropagation()">
+          ${status==='approved'?`<button class="btn btn-primary" style="font-size:11px;padding:4px 10px;" onclick="listJobSchedule('${sid}')">📅 Schedule</button>`:''}
+          ${next?`<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;" onclick="listJobAdvance('${sid}')">${nextLbl}</button>`:''}
+          ${status==='complete'?`<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;color:var(--blue);border-color:var(--blue-dim);" onclick="listJobInvoice('${sid}')">📄 Invoice</button>`:''}
+          <button style="background:none;border:none;cursor:pointer;color:var(--text3);padding:4px 7px;border-radius:4px;font-size:13px;line-height:1;transition:color .15s;" title="Edit" onclick="listJobEdit('${sid}')" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">✏</button>
+          <button style="background:none;border:none;cursor:pointer;color:var(--text3);padding:4px 7px;border-radius:4px;font-size:13px;line-height:1;transition:color .15s;" title="Delete" onclick="listJobDelete('${sid}')" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text3)'">✕</button>
+        </div>
+      </div>`;
+    });
+  });
+  html+='</div>';
+  container.innerHTML=html;
+}
+
+// List view action helpers — find the hidden kanban card and delegate to existing functions
+function listJobOpen(dbId,customer){
+  const match=JOB_RECORDS.find(j=>j.customer===customer);
+  if(match){ openJobCard(match.id); return; }
+  const card=[...document.querySelectorAll('#jobs-board .lead-card')].find(c=>c.dataset.dbId===dbId);
+  if(card) openJobEdit(card.querySelector('button[title="Edit job"]'));
+}
+function listJobAdvance(dbId){
+  const card=[...document.querySelectorAll('#jobs-board .lead-card')].find(c=>c.dataset.dbId===dbId);
+  if(!card) return;
+  const btn=[...card.querySelectorAll('button')].find(b=>(b.getAttribute('onclick')||'').includes('advanceJobCard'));
+  if(btn) btn.click(); // addJobCard hook re-renders list view automatically
+}
+function listJobSchedule(dbId){
+  const card=[...document.querySelectorAll('#jobs-board .lead-card')].find(c=>c.dataset.dbId===dbId);
+  if(!card) return;
+  const btn=[...card.querySelectorAll('button')].find(b=>(b.getAttribute('onclick')||'').includes('scheduleApproved'));
+  if(btn) btn.click();
+}
+function listJobEdit(dbId){
+  const card=[...document.querySelectorAll('#jobs-board .lead-card')].find(c=>c.dataset.dbId===dbId);
+  if(!card) return;
+  openJobEdit(card.querySelector('button[title="Edit job"]'));
+}
+function listJobDelete(dbId){
+  const card=[...document.querySelectorAll('#jobs-board .lead-card')].find(c=>c.dataset.dbId===dbId);
+  if(!card) return;
+  deleteJobCard(card.querySelector('button[title="Delete job"]')); // deleteJobCard hook re-renders list view
+}
+function listJobInvoice(dbId){
+  const card=[...document.querySelectorAll('#jobs-board .lead-card')].find(c=>c.dataset.dbId===dbId);
+  if(!card) return;
+  const btn=[...card.querySelectorAll('button')].find(b=>(b.getAttribute('onclick')||'').includes('markJobInvoiced'));
+  if(btn){ btn.click(); setTimeout(renderJobsListView,100); }
+}
+
 function addJobCard(customer, jobLabel, value, displayVal, detail, status, existingDbId, extraData){
   const colId='jobs-col-'+status;
   const col=document.getElementById(colId);
@@ -6804,6 +6942,7 @@ function addJobCard(customer, jobLabel, value, displayVal, detail, status, exist
   `;
   col.appendChild(card);
   updateJobCounts();
+  if(typeof _jobsViewMode!=='undefined'&&_jobsViewMode==='list') setTimeout(renderJobsListView,0);
 }
 
 function advanceJobCard(btn, nextStatus){
@@ -6901,6 +7040,7 @@ function deleteJobCard(btn){
   card.remove();
   updateJobCounts();
   showToast('Job deleted.');
+  if(typeof _jobsViewMode!=='undefined'&&_jobsViewMode==='list') setTimeout(renderJobsListView,50);
 }
 
 // ── Invoice workflow ──────────────────────────────────────────────────────────
