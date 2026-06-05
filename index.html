@@ -1151,6 +1151,7 @@
           <select class="form-select" id="mat-coverage-unit" onchange="updateMatCoverage()">
             <option>sqft/gallon</option>
             <option>sqft/lb</option>
+            <option>sqft/LF</option>
             <option>sqft/kit</option>
             <option>sqft/bag</option>
             <option>lbs/100 sqft</option>
@@ -7242,8 +7243,8 @@ function costPerSqft(m){
 
   if(m.coverageUnit === 'sqft/gallon' || m.coverageUnit === 'sqft/kit' || m.coverageUnit === 'sqft/bag'){
     return pricePerGallon / m.coverage;
-  } else if(m.coverageUnit === 'sqft/lb'){
-    // price per lb / sqft per lb
+  } else if(m.coverageUnit === 'sqft/lb' || m.coverageUnit === 'sqft/LF'){
+    // price per unit / sqft per unit
     return m.price / m.coverage;
   } else if(m.coverageUnit === 'lbs/100 sqft'){
     // lbs per 100 sqft → cost per sqft = (price * lbs/100) / 100
@@ -7311,7 +7312,7 @@ function updateMatCoverage(){
   const note = document.getElementById('mat-cost-sqft-note');
   if(!price||!coverage||coverage<=0){ wrap.style.display='none'; return; }
 
-  const unitMap={'Gallon':1,'2 Gallon':2,'3 Gallon':3,'15 Gallon':15,'Lbs':1,'Container':1};
+  const unitMap={'Gallon':1,'2 Gallon':2,'3 Gallon':3,'5 Gallon':5,'15 Gallon':15,'Lbs':1,'LF':1,'Container':1};
   const gallons = unitMap[unit]||1;
   const pricePerGallon = price/gallons;
   let cpSqft;
@@ -7321,6 +7322,9 @@ function updateMatCoverage(){
   } else if(coverageUnit==='sqft/lb'){
     cpSqft = price/coverage;
     note.textContent = '$'+price.toFixed(2)+'/lb ÷ '+coverage+' sqft/lb = $'+cpSqft.toFixed(3)+'/sqft';
+  } else if(coverageUnit==='sqft/LF'){
+    cpSqft = price/coverage;
+    note.textContent = '$'+price.toFixed(2)+'/LF ÷ '+coverage+' sqft/LF = $'+cpSqft.toFixed(3)+'/sqft';
   } else if(coverageUnit==='lbs/100 sqft'){
     cpSqft = (price*coverage)/100;
     note.textContent = '$'+price.toFixed(2)+'/lb × '+coverage+' lbs/100 sqft ÷ 100 = $'+cpSqft.toFixed(3)+'/sqft';
