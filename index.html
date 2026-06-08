@@ -1935,16 +1935,19 @@ async function loadJobs(){
     } else {
       // Restore address/notes from DB notes field so Schedule button can pre-fill them
       const extraData = r.notes ? {notes: r.notes} : undefined;
-      // Always recompute from r.value when it's a valid number — display_val may be stale/truncated
+      // Recompute display from numeric value — jobs table sometimes stores value:'' after an advance.
+      // Fall back to JOB_RECORDS (settings KV) by customer name to get the authoritative value.
       const _numVal=parseFloat(r.value)||0;
-      const _rv=Math.round(_numVal*100)/100;
-      const fallbackDisp=_numVal>0?'$'+_rv.toLocaleString('en-US',{minimumFractionDigits:_rv%1?2:0,maximumFractionDigits:2}):(r.value||'—');
+      const _jrMatch=!_numVal?JOB_RECORDS.find(j=>(j.customer||'').trim()===(r.customer||'').trim()):null;
+      const _numValFinal=_numVal||(parseFloat((_jrMatch||{}).value)||0);
+      const _rv=Math.round(_numValFinal*100)/100;
+      const fallbackDisp=_rv>0?'$'+_rv.toLocaleString('en-US',{minimumFractionDigits:_rv%1?2:0,maximumFractionDigits:2}):'—';
       const rawDisp=r.display_val||'';
-      const formattedDisp=_numVal>0
+      const formattedDisp=_numValFinal>0
         ? fallbackDisp
         : (rawDisp&&/^[\d.]+$/.test(rawDisp.trim())&&parseFloat(rawDisp)>0
           ?'$'+parseFloat(rawDisp).toLocaleString('en-US',{minimumFractionDigits:parseFloat(rawDisp)%1?2:0,maximumFractionDigits:2})
-          :(rawDisp||fallbackDisp));
+          :(rawDisp||'—'));
       addJobCard(r.customer,r.job_label,r.value,formattedDisp,r.detail,r.status,r.id,extraData);
     }
   });
@@ -1995,13 +1998,16 @@ async function autoAdvanceJobsByDate(){
       if(match){
         const dbId      = match.dataset.dbId || null;
         const jobLabel  = match.querySelector('.lead-detail')?.textContent || '';
-        const dispVal   = match.querySelector('.lead-value')?.textContent || '—';
         const detail    = match.querySelectorAll('.lead-detail')[1]?.textContent || '';
         const extraData = {address: match.dataset.address||'', notes: match.dataset.notes||'', sqft: match.dataset.sqft||''};
         const addrNote  = [extraData.address, extraData.notes].filter(Boolean).join('\n');
-        if(dbId) dbSaveJob({customer: job.customer, jobLabel, value:'', displayVal: dispVal, detail, status: newBoardStatus, notes: addrNote, db_id: dbId});
+        // Use job record value (authoritative) — card dataset or DB may store '' or stale display
+        const _advRaw   = job.value || match.dataset.value || '';
+        const _advNum   = Math.round((parseFloat(_advRaw)||0)*100)/100;
+        const dispVal   = _advNum>0?'$'+_advNum.toLocaleString('en-US',{minimumFractionDigits:_advNum%1?2:0,maximumFractionDigits:2}):(match.querySelector('.lead-value')?.textContent||'—');
+        if(dbId) dbSaveJob({customer: job.customer, jobLabel, value:_advRaw, displayVal: dispVal, detail, status: newBoardStatus, notes: addrNote, db_id: dbId});
         match.remove(); updateJobCounts();
-        addJobCard(job.customer, jobLabel, '', dispVal, detail, newBoardStatus, dbId||undefined, extraData);
+        addJobCard(job.customer, jobLabel, _advRaw, dispVal, detail, newBoardStatus, dbId||undefined, extraData);
       } else {
         // No board card found — create one directly from the job record
         const jobLabel = job.jobTypeLabel || job.jobType || '';
