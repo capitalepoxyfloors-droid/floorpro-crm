@@ -2081,28 +2081,45 @@ async function loadPTO(){
   });
 }
 
-async function dbSaveSlot(crewIdx,weekOff,dayIdx,label,jobType){
-  const res=await sb.insert('scheduled_slots',{crew_idx:crewIdx,week_offset:weekOff,day_idx:dayIdx,label:label,job_type:jobType});
+async function dbSaveSlot(crewIdx,weekOff,dayIdx,label,jobType,dateStr){
+  // Encode absolute date into job_type so slots never drift when BASE advances
+  const encodedType=dateStr?jobType+':'+dateStr:jobType;
+  const res=await sb.insert('scheduled_slots',{crew_idx:crewIdx,week_offset:weekOff,day_idx:dayIdx,label:label,job_type:encodedType});
   return res&&res[0]?res[0].id:null;
 }
-async function dbAddExtraSlot(ci,w,d,label,type,jobId){
-  const dbId=await dbSaveSlot(ci,w,d,label,type);
+async function dbAddExtraSlot(ci,w,d,label,type,jobId,dateStr){
+  const dbId=await dbSaveSlot(ci,w,d,label,type,dateStr);
   const k=_msKey(ci,w,d);
   if(!multiSlots[k]) multiSlots[k]=[];
-  multiSlots[k].push({l:label,t:type,db_id:dbId,jobId:jobId||null});
+  multiSlots[k].push({l:label,t:type,db_id:dbId,jobId:jobId||null,dt:dateStr||null});
 }
 async function loadScheduledSlots(){
   const rows=await sb.get('scheduled_slots');
   rows.forEach(r=>{
+    // Decode absolute date from job_type (e.g. 'epoxy:2026-06-05')
+    const jtRaw=r.job_type||'';
+    const colonIdx=jtRaw.lastIndexOf(':');
+    const datePart=colonIdx>=0?jtRaw.slice(colonIdx+1):'';
+    const hasDt=/^\d{4}-\d{2}-\d{2}$/.test(datePart);
+    const jobTypeClean=hasDt?jtRaw.slice(0,colonIdx):jtRaw;
+    const dateEnc=hasDt?datePart:null;
+    let wOff=r.week_offset,dIdx=r.day_idx;
+    if(dateEnc){
+      const d=new Date(dateEnc+'T00:00:00');
+      if(!isNaN(d)){
+        wOff=Math.floor((d-BASE)/(7*24*60*60*1000));
+        dIdx=d.getDay()-1; // 0=Mon … 4=Fri
+      }
+    }
     if(!newSlots[r.crew_idx])newSlots[r.crew_idx]={};
-    if(!newSlots[r.crew_idx][r.week_offset])newSlots[r.crew_idx][r.week_offset]={};
-    if(!newSlots[r.crew_idx][r.week_offset][r.day_idx]){
-      newSlots[r.crew_idx][r.week_offset][r.day_idx]={l:r.label,t:r.job_type,db_id:r.id};
-    } else if(newSlots[r.crew_idx][r.week_offset][r.day_idx].l !== r.label){
+    if(!newSlots[r.crew_idx][wOff])newSlots[r.crew_idx][wOff]={};
+    if(!newSlots[r.crew_idx][wOff][dIdx]){
+      newSlots[r.crew_idx][wOff][dIdx]={l:r.label,t:jobTypeClean,db_id:r.id,dt:dateEnc};
+    } else if(newSlots[r.crew_idx][wOff][dIdx].l!==r.label){
       // Different label = genuinely double-booked slot → put in multiSlots
-      const k=_msKey(r.crew_idx,r.week_offset,r.day_idx);
+      const k=_msKey(r.crew_idx,wOff,dIdx);
       if(!multiSlots[k]) multiSlots[k]=[];
-      multiSlots[k].push({l:r.label,t:r.job_type,db_id:r.id,jobId:null});
+      multiSlots[k].push({l:r.label,t:jobTypeClean,db_id:r.id,jobId:null,dt:dateEnc});
     }
     // Same label = harmless duplicate DB row (old data repair) — silently ignore
   });
@@ -2730,15 +2747,17 @@ function sjConfirm(){
   {let curW=w,curD=start;
   for(let i=0;i<days;i++){
     if(curD>BOOK_MD){curW++;curD=0;}
+    const _slotDt=new Date(BASE.getTime()+curW*7*24*60*60*1000+curD*24*60*60*1000);
+    const _slotDateStr=_slotDt.toISOString().split('T')[0];
     sjCrew.forEach(ci=>{
       if(newSlots[ci]?.[curW]?.[curD]){
         // Already occupied — double-book as extra slot
-        dbAddExtraSlot(ci,curW,curD,cust,cssType,jobId);
+        dbAddExtraSlot(ci,curW,curD,cust,cssType,jobId,_slotDateStr);
       } else {
         if(!newSlots[ci]) newSlots[ci]={};
         if(!newSlots[ci][curW]) newSlots[ci][curW]={};
-        newSlots[ci][curW][curD]={l:cust,t:cssType};
-        dbSaveSlot(ci,curW,curD,cust,cssType);
+        newSlots[ci][curW][curD]={l:cust,t:cssType,dt:_slotDateStr};
+        dbSaveSlot(ci,curW,curD,cust,cssType,_slotDateStr);
       }
     });
     curD++;
@@ -2976,8 +2995,10 @@ async function seRemoveSlot(ci, w, d){
 async function sePlaceSlot(ci, w, d, label, type){
   if(!newSlots[ci]) newSlots[ci]={};
   if(!newSlots[ci][w]) newSlots[ci][w]={};
-  const dbId=await dbSaveSlot(ci,w,d,label,type);
-  newSlots[ci][w][d]={l:label,t:type,db_id:dbId};
+  const _dt=new Date(BASE.getTime()+w*7*24*60*60*1000+d*24*60*60*1000);
+  const dateStr=_dt.toISOString().split('T')[0];
+  const dbId=await dbSaveSlot(ci,w,d,label,type,dateStr);
+  newSlots[ci][w][d]={l:label,t:type,db_id:dbId,dt:dateStr};
 }
 
 async function saveSlotEdit(force=false){
@@ -3025,7 +3046,7 @@ async function saveSlotEdit(force=false){
   } else {
     const s=newSlots[ci]?.[w]?.[d];
     if(s){s.l=label;s.t=type;}
-    if(s?.db_id) await sb.update('scheduled_slots',s.db_id,{label,job_type:type});
+    if(s?.db_id) await sb.update('scheduled_slots',s.db_id,{label,job_type:s?.dt?type+':'+s.dt:type});
   }
 
   // Handle remaining days
@@ -3042,7 +3063,7 @@ async function saveSlotEdit(force=false){
     } else {
       const s=newSlots[ci]?.[r.w]?.[r.d];
       if(s){s.l=label;s.t=type;}
-      if(s?.db_id) await sb.update('scheduled_slots',s.db_id,{label,job_type:type});
+      if(s?.db_id) await sb.update('scheduled_slots',s.db_id,{label,job_type:s?.dt?type+':'+s.dt:type});
     }
   }
 
