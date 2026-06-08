@@ -2001,7 +2001,8 @@ async function autoAdvanceJobsByDate(){
       } else {
         // No board card found — create one directly from the job record
         const jobLabel = job.jobTypeLabel || job.jobType || '';
-        const dispVal  = job.value ? '$'+parseInt(job.value).toLocaleString() : '—';
+        const _dv1=Math.round((parseFloat(job.value)||0)*100)/100;
+        const dispVal  = job.value ? '$'+_dv1.toLocaleString('en-US',{minimumFractionDigits:_dv1%1?2:0,maximumFractionDigits:2}) : '—';
         const parts = [];
         if(job.crewNames) parts.push(job.crewNames);
         if(job.startDate) parts.push(job.endDate && job.endDate !== job.startDate
@@ -3245,7 +3246,7 @@ function openJobCard(jobId){
   const meta=[];
   if(job.jobTypeLabel) meta.push(job.jobTypeLabel);
   if(job.startDate) meta.push(job.startDate===job.endDate?jcFmtDate(job.startDate):jcFmtDate(job.startDate)+' – '+jcFmtDate(job.endDate));
-  if(job.value && !hideValue) meta.push('$'+parseInt(job.value).toLocaleString());
+  if(job.value && !hideValue){const _mv=Math.round((parseFloat(job.value)||0)*100)/100;meta.push('$'+_mv.toLocaleString('en-US',{minimumFractionDigits:_mv%1?2:0,maximumFractionDigits:2}));}
   document.getElementById('jc-meta').textContent=meta.join(' · ');
   // Status
   const ss=document.getElementById('jc-status-sel');
@@ -3757,7 +3758,8 @@ function jcMarkComplete(){
   // Create a fresh completed card from the job record data.
   if(!matched){
     const jobLabel=job.jobTypeLabel||job.jobType||'';
-    const dispVal=job.value?'$'+parseInt(job.value).toLocaleString():'—';
+    const _dv2=Math.round((parseFloat(job.value)||0)*100)/100;
+    const dispVal=job.value?'$'+_dv2.toLocaleString('en-US',{minimumFractionDigits:_dv2%1?2:0,maximumFractionDigits:2}):'—';
     const parts=[];
     if(job.crewNames) parts.push(job.crewNames);
     if(job.startDate) parts.push(job.endDate&&job.endDate!==job.startDate?jcFmtDate(job.startDate)+' – '+jcFmtDate(job.endDate):jcFmtDate(job.startDate));
