@@ -4249,7 +4249,9 @@ function renderJobCostingPage(){
   const rows=jobs.map(job=>{
     const revenue=parseFloat(job.value)||0;
     const logs=job.dayLogs||{};
-    const allDates=[...jcWeekdays(job.startDate||'',job.endDate||''),...(job.extraDays||[])];
+    const _cpSDow=new Date((job.startDate||'')+'T00:00:00').getDay(),_cpEDow=new Date((job.endDate||'')+'T00:00:00').getDay();
+    const _cpWknd=(_cpSDow===0||_cpSDow===6||_cpEDow===0||_cpEDow===6);
+    const allDates=[...(_cpWknd?jcAllDays(job.startDate||'',job.endDate||''):jcWeekdays(job.startDate||'',job.endDate||'')),...(job.extraDays||[])];
     let laborCost=0,matCost=0,totalHrs=0;
 
     allDates.forEach(ds=>{
@@ -4305,8 +4307,10 @@ function renderJobCostingPage(){
   const totMargin=totRev>0?Math.round(totProfit/totRev*1000)/10:null;
   const totWorkDays=rows.reduce((a,r)=>{
     const logs=r.job.dayLogs||{};
-    const allDates=[...jcWeekdays(r.job.startDate||'',r.job.endDate||''),...(r.job.extraDays||[])];
-    return a+allDates.filter(ds=>{const l=logs[ds];return l&&jcGetLogHrs(l)>0;}).length;
+    const _twSDow=new Date((r.job.startDate||'')+'T00:00:00').getDay(),_twEDow=new Date((r.job.endDate||'')+'T00:00:00').getDay();
+    const _twWknd=(_twSDow===0||_twSDow===6||_twEDow===0||_twEDow===6);
+    const allDates=[...(_twWknd?jcAllDays(r.job.startDate||'',r.job.endDate||''):jcWeekdays(r.job.startDate||'',r.job.endDate||'')),...(r.job.extraDays||[])];
+    return a+allDates.filter(ds=>{const l=logs[ds];if(!l)return false;if(jcGetLogHrs(l)>0)return true;return(Array.isArray(l.crewPresent)?l.crewPresent:[]).some(c=>jcGetCrewMemberHrs(c,l)>0);}).length;
   },0);
   const profitPerDay=totWorkDays>0?Math.round(totProfit/totWorkDays*100)/100:null;
 
@@ -4356,7 +4360,9 @@ function renderJobCosting(){
   let totalLaborCost=0;
   let totalHours=0;
   const laborRows=[];
-  const allDates=[...new Set([...jcWeekdays(job.startDate,job.endDate),...(job.extraDays||[])])].sort();
+  const _jcSDow=new Date((job.startDate||'')+'T00:00:00').getDay(),_jcEDow=new Date((job.endDate||'')+'T00:00:00').getDay();
+  const _jcWknd=(_jcSDow===0||_jcSDow===6||_jcEDow===0||_jcEDow===6);
+  const allDates=[...new Set([...(_jcWknd?jcAllDays(job.startDate,job.endDate):jcWeekdays(job.startDate,job.endDate)),...(job.extraDays||[])])].sort();
 
   allDates.forEach(ds=>{
     const log=logs[ds]; if(!log) return;
