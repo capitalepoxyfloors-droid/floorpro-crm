@@ -3046,7 +3046,7 @@ async function saveJobRecords(){ await sb.setKV('job_records',JSON.stringify(JOB
 async function loadSlotJobMap(){ const v=await sb.getKV('slot_job_map'); if(v){try{SLOT_JOB_MAP=JSON.parse(v)||{};}catch(e){console.error('loadSlotJobMap parse error – slot_job_map may be corrupt:',e);}} }
 async function saveSlotJobMap(){ await sb.setKV('slot_job_map',JSON.stringify(SLOT_JOB_MAP)); }
 
-function getJobRecord(id){ return JOB_RECORDS.find(j=>j.id===id)||null; }
+function getJobRecord(id){ return JOB_RECORDS.find(j=>String(j.id)===String(id))||null; }
 
 // ── EMERGENCY LOG RECOVERY ────────────────────────────────────────────────────
 // Run recoverMisroutedLogs() in the browser console to move daily-log entries
@@ -4351,7 +4351,7 @@ function renderJobCostingPage(){
     const profitColor=profit>=0?'var(--green)':'var(--red)';
     const statusColors={complete:'var(--green)',in_progress:'var(--accent)',scheduled:'var(--blue)',inprogress:'var(--accent)'};
     const sc=statusColors[job.status]||'var(--text3)';
-    html+=`<div onclick="openJobCard(${job.id})" style="display:grid;grid-template-columns:1.8fr 1fr 1fr 1fr 1fr 1fr;gap:0;padding:12px 16px;border-bottom:1px solid var(--border2);cursor:pointer;transition:background .12s;" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
+    html+=`<div onclick="openJobCard('${job.id}')" style="display:grid;grid-template-columns:1.8fr 1fr 1fr 1fr 1fr 1fr;gap:0;padding:12px 16px;border-bottom:1px solid var(--border2);cursor:pointer;transition:background .12s;" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
       <div>
         <div style="font-size:13px;font-weight:600;">${job.customer||'Unnamed'}</div>
         <div style="font-size:11px;color:var(--text3);margin-top:2px;">${job.jobTypeLabel||job.jobType||''}${totalHrs>0?' · '+totalHrs+'h logged':''}</div>
