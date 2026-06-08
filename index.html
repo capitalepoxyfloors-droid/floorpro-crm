@@ -4202,13 +4202,21 @@ function jcHours(key,ds){
 }
 
 // Returns the best available burdened rate for a daily-log crew entry.
-// Tries: prevailing wage override → stored burdenedRate → live CREW_DATA calculation → base hourly → 0
+// Tries: prevailing wage override → cash wages (base hourly, no burden) → stored burdenedRate → live CREW_DATA calculation → base hourly → 0
 function jcGetBurdenedRate(c, job){
   const mult=(job&&job.overtimeWage)?1.5:1;
   // Prevailing wage override — same flat rate for every crew member on this job
   if(job && job.prevailingWage){
     const pw=parseFloat(job.prevailingWageRate);
     if(pw>0) return pw*mult;
+  }
+  // Cash wages — base hourly only, no taxes/insurance/burden
+  if(job && job.cashWages){
+    if(c.crewIdx>=0&&CREW_DATA[c.crewIdx]){
+      const base=parseFloat(CREW_DATA[c.crewIdx].hourly);
+      if(base>0) return base*mult;
+    }
+    return 0;
   }
   const stored=parseFloat(c.burdenedRate);
   if(stored>0) return stored*mult;
@@ -4236,6 +4244,12 @@ async function jcSetPrevailingWageRate(val){
 async function jcSetOvertimeWage(checked){
   const job=getJobRecord(_jcId); if(!job) return;
   job.overtimeWage=!!checked;
+  await saveJobRecords();
+  renderJobCosting();
+}
+async function jcSetCashWages(checked){
+  const job=getJobRecord(_jcId); if(!job) return;
+  job.cashWages=!!checked;
   await saveJobRecords();
   renderJobCosting();
 }
@@ -4478,6 +4492,17 @@ function renderJobCosting(){
       ${owActive?`<span style="font-size:10px;font-family:'DM Mono',monospace;color:#3b82f6;background:rgba(59,130,246,.18);padding:1px 8px;border-radius:20px;letter-spacing:.4px;">ACTIVE</span>`:''}
     </label>
     <div style="font-size:11px;color:var(--text3);margin-top:5px;padding-left:26px;">${owActive?'All crew rates multiplied by 1.5×.':'Check to apply a 1.5× multiplier to all crew wages for overtime or weekend work.'}</div>
+  </div>`;
+
+  // Cash Wages Override
+  const cwActive=!!(job.cashWages);
+  html+=`<div style="background:${cwActive?'rgba(16,185,129,.07)':'var(--surface2)'};border:1px solid ${cwActive?'rgba(16,185,129,.35)':'var(--border2)'};border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:12px;">
+    <label style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;">
+      <input type="checkbox" ${cwActive?'checked':''} onchange="jcSetCashWages(this.checked)" style="width:16px;height:16px;accent-color:#10b981;cursor:pointer;flex-shrink:0;">
+      <span style="font-size:13px;font-weight:600;color:var(--text);">Cash Wages</span>
+      ${cwActive?`<span style="font-size:10px;font-family:'DM Mono',monospace;color:#10b981;background:rgba(16,185,129,.18);padding:1px 8px;border-radius:20px;letter-spacing:.4px;">ACTIVE</span>`:''}
+    </label>
+    <div style="font-size:11px;color:var(--text3);margin-top:5px;padding-left:26px;">${cwActive?'Using base hourly only — no taxes, insurance, or burden included.':'Check when paying crew in cash. Uses base hourly rate with no payroll burden.'}</div>
   </div>`;
 
   // Revenue
