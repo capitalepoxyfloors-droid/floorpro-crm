@@ -2054,13 +2054,31 @@ async function loadCrew(){
   if(rows.length>0){rows.forEach((r,i)=>{if(CREW_DATA[i]){Object.assign(CREW_DATA[i],{db_id:r.id,full:r.full_name,name:r.first_name,initials:r.initials,color:r.color,role:r.role,phone:r.phone,specialties:JSON.parse(r.specialties||'[]'),hourly:r.hourly,hours:r.hours,ss:r.ss,medicare:r.medicare,futa:r.futa,wc:r.wc,gl:r.gl,benefits:r.benefits,ptoDays:r.pto_days});CREW[i].name=r.first_name;CREW[i].full=r.full_name;CREW[i].color=r.color;}});}
 }
 
-async function dbSavePTOEntry(crewIdx,wOff,dIdx,label){
-  const res=await sb.insert('pto_blocks',{crew_idx:crewIdx,week_offset:wOff,day_idx:dIdx,label:label,type:'pto'});
+async function dbSavePTOEntry(crewIdx,wOff,dIdx,label,dateStr){
+  // Store absolute date in type field ('pto:YYYY-MM-DD') so week_offset can be
+  // recomputed on load regardless of when BASE was when this was saved.
+  const typeVal=dateStr?'pto:'+dateStr:'pto';
+  const res=await sb.insert('pto_blocks',{crew_idx:crewIdx,week_offset:wOff,day_idx:dIdx,label:label,type:typeVal});
   return res&&res[0]?res[0].id:null;
 }
 async function loadPTO(){
   const rows=await sb.get('pto_blocks');
-  rows.forEach(r=>{if(!ptoSlots[r.crew_idx])ptoSlots[r.crew_idx]={};if(!ptoSlots[r.crew_idx][r.week_offset])ptoSlots[r.crew_idx][r.week_offset]={};ptoSlots[r.crew_idx][r.week_offset][r.day_idx]={label:r.label,type:'pto',db_id:r.id};});
+  rows.forEach(r=>{
+    let wOff=r.week_offset, dIdx=r.day_idx;
+    // If the entry has an absolute date encoded in type ('pto:YYYY-MM-DD'), recompute
+    // week_offset relative to the current BASE so it never drifts week-to-week.
+    const dateEnc=(r.type||'').startsWith('pto:')?(r.type.slice(4)):null;
+    if(dateEnc){
+      const d=new Date(dateEnc+'T00:00:00');
+      if(!isNaN(d)){
+        wOff=Math.floor((d-BASE)/(7*24*60*60*1000));
+        dIdx=d.getDay()-1;
+      }
+    }
+    if(!ptoSlots[r.crew_idx])ptoSlots[r.crew_idx]={};
+    if(!ptoSlots[r.crew_idx][wOff])ptoSlots[r.crew_idx][wOff]={};
+    ptoSlots[r.crew_idx][wOff][dIdx]={label:r.label,type:'pto',db_id:r.id};
+  });
 }
 
 async function dbSaveSlot(crewIdx,weekOff,dayIdx,label,jobType){
@@ -6249,10 +6267,11 @@ async function approvePtoRequest(id){
     if(dow!==0&&dow!==6){
       const wOff=Math.floor((cur-BASE)/(7*24*60*60*1000)); // floor not round — round shifts Fridays to next week
       const dIdx=dow-1;
+      const _ptoDateStr=cur.toISOString().split('T')[0];
       if(!ptoSlots[crewIdx]) ptoSlots[crewIdx]={};
       if(!ptoSlots[crewIdx][wOff]) ptoSlots[crewIdx][wOff]={};
       ptoSlots[crewIdx][wOff][dIdx]={label,type:'pto',partial:!!req.partial,from:req.fromTime||'',to:req.toTime||''};
-      await dbSavePTOEntry(crewIdx,wOff,dIdx,label);
+      await dbSavePTOEntry(crewIdx,wOff,dIdx,label,_ptoDateStr);
       placed++;
     }
     cur.setDate(cur.getDate()+1);
@@ -8979,8 +8998,7 @@ async function savePtoDayEdit(){
   const dow=d.getDay();
   if(dow===0||dow===6){showToast('Please choose a weekday (Mon–Fri).');return;}
   const newDIdx=dow-1;
-  const mon=new Date(d); mon.setDate(d.getDate()-(dow-1)); mon.setHours(0,0,0,0);
-  const newWOff=Math.round((mon-BASE)/(7*24*60*60*1000));
+  const newWOff=Math.floor((d-BASE)/(7*24*60*60*1000));
   const pto=ptoSlots[_editPtoCrewIdx]?.[_editPtoWOff]?.[_editPtoDIdx];
   // Remove old entry
   if(pto?.db_id) await sb.delete('pto_blocks',pto.db_id);
@@ -8990,7 +9008,7 @@ async function savePtoDayEdit(){
   if(!ptoSlots[_editPtoCrewIdx]) ptoSlots[_editPtoCrewIdx]={};
   if(!ptoSlots[_editPtoCrewIdx][newWOff]) ptoSlots[_editPtoCrewIdx][newWOff]={};
   ptoSlots[_editPtoCrewIdx][newWOff][newDIdx]={label:newLabel,type:'pto'};
-  const newId=await dbSavePTOEntry(_editPtoCrewIdx,newWOff,newDIdx,newLabel);
+  const newId=await dbSavePTOEntry(_editPtoCrewIdx,newWOff,newDIdx,newLabel,newDateStr);
   if(newId) ptoSlots[_editPtoCrewIdx][newWOff][newDIdx].db_id=newId;
   closeModal('ptoday-edit'); renderSchedule(); showToast('✓ PTO updated.');
 }
@@ -9450,7 +9468,7 @@ async function savePTO(){
     if(!ptoSlots[crewIdx]) ptoSlots[crewIdx]={};
     if(!ptoSlots[crewIdx][wOff]) ptoSlots[crewIdx][wOff]={};
     ptoSlots[crewIdx][wOff][dIdx]={label,type:'pto',partial:true,from,to};
-    const _ptoRes1=await dbSavePTOEntry(crewIdx,wOff,dIdx,label);
+    const _ptoRes1=await dbSavePTOEntry(crewIdx,wOff,dIdx,label,date);
     if(!_ptoRes1) showSyncStatus('⚠ PTO save failed – check connection','var(--red)');
     closeModal('pto');renderSchedule();
     showToast(`✓ Time slot blocked for ${CREW[crewIdx].name} — ${label}`);
@@ -9471,32 +9489,33 @@ async function savePTO(){
       if(dow!==0&&dow!==6){
         const wOff=Math.floor((cur-BASE)/(7*24*60*60*1000));
         const dIdx=dow-1;
+        const dateStr=cur.toISOString().split('T')[0];
         const existing=getSlot(crewIdx,wOff,dIdx)||getNew(crewIdx,wOff,dIdx);
         if(existing){
           conflicts.push({w:wOff, d:dIdx, label:existing.l, date:new Date(cur)});
         }
-        toBlock.push({wOff,dIdx});
+        toBlock.push({wOff,dIdx,dateStr});
       }
       cur.setDate(cur.getDate()+1);
     }
 
     if(conflicts.length>0){
       // Save the PTO first, then show conflict modal
-      for(const {wOff,dIdx} of toBlock){
+      for(const {wOff,dIdx,dateStr} of toBlock){
         if(!ptoSlots[crewIdx]) ptoSlots[crewIdx]={};
         if(!ptoSlots[crewIdx][wOff]) ptoSlots[crewIdx][wOff]={};
         ptoSlots[crewIdx][wOff][dIdx]={label:reason,type:'pto'};
-        await dbSavePTOEntry(crewIdx,wOff,dIdx,reason);
+        await dbSavePTOEntry(crewIdx,wOff,dIdx,reason,dateStr);
       }
       closeModal('pto');
       renderSchedule();
       openConflictModal(crewIdx, null, null, reason, conflicts);
     } else {
-      for(const {wOff,dIdx} of toBlock){
+      for(const {wOff,dIdx,dateStr} of toBlock){
         if(!ptoSlots[crewIdx]) ptoSlots[crewIdx]={};
         if(!ptoSlots[crewIdx][wOff]) ptoSlots[crewIdx][wOff]={};
         ptoSlots[crewIdx][wOff][dIdx]={label:reason,type:'pto'};
-        await dbSavePTOEntry(crewIdx,wOff,dIdx,reason);
+        await dbSavePTOEntry(crewIdx,wOff,dIdx,reason,dateStr);
       }
       closeModal('pto');renderSchedule();
       showToast(`✓ ${toBlock.length} day${toBlock.length!==1?'s':''} blocked for ${CREW[crewIdx].name}.`);
