@@ -1935,12 +1935,16 @@ async function loadJobs(){
     } else {
       // Restore address/notes from DB notes field so Schedule button can pre-fill them
       const extraData = r.notes ? {notes: r.notes} : undefined;
-      const fallbackDisp=parseFloat(r.value)>0?'$'+parseFloat(r.value).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):(r.value||'—');
-      // Format display_val even if it's a raw number string (e.g. "34768.25" → "$34,768.25")
+      // Always recompute from r.value when it's a valid number — display_val may be stale/truncated
+      const _numVal=parseFloat(r.value)||0;
+      const _rv=Math.round(_numVal*100)/100;
+      const fallbackDisp=_numVal>0?'$'+_rv.toLocaleString('en-US',{minimumFractionDigits:_rv%1?2:0,maximumFractionDigits:2}):(r.value||'—');
       const rawDisp=r.display_val||'';
-      const formattedDisp=rawDisp&&/^[\d.]+$/.test(rawDisp.trim())&&parseFloat(rawDisp)>0
-        ?'$'+parseFloat(rawDisp).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})
-        :(rawDisp||fallbackDisp);
+      const formattedDisp=_numVal>0
+        ? fallbackDisp
+        : (rawDisp&&/^[\d.]+$/.test(rawDisp.trim())&&parseFloat(rawDisp)>0
+          ?'$'+parseFloat(rawDisp).toLocaleString('en-US',{minimumFractionDigits:parseFloat(rawDisp)%1?2:0,maximumFractionDigits:2})
+          :(rawDisp||fallbackDisp));
       addJobCard(r.customer,r.job_label,r.value,formattedDisp,r.detail,r.status,r.id,extraData);
     }
   });
