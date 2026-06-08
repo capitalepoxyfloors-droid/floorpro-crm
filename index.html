@@ -4204,18 +4204,19 @@ function jcHours(key,ds){
 // Returns the best available burdened rate for a daily-log crew entry.
 // Tries: prevailing wage override → stored burdenedRate → live CREW_DATA calculation → base hourly → 0
 function jcGetBurdenedRate(c, job){
+  const mult=(job&&job.overtimeWage)?1.5:1;
   // Prevailing wage override — same flat rate for every crew member on this job
   if(job && job.prevailingWage){
     const pw=parseFloat(job.prevailingWageRate);
-    if(pw>0) return pw;
+    if(pw>0) return pw*mult;
   }
   const stored=parseFloat(c.burdenedRate);
-  if(stored>0) return stored;
+  if(stored>0) return stored*mult;
   if(c.crewIdx>=0&&CREW_DATA[c.crewIdx]){
     const live=parseFloat(calcBurdenForCrew(CREW_DATA[c.crewIdx]));
-    if(live>0) return live;
+    if(live>0) return live*mult;
     const base=parseFloat(CREW_DATA[c.crewIdx].hourly);
-    if(base>0) return base;
+    if(base>0) return base*mult;
   }
   return 0;
 }
@@ -4229,6 +4230,12 @@ async function jcSetPrevailingWage(checked){
 async function jcSetPrevailingWageRate(val){
   const job=getJobRecord(_jcId); if(!job) return;
   job.prevailingWageRate=parseFloat(val)||0;
+  await saveJobRecords();
+  renderJobCosting();
+}
+async function jcSetOvertimeWage(checked){
+  const job=getJobRecord(_jcId); if(!job) return;
+  job.overtimeWage=!!checked;
   await saveJobRecords();
   renderJobCosting();
 }
@@ -4460,6 +4467,17 @@ function renderJobCosting(){
         style="width:80px;font-size:13px;text-align:center;border:1px solid rgba(234,179,8,.4);border-radius:4px;padding:3px 6px;background:var(--surface);color:var(--text);font-family:'DM Mono',monospace;">
       <span style="font-size:12px;color:var(--text3);">/hr &nbsp;·&nbsp; overrides all individual crew rates</span>
     </div>`:`<div style="font-size:11px;color:var(--text3);margin-top:5px;padding-left:26px;">Check to override all crew wages with a single prevailing wage rate for this job.</div>`}
+  </div>`;
+
+  // Overtime / Weekend Wage Override
+  const owActive=!!(job.overtimeWage);
+  html+=`<div style="background:${owActive?'rgba(59,130,246,.07)':'var(--surface2)'};border:1px solid ${owActive?'rgba(59,130,246,.35)':'var(--border2)'};border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:12px;">
+    <label style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;">
+      <input type="checkbox" ${owActive?'checked':''} onchange="jcSetOvertimeWage(this.checked)" style="width:16px;height:16px;accent-color:#3b82f6;cursor:pointer;flex-shrink:0;">
+      <span style="font-size:13px;font-weight:600;color:var(--text);">1.5× Overtime / Weekend Wages</span>
+      ${owActive?`<span style="font-size:10px;font-family:'DM Mono',monospace;color:#3b82f6;background:rgba(59,130,246,.18);padding:1px 8px;border-radius:20px;letter-spacing:.4px;">ACTIVE</span>`:''}
+    </label>
+    <div style="font-size:11px;color:var(--text3);margin-top:5px;padding-left:26px;">${owActive?'All crew rates multiplied by 1.5×.':'Check to apply a 1.5× multiplier to all crew wages for overtime or weekend work.'}</div>
   </div>`;
 
   // Revenue
