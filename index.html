@@ -3824,10 +3824,12 @@ function jcMarkComplete(){
 function fmtTimeInput(el, ds, field){
   let v=el.value.trim(); if(!v) return;
   const raw=v.replace(/\s/g,'');
+  let _hadExplicitAMPM=false;
 
   // Has AM/PM suffix: "7am", "730am", "7:30pm"
   const apM=raw.match(/^(\d{1,2}):?(\d{2})?(am|pm)$/i);
   if(apM){
+    _hadExplicitAMPM=true;
     const h=parseInt(apM[1]), min=(apM[2]||'00').padStart(2,'0'), ap=apM[3].toUpperCase();
     el.value=h+':'+min+' '+ap;
     jcLogSet(ds,field,el.value); return;
@@ -3841,22 +3843,36 @@ function fmtTimeInput(el, ds, field){
     else if(h<12)   el.value=h+':'+min+' AM';
     else if(h===12) el.value='12:'+min+' PM';
     else            el.value=(h-12)+':'+min+' PM';
-    jcLogSet(ds,field,el.value); return;
+    // fall through to PM-flip check below
+  } else {
+    // Pure digits: 7→7:00 AM, 730→7:30 AM, 1430→2:30 PM
+    const digs=raw.replace(/\D/g,'');
+    if(digs.length>=1&&digs.length<=4){
+      let h,min;
+      if(digs.length<=2){h=parseInt(digs);min='00';}
+      else{h=parseInt(digs.slice(0,digs.length-2));min=digs.slice(-2);}
+      if(parseInt(min)>59) min='00';
+      let ap='AM';
+      if(h>=12){ap='PM'; if(h>12) h-=12;}
+      if(h===0) h=12;
+      el.value=h+':'+min.padStart(2,'0')+' '+ap;
+      // fall through to PM-flip check below
+    }
   }
 
-  // Pure digits: 7→7:00 AM, 730→7:30 AM, 1430→2:30 PM
-  const digs=raw.replace(/\D/g,'');
-  if(digs.length>=1&&digs.length<=4){
-    let h,min;
-    if(digs.length<=2){h=parseInt(digs);min='00';}
-    else{h=parseInt(digs.slice(0,digs.length-2));min=digs.slice(-2);}
-    if(parseInt(min)>59) min='00';
-    let ap='AM';
-    if(h>=12){ap='PM'; if(h>12) h-=12;}
-    if(h===0) h=12;
-    el.value=h+':'+min.padStart(2,'0')+' '+ap;
-    jcLogSet(ds,field,el.value);
+  // Auto-flip to PM when no explicit AM/PM was typed and the endTime
+  // would land before the day's start time (e.g. typing "1:30" as end time)
+  if(!_hadExplicitAMPM && field==='endTime' && el.value){
+    const _toM=t=>{const m=(t||'').trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);if(!m)return null;let h=parseInt(m[1]),mn=parseInt(m[2]);const ap=(m[3]||'').toUpperCase();if(ap==='PM'&&h!==12)h+=12;if(ap==='AM'&&h===12)h=0;return h*60+mn;};
+    const job=getJobRecord(_jcId);
+    const sT=job?.dayLogs?.[ds]?.startTime||'';
+    const sm=_toM(sT), em=_toM(el.value);
+    if(sm!==null&&em!==null&&em<=sm){
+      // Flip AM↔PM to put end time after start time
+      el.value=el.value.replace(/\bAM$/,'PM').replace(/\bPM$/,'AM');
+    }
   }
+  if(el.value) jcLogSet(ds,field,el.value);
 }
 
 function jcLogSet(ds,field,val){
