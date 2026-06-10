@@ -444,6 +444,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/><path d="M19 8v6M22 11h-6"/></svg>
         <span>Installers</span>
       </button>
+      <button class="nav-item" onclick="showPage('vehicles')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="1" y="9" width="22" height="11" rx="2"/><path d="M5 9V7a2 2 0 012-2h10a2 2 0 012 2v2"/><circle cx="7" cy="20" r="2"/><circle cx="17" cy="20" r="2"/><path d="M5 14h14"/></svg>
+        <span>Vehicles</span>
+      </button>
       <button class="nav-item" onclick="showPage('materials')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 3h18v4H3zM3 10h18v4H3zM3 17h18v4H3"/></svg>
         <span>Materials</span>
@@ -651,6 +655,17 @@
         <div class="topbar-actions"><button class="btn btn-primary" onclick="openModal('installer')">+ Add Crew Member</button></div>
       </div>
       <div class="content" id="crew-cards-container"></div>
+    </div>
+
+    <!-- VEHICLES PAGE -->
+    <div class="page" id="page-vehicles">
+      <div class="topbar">
+        <div class="page-title" id="veh-page-title">Vehicles</div>
+        <div class="topbar-actions" id="veh-page-actions">
+          <button class="btn btn-primary" onclick="openVehicleModal()">+ Add Vehicle</button>
+        </div>
+      </div>
+      <div class="content" id="vehicles-content"></div>
     </div>
 
     <!-- SALES SCHEDULE PAGE -->
@@ -2286,7 +2301,7 @@ async function deduplicateSlotsByJobRecord(){
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
   try{
-    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests()]);
+    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance()]);
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
@@ -5922,7 +5937,7 @@ function showPage(id){
   if(localStorage.getItem('fpRole')==='crew'&&id!=='crewview') return;
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
-  const map={dashboard:0,pipeline:1,jobs:2,schedule:3,salesschedule:4,jobcosting:5,matreqs:6,ptoreqs:7,reference:8,installers:9,materials:10,materialcalc:11,jobtypes:12,holidays:13,pinsettings:14,crewview:15};
+  const map={dashboard:0,pipeline:1,jobs:2,schedule:3,salesschedule:4,jobcosting:5,matreqs:6,ptoreqs:7,reference:8,installers:9,vehicles:10,materials:11,materialcalc:12,jobtypes:13,holidays:14,pinsettings:15,crewview:16};
   document.querySelectorAll('.nav-item').forEach((n,i)=>n.classList.toggle('active',i===map[id]));
   if(id==='dashboard') renderDashboard();
   if(id==='schedule') renderSchedule();
@@ -5930,6 +5945,7 @@ function showPage(id){
   if(id==='jobcosting') renderJobCostingPage();
   if(id==='holidays') renderHolidaySettings();
   if(id==='installers') renderCrewCards();
+  if(id==='vehicles'){ _activeVehicleId=null; renderVehicles(); }
   if(id==='materials') renderMaterials();
   if(id==='reference') renderReference();
   if(id==='pipeline') renderPipeline();
@@ -9736,6 +9752,234 @@ function skipReplacement(){
   },true);
 })();
 
+// ── VEHICLES ───────────────────────────────────────────────────────────────────
+let VEHICLES = [];
+let VEHICLE_MAINT = [];
+let _editingVehicleId = null;
+let _editingMaintId = null;
+let _activeVehicleId = null;
+let _maintVehicleId = null;
+
+async function loadVehicles(){
+  const rows = await sb.get('vehicles','order=created_at.asc');
+  if(rows && rows.length) VEHICLES = rows.map(r=>({id:r.id,make:r.make,model:r.model,year:r.year,vin:r.vin,purchase_date:r.purchase_date,license_plate:r.license_plate||'',notes:r.notes||''}));
+}
+async function loadVehicleMaintenance(){
+  const rows = await sb.get('vehicle_maintenance','order=date.desc');
+  if(rows && rows.length) VEHICLE_MAINT = rows.map(r=>({id:r.id,vehicle_id:r.vehicle_id,date:r.date,description:r.description,cost:parseFloat(r.cost)||0,mileage:r.mileage||null,notes:r.notes||''}));
+}
+async function dbSaveVehicle(obj){
+  const row={make:obj.make,model:obj.model,year:obj.year,vin:obj.vin||'',purchase_date:obj.purchase_date||null,license_plate:obj.license_plate||'',notes:obj.notes||''};
+  if(obj.id){const ok=await sb.update('vehicles',obj.id,row);if(!ok){showSyncStatus('⚠ Save failed','var(--red)');return false;}}
+  else{const res=await sb.insert('vehicles',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed','var(--red)');return false;}obj.id=res[0].id;}
+  showSyncStatus('✓ Saved','var(--green)');return true;
+}
+async function dbDeleteVehicle(id){
+  // Delete all maintenance records first, then the vehicle
+  const mrows = await sb.get('vehicle_maintenance','vehicle_id=eq.'+id);
+  if(mrows&&mrows.length) await Promise.all(mrows.map(r=>sb.delete('vehicle_maintenance',r.id)));
+  await sb.delete('vehicles',id);
+}
+async function dbSaveMaintEntry(obj){
+  const row={vehicle_id:obj.vehicle_id,date:obj.date,description:obj.description,cost:obj.cost||0,mileage:obj.mileage||null,notes:obj.notes||''};
+  if(obj.id){const ok=await sb.update('vehicle_maintenance',obj.id,row);if(!ok){showSyncStatus('⚠ Save failed','var(--red)');return false;}}
+  else{const res=await sb.insert('vehicle_maintenance',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed','var(--red)');return false;}obj.id=res[0].id;}
+  showSyncStatus('✓ Saved','var(--green)');return true;
+}
+async function dbDeleteMaintEntry(id){await sb.delete('vehicle_maintenance',id);}
+
+function renderVehicles(){
+  const content=document.getElementById('vehicles-content');
+  const titleEl=document.getElementById('veh-page-title');
+  const actionsEl=document.getElementById('veh-page-actions');
+  if(!content) return;
+  const fmtDate=d=>d?new Date(d+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
+  const fmtMoney=n=>'$'+parseFloat(n||0).toFixed(2);
+
+  if(_activeVehicleId){
+    const v=VEHICLES.find(x=>x.id===_activeVehicleId);
+    if(!v){_activeVehicleId=null;renderVehicles();return;}
+    const maint=VEHICLE_MAINT.filter(m=>m.vehicle_id===v.id).slice().sort((a,b)=>new Date(b.date)-new Date(a.date));
+    const totalSpend=maint.reduce((s,m)=>s+(m.cost||0),0);
+    titleEl.innerHTML=`<button class="btn btn-ghost" onclick="_activeVehicleId=null;renderVehicles()" style="font-size:12px;padding:4px 10px;margin-right:6px;">← Vehicles</button>${v.year||''} ${v.make} ${v.model}`;
+    actionsEl.innerHTML=`<button class="btn btn-ghost" onclick="openVehicleModal('${v.id}')">Edit Vehicle</button><button class="btn btn-primary" onclick="openMaintModal('${v.id}')">+ Add Service</button>`;
+
+    const maintRows=maint.length===0
+      ? `<div style="padding:40px;text-align:center;color:var(--text3);font-size:13px;">No service records yet — tap + Add Service to log your first entry.</div>`
+      : `<div style="display:grid;grid-template-columns:110px 1fr 100px 110px 68px;padding:0 16px;border-bottom:1px solid var(--border2);background:var(--surface2);">
+          <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;padding:9px 0 7px;">Date</div>
+          <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;padding:9px 0 7px;">Work Completed</div>
+          <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;padding:9px 0 7px;text-align:right;">Cost</div>
+          <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;padding:9px 0 7px;text-align:right;">Mileage</div>
+          <div></div>
+        </div>
+        ${maint.map(m=>`
+        <div style="display:grid;grid-template-columns:110px 1fr 100px 110px 68px;padding:0 16px;border-bottom:1px solid var(--border);align-items:center;">
+          <div style="font-size:12px;font-family:'DM Mono',monospace;color:var(--text3);padding:12px 0;">${fmtDate(m.date)}</div>
+          <div style="padding:12px 16px 12px 0;">
+            <div style="font-size:13.5px;font-weight:500;">${m.description}</div>
+            ${m.notes?`<div style="font-size:11.5px;color:var(--text3);margin-top:2px;">${m.notes}</div>`:''}
+          </div>
+          <div style="font-size:13px;font-weight:600;font-family:'DM Mono',monospace;color:var(--red);text-align:right;padding:12px 0;">${fmtMoney(m.cost)}</div>
+          <div style="font-size:12px;color:var(--text3);font-family:'DM Mono',monospace;text-align:right;padding:12px 0;">${m.mileage?parseInt(m.mileage).toLocaleString()+' mi':'—'}</div>
+          <div style="display:flex;gap:4px;justify-content:flex-end;padding:12px 0;">
+            <button class="btn btn-ghost" style="font-size:10px;padding:3px 7px;" onclick="openMaintModal('${v.id}','${m.id}')">✏</button>
+            <button class="btn btn-ghost" style="font-size:10px;padding:3px 7px;color:var(--red);" onclick="deleteMaintEntry('${m.id}')">✕</button>
+          </div>
+        </div>`).join('')}
+        <div style="display:grid;grid-template-columns:110px 1fr 100px 110px 68px;padding:0 16px;background:var(--surface2);border-top:2px solid var(--border2);">
+          <div></div>
+          <div style="padding:11px 0;font-size:12px;font-weight:700;color:var(--text2);">Total — ${maint.length} service${maint.length!==1?'s':''}</div>
+          <div style="padding:11px 0;font-size:14px;font-weight:700;font-family:'DM Mono',monospace;color:var(--red);text-align:right;">${fmtMoney(totalSpend)}</div>
+          <div></div><div></div>
+        </div>`;
+
+    content.innerHTML=`
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:24px;">
+        <div class="stat-card"><div class="stat-label">Vehicle</div><div style="font-size:17px;font-weight:700;">${v.year||''} ${v.make} ${v.model}</div></div>
+        <div class="stat-card"><div class="stat-label">VIN</div><div style="font-size:13px;font-weight:600;font-family:'DM Mono',monospace;color:var(--text2);">${v.vin||'—'}</div></div>
+        <div class="stat-card"><div class="stat-label">Purchase Date</div><div style="font-size:14px;font-weight:600;">${fmtDate(v.purchase_date)}</div></div>
+        ${v.license_plate?`<div class="stat-card"><div class="stat-label">Plate</div><div style="font-size:15px;font-weight:700;font-family:'DM Mono',monospace;">${v.license_plate}</div></div>`:''}
+        <div class="stat-card"><div class="stat-label">Total Spend</div><div style="font-size:22px;font-weight:700;color:var(--red);font-family:'DM Mono',monospace;">${fmtMoney(totalSpend)}</div></div>
+        <div class="stat-card"><div class="stat-label">Services Logged</div><div style="font-size:22px;font-weight:700;color:var(--accent);font-family:'DM Mono',monospace;">${maint.length}</div></div>
+      </div>
+      ${v.notes?`<div class="info-box" style="margin-bottom:20px;">📝 ${v.notes}</div>`:''}
+      <div class="section-header"><div class="section-title">Service History</div></div>
+      <div class="jobs-block" style="padding:0;">${maintRows}</div>`;
+  } else {
+    // List view — vehicle cards
+    titleEl.textContent='Vehicles';
+    actionsEl.innerHTML=`<button class="btn btn-primary" onclick="openVehicleModal()">+ Add Vehicle</button>`;
+    if(!VEHICLES.length){
+      content.innerHTML=`<div style="padding:60px;text-align:center;color:var(--text3);font-size:13px;">No vehicles yet — tap + Add Vehicle to get started.</div>`;
+      return;
+    }
+    content.innerHTML='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;">'+
+      VEHICLES.map(v=>{
+        const maint=VEHICLE_MAINT.filter(m=>m.vehicle_id===v.id);
+        const totalSpend=maint.reduce((s,m)=>s+(m.cost||0),0);
+        const sorted=maint.slice().sort((a,b)=>new Date(b.date)-new Date(a.date));
+        const lastSvc=sorted[0];
+        return `<div class="stat-card" style="cursor:default;border-top:3px solid var(--orange);">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px;">
+            <div>
+              <div style="font-size:16px;font-weight:700;">${v.year||''} ${v.make} ${v.model}</div>
+              ${v.license_plate?`<div style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;margin-top:2px;">${v.license_plate}</div>`:''}
+            </div>
+            <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;flex-shrink:0;" onclick="openVehicleModal('${v.id}')">Edit</button>
+          </div>
+          ${v.vin?`<div style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;margin-bottom:10px;">VIN: ${v.vin}</div>`:''}
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:10px 12px;background:var(--surface2);border-radius:var(--radius-sm);margin-bottom:12px;">
+            <div>
+              <div style="font-size:10px;color:var(--text3);font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.4px;">Total Spend</div>
+              <div style="font-size:17px;font-weight:700;color:var(--red);font-family:'DM Mono',monospace;">${fmtMoney(totalSpend)}</div>
+            </div>
+            <div>
+              <div style="font-size:10px;color:var(--text3);font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.4px;">Last Service</div>
+              <div style="font-size:13px;font-weight:600;">${lastSvc?fmtDate(lastSvc.date):'None yet'}</div>
+            </div>
+          </div>
+          <button class="btn btn-ghost" style="width:100%;justify-content:center;font-size:12px;" onclick="_activeVehicleId='${v.id}';renderVehicles()">View Service Log (${maint.length})</button>
+        </div>`;
+      }).join('')+'</div>';
+  }
+}
+
+function openVehicleModal(vehicleId){
+  _editingVehicleId=vehicleId||null;
+  const v=vehicleId?VEHICLES.find(x=>x.id===vehicleId):null;
+  document.getElementById('veh-modal-title').textContent=v?'Edit Vehicle':'Add Vehicle';
+  document.getElementById('veh-year').value=v?.year||'';
+  document.getElementById('veh-make').value=v?.make||'';
+  document.getElementById('veh-model').value=v?.model||'';
+  document.getElementById('veh-vin').value=v?.vin||'';
+  document.getElementById('veh-plate').value=v?.license_plate||'';
+  document.getElementById('veh-purchase').value=v?.purchase_date||'';
+  document.getElementById('veh-notes').value=v?.notes||'';
+  document.getElementById('veh-delete-btn').style.display=v?'':'none';
+  openModal('addvehicle');
+}
+
+async function saveVehicle(){
+  const make=document.getElementById('veh-make').value.trim();
+  const model=document.getElementById('veh-model').value.trim();
+  if(!make||!model){showToast('Please enter make and model.');return;}
+  const obj={
+    id:_editingVehicleId||undefined,
+    year:document.getElementById('veh-year').value.trim(),
+    make,model,
+    vin:document.getElementById('veh-vin').value.trim(),
+    license_plate:document.getElementById('veh-plate').value.trim(),
+    purchase_date:document.getElementById('veh-purchase').value||null,
+    notes:document.getElementById('veh-notes').value.trim()
+  };
+  const ok=await dbSaveVehicle(obj);
+  if(!ok) return;
+  if(_editingVehicleId){const idx=VEHICLES.findIndex(x=>x.id===_editingVehicleId);if(idx!==-1)VEHICLES[idx]=obj;}
+  else VEHICLES.push(obj);
+  closeModal('addvehicle');
+  renderVehicles();
+  showToast(_editingVehicleId?'✓ Vehicle updated!':'✓ Vehicle added!');
+}
+
+async function deleteVehicle(id){
+  const v=VEHICLES.find(x=>x.id===id);
+  if(!confirm(`Delete "${(v?.year||'')+(v?.year?' ':'')+v?.make+' '+v?.model}" and all its service records? This cannot be undone.`)) return;
+  await dbDeleteVehicle(id);
+  VEHICLES=VEHICLES.filter(x=>x.id!==id);
+  VEHICLE_MAINT=VEHICLE_MAINT.filter(m=>m.vehicle_id!==id);
+  if(_activeVehicleId===id) _activeVehicleId=null;
+  closeModal('addvehicle');
+  renderVehicles();
+  showToast('Vehicle deleted.');
+}
+
+function openMaintModal(vehicleId,maintId){
+  _editingMaintId=maintId||null;
+  _maintVehicleId=vehicleId;
+  const v=VEHICLES.find(x=>x.id===vehicleId);
+  const m=maintId?VEHICLE_MAINT.find(x=>x.id===maintId):null;
+  document.getElementById('maint-modal-title').textContent=m?'Edit Service Entry':'Add Service Entry';
+  document.getElementById('maint-vehicle-name').textContent=v?`${v.year||''} ${v.make} ${v.model}`:'';
+  document.getElementById('maint-date').value=m?.date||new Date().toISOString().split('T')[0];
+  document.getElementById('maint-desc').value=m?.description||'';
+  document.getElementById('maint-cost').value=m?.cost||'';
+  document.getElementById('maint-mileage').value=m?.mileage||'';
+  document.getElementById('maint-notes').value=m?.notes||'';
+  document.getElementById('maint-delete-btn').style.display=m?'':'none';
+  openModal('addmaint');
+}
+
+async function saveMaintEntry(){
+  const desc=document.getElementById('maint-desc').value.trim();
+  const date=document.getElementById('maint-date').value;
+  if(!desc){showToast('Please describe what was done.');return;}
+  if(!date){showToast('Please enter a date.');return;}
+  const obj={
+    id:_editingMaintId||undefined,
+    vehicle_id:_maintVehicleId,
+    date,description:desc,
+    cost:parseFloat(document.getElementById('maint-cost').value)||0,
+    mileage:document.getElementById('maint-mileage').value?parseInt(document.getElementById('maint-mileage').value)||null:null,
+    notes:document.getElementById('maint-notes').value.trim()
+  };
+  const ok=await dbSaveMaintEntry(obj);
+  if(!ok) return;
+  if(_editingMaintId){const idx=VEHICLE_MAINT.findIndex(m=>m.id===_editingMaintId);if(idx!==-1)VEHICLE_MAINT[idx]=obj;}
+  else VEHICLE_MAINT.push(obj);
+  closeModal('addmaint');
+  renderVehicles();
+  showToast(_editingMaintId?'✓ Entry updated!':'✓ Service logged!');
+}
+
+async function deleteMaintEntry(id){
+  if(!confirm('Delete this service entry?')) return;
+  await dbDeleteMaintEntry(id);
+  VEHICLE_MAINT=VEHICLE_MAINT.filter(m=>m.id!==id);
+  renderVehicles();
+  showToast('Entry deleted.');
+}
+
 </script>
 <!-- ADD WAVE JOB MODAL — Manual Entry -->
 <div class="modal-overlay" id="modal-wavepdf">
@@ -10350,6 +10594,102 @@ function skipReplacement(){
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('jobedit')">Cancel</button>
       <button class="btn btn-primary" onclick="saveJobEdit()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- ADD / EDIT VEHICLE MODAL -->
+<div class="modal-overlay" id="modal-addvehicle">
+  <div class="modal" style="max-width:500px;width:95vw;">
+    <div class="modal-header">
+      <div class="modal-title" id="veh-modal-title">Add Vehicle</div>
+      <button class="modal-close" onclick="closeModal('addvehicle')">×</button>
+    </div>
+    <div class="modal-body">
+      <div style="display:grid;grid-template-columns:90px 1fr 1fr;gap:12px;margin-bottom:0;">
+        <div class="form-group">
+          <label class="form-label">Year</label>
+          <input class="form-input" id="veh-year" type="number" min="1980" max="2035" placeholder="2024"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Make <span style="color:var(--red);">*</span></label>
+          <input class="form-input" id="veh-make" placeholder="Ford"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Model <span style="color:var(--red);">*</span></label>
+          <input class="form-input" id="veh-model" placeholder="F-250"/>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">VIN</label>
+        <input class="form-input" id="veh-vin" placeholder="1FTBF2BT0NEC00000" style="font-family:'DM Mono',monospace;font-size:13px;letter-spacing:.5px;" maxlength="17"/>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="form-group">
+          <label class="form-label">License Plate</label>
+          <input class="form-input" id="veh-plate" placeholder="ABC 1234"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Purchase Date</label>
+          <input class="form-input" id="veh-purchase" type="date"/>
+        </div>
+      </div>
+      <div class="form-group" style="margin-bottom:0;">
+        <label class="form-label">Notes</label>
+        <textarea class="form-textarea" id="veh-notes" placeholder="Color, trim level, any other details..." style="min-height:56px;"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer" style="justify-content:space-between;">
+      <button class="btn btn-ghost" id="veh-delete-btn" style="color:var(--red);display:none;" onclick="deleteVehicle(_editingVehicleId)">Delete Vehicle</button>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-ghost" onclick="closeModal('addvehicle')">Cancel</button>
+        <button class="btn btn-primary" onclick="saveVehicle()">Save Vehicle</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ADD / EDIT SERVICE ENTRY MODAL -->
+<div class="modal-overlay" id="modal-addmaint">
+  <div class="modal" style="max-width:460px;width:95vw;">
+    <div class="modal-header">
+      <div class="modal-title" id="maint-modal-title">Add Service Entry</div>
+      <button class="modal-close" onclick="closeModal('addmaint')">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="maint-vehicle-name" style="font-size:12px;color:var(--text3);font-family:'DM Mono',monospace;margin-bottom:14px;"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="form-group">
+          <label class="form-label">Date <span style="color:var(--red);">*</span></label>
+          <input class="form-input" id="maint-date" type="date"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Cost</label>
+          <div style="position:relative;">
+            <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--text3);font-size:14px;pointer-events:none;">$</span>
+            <input class="form-input" id="maint-cost" type="number" min="0" step="0.01" placeholder="0.00" style="padding-left:24px;"/>
+          </div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Work Completed <span style="color:var(--red);">*</span></label>
+        <input class="form-input" id="maint-desc" placeholder="e.g. Oil change &amp; filter, tire rotation, brake pads"/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Mileage <span style="font-size:11px;font-weight:400;color:var(--text3);">(optional)</span></label>
+        <input class="form-input" id="maint-mileage" type="number" min="0" placeholder="e.g. 45000"/>
+      </div>
+      <div class="form-group" style="margin-bottom:0;">
+        <label class="form-label">Notes <span style="font-size:11px;font-weight:400;color:var(--text3);">(optional)</span></label>
+        <textarea class="form-textarea" id="maint-notes" placeholder="Shop name, parts used, warranty info..." style="min-height:56px;"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer" style="justify-content:space-between;">
+      <button class="btn btn-ghost" id="maint-delete-btn" style="color:var(--red);display:none;" onclick="deleteMaintEntry(_editingMaintId)">Delete Entry</button>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-ghost" onclick="closeModal('addmaint')">Cancel</button>
+        <button class="btn btn-primary" onclick="saveMaintEntry()">Save Entry</button>
+      </div>
     </div>
   </div>
 </div>
