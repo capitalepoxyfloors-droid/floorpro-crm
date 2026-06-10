@@ -5508,18 +5508,23 @@ function calcGetTotals(){
     const size=(m.coverageUnit==='LF')?sizeLF:sizeSF;
     const rawQty=(cov>0&&size>0)?size/cov:0;
     const pkgSz=parseFloat(m.pkgSize)||0;
+    // If no pkg-size button is selected, fall back to parsing the leading number
+    // from the unit field (e.g. "15 Gallon" → 15) so the price is treated as
+    // cost-per-container rather than cost-per-unit-of-1.
+    const unitPkgSz=parseFloat((m.unit||'').match(/^(\d+\.?\d*)/)?.[1])||0;
+    const effPkgSz=pkgSz||unitPkgSz;
     let _orderQty,_containers=0,_costQty;
-    if(pkgSz>0&&rawQty>0){
-      _containers=Math.ceil(rawQty/pkgSz);
-      _orderQty=_containers*pkgSz;   // total working units ordered (e.g. 10 gal)
-      _costQty=_containers;           // containers × price/container
+    if(effPkgSz>0&&rawQty>0){
+      _containers=Math.ceil(rawQty/effPkgSz);
+      _orderQty=_containers*effPkgSz; // total working units ordered (e.g. 15 gal)
+      _costQty=_containers;            // containers × price/container
     }else{
       _orderQty=rawQty>0?Math.ceil(rawQty):0; // round up to whole units
       _costQty=_orderQty;
     }
     const _rawQty=Math.round(rawQty*100)/100;
     const total=Math.round(_costQty*price*100)/100;
-    return{...m,_rawQty,_qty:_orderQty,_orderQty,_containers,_pkgSz:pkgSz,_total:total};
+    return{...m,_rawQty,_qty:_orderQty,_orderQty,_containers,_pkgSz:effPkgSz,_total:total};
   });
   const matTotal=matRows.reduce((a,m)=>a+m._total,0);
   const laborAmt=parseFloat(s.laborAmt)||0;
