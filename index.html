@@ -677,17 +677,18 @@
           <button class="btn btn-ghost" onclick="salesWeekOffset=new Date().getDay()===0?1:0;renderSalesSchedule();" style="font-size:12px;padding:5px 10px;">Today</button>
           <span id="sales-week-label" style="font-size:13px;color:var(--text2);padding:0 4px;white-space:nowrap;min-width:160px;text-align:center;"></span>
           <button class="btn btn-ghost" onclick="salesSchedNav(1)">Next →</button>
-          <button class="btn btn-primary" onclick="openModal('salesvisit')">+ Add Visit</button>
+          <button class="btn btn-ghost" onclick="openBidDueModal()" style="color:var(--red);border-color:var(--red)44;">📋 + Bid Due</button>
+          <button class="btn btn-primary" onclick="openSalesVisitModal()">+ Add Visit</button>
         </div>
       </div>
       <div class="content">
         <div class="info-box" style="margin-bottom:16px;">
-          Track your sales visits, estimate appointments, and follow-up meetings here. Separate from the install crew schedule.
+          Track your sales visits, estimate appointments, follow-up meetings, and bid deadlines here. Separate from the install crew schedule.
         </div>
         <div class="schedule-block" style="margin-bottom:20px;overflow-x:auto;">
           <div id="sales-sched-grid" style="display:grid;grid-template-columns:100px repeat(5,1fr);min-width:500px;"></div>
         </div>
-        <div class="section-header"><div class="section-title">Visits — Next 2 Weeks</div></div>
+        <div class="section-header"><div class="section-title">Visits &amp; Bids Due — Next 2 Weeks</div></div>
         <div class="jobs-block" id="sales-visit-list">
           <div style="padding:28px;text-align:center;color:var(--text3);font-size:13px;">No visits scheduled yet — tap + Add Visit to get started.</div>
         </div>
@@ -995,9 +996,10 @@
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Visit Type</label>
-          <select class="form-select" id="sv-type">
+          <select class="form-select" id="sv-type" onchange="svTypeChanged()">
             <option>Estimate / Measure</option>
             <option>Follow-Up Visit</option>
+            <option>Bid Due</option>
             <option>Job Site Check</option>
             <option>Sales Call</option>
             <option>Other</option>
@@ -1013,7 +1015,7 @@
           <label class="form-label">Time</label>
           <input class="form-input" id="sv-time" type="time"/>
         </div>
-        <div class="form-group">
+        <div class="form-group" id="sv-duration-row">
           <label class="form-label">Est. Duration</label>
           <select class="form-select" id="sv-duration">
             <option>30 min</option>
@@ -1039,7 +1041,7 @@
           <div id="sv-notif-badge" style="font-size:11px;color:var(--text3);padding-bottom:8px;"></div>
         </div>
       </div>
-      <div class="form-group">
+      <div class="form-group" id="sv-address-row">
         <label class="form-label">Address</label>
         <div style="position:relative;">
           <input class="form-input" id="sv-address" placeholder="Start typing address..." oninput="svAddrInput(this.value)" autocomplete="off"/>
@@ -6414,6 +6416,7 @@ const SV_COLORS = {
   'Follow-Up Visit':    {bg:'var(--blue-dim)',    color:'var(--blue)'},
   'Job Site Check':     {bg:'var(--green-dim)',   color:'var(--green)'},
   'Sales Call':         {bg:'var(--purple-dim)',  color:'var(--purple)'},
+  'Bid Due':            {bg:'var(--red-dim)',     color:'var(--red)'},
   'Other':              {bg:'var(--surface3)',    color:'var(--text3)'},
 };
 
@@ -6475,7 +6478,7 @@ function renderSalesSchedule(){
             const chip=mk('div','sch-job');
             chip.style.cssText=`background:${sc.bg};color:${sc.color};border-left:3px solid ${sc.color};text-align:center;`;
             const fmt=t=>{if(!t)return '';const[h,m]=t.split(':');const hr=parseInt(h);return(hr%12||12)+':'+m+(hr<12?'am':'pm');};
-            chip.textContent=v.name+(v.time?' '+fmt(v.time):'');
+            chip.textContent=(v.type==='Bid Due'?'DUE: ':'')+v.name+(v.time?' '+fmt(v.time):'');
             cell.appendChild(chip);
           });
         } else {
@@ -6497,7 +6500,7 @@ function renderSalesVisitList(mon, fri){
   const weekVisits=SALES_VISITS.filter(v=>v.date>=monStr&&v.date<=friStr)
     .sort((a,b)=>a.date.localeCompare(b.date)||a.time.localeCompare(b.time));
   if(!weekVisits.length){
-    list.innerHTML='<div style="padding:28px;text-align:center;color:var(--text3);font-size:13px;">No visits these two weeks — tap + Add Visit to schedule one.</div>';
+    list.innerHTML='<div style="padding:28px;text-align:center;color:var(--text3);font-size:13px;">Nothing scheduled these two weeks — tap + Add Visit or 📋 + Bid Due to get started.</div>';
     return;
   }
   list.innerHTML=weekVisits.map((v)=>{
@@ -6574,13 +6577,68 @@ function bookLeadVisit(idx){
     return;
   }
   // New visit — open modal pre-filled with lead info
-  openModal('salesvisit');
   populateSvLeadDropdown();
   document.getElementById('sv-lead-select').value=idx;
   svLeadSelected(idx);
   document.getElementById('sv-type').value='Estimate / Measure';
+  document.getElementById('sv-title').textContent='Add Sales Visit';
+  svTypeChanged();
+  openModal('salesvisit');
+  _updateSvNotifBadge();
   // Move lead to Scheduled stage after visit is saved
   window._pendingLeadToSchedule=idx;
+}
+
+function openSalesVisitModal(){
+  editingSvIdx=null;
+  window._pendingLeadToSchedule=null;
+  document.getElementById('sv-title').textContent='Add Sales Visit';
+  document.getElementById('sv-type').value='Estimate / Measure';
+  document.getElementById('sv-name').value='';
+  document.getElementById('sv-date').value='';
+  document.getElementById('sv-time').value='09:00';
+  document.getElementById('sv-duration').value='1 hour';
+  document.getElementById('sv-reminder').value='none';
+  document.getElementById('sv-address').value='';
+  document.getElementById('sv-notes').value='';
+  populateSvLeadDropdown();
+  svTypeChanged();
+  openModal('salesvisit');
+  _updateSvNotifBadge();
+}
+
+function openBidDueModal(){
+  editingSvIdx=null;
+  window._pendingLeadToSchedule=null;
+  document.getElementById('sv-title').textContent='Add Bid Due Date';
+  document.getElementById('sv-type').value='Bid Due';
+  document.getElementById('sv-name').value='';
+  document.getElementById('sv-date').value='';
+  document.getElementById('sv-time').value='17:00';
+  document.getElementById('sv-duration').value='';
+  document.getElementById('sv-reminder').value='60';
+  document.getElementById('sv-address').value='';
+  document.getElementById('sv-notes').value='';
+  populateSvLeadDropdown();
+  svTypeChanged();
+  openModal('salesvisit');
+  _updateSvNotifBadge();
+}
+
+function svTypeChanged(){
+  const type=document.getElementById('sv-type').value;
+  const isBid=type==='Bid Due';
+  const durRow=document.getElementById('sv-duration-row');
+  const addrRow=document.getElementById('sv-address-row');
+  const titleEl=document.getElementById('sv-title');
+  if(durRow) durRow.style.display=isBid?'none':'';
+  if(addrRow) addrRow.style.display=isBid?'none':'';
+  // Update save button label
+  const saveBtn=document.querySelector('#modal-salesvisit .btn-primary');
+  if(saveBtn) saveBtn.textContent=isBid?'Save Bid Due Date':'Save Visit';
+  // Update modal title if not already set by edit/open function
+  if(titleEl&&titleEl.textContent==='Add Sales Visit'&&isBid) titleEl.textContent='Add Bid Due Date';
+  if(titleEl&&titleEl.textContent==='Add Bid Due Date'&&!isBid) titleEl.textContent='Add Sales Visit';
 }
 
 function saveSalesVisit(){
@@ -6634,7 +6692,8 @@ function editSalesVisit(idx){
   document.getElementById('sv-reminder').value=v.reminder||'none';
   document.getElementById('sv-address').value=v.address||'';
   document.getElementById('sv-notes').value=v.notes||'';
-  document.getElementById('sv-title').textContent='Edit Sales Visit';
+  document.getElementById('sv-title').textContent=v.type==='Bid Due'?'Edit Bid Due Date':'Edit Sales Visit';
+  svTypeChanged();
   openModal('salesvisit');
   _updateSvNotifBadge();
 }
@@ -6835,7 +6894,6 @@ function moveLead(idx, stage){
     const existing = getLeadVisit(l.name);
     if(!existing){
       // Open sales visit modal pre-filled with this lead
-      openModal('salesvisit');
       populateSvLeadDropdown();
       // Pre-select this lead in the dropdown
       const sel = document.getElementById('sv-lead-select');
@@ -6843,6 +6901,10 @@ function moveLead(idx, stage){
       svLeadSelected(idx);
       // Set visit type to Estimate/Measure by default
       document.getElementById('sv-type').value = 'Estimate / Measure';
+      document.getElementById('sv-title').textContent = 'Add Sales Visit';
+      svTypeChanged();
+      openModal('salesvisit');
+      _updateSvNotifBadge();
       // After saving the visit, also move the lead to Scheduled
       window._pendingLeadToSchedule = idx;
       showToast('📅 Book a visit first — then the lead moves to Scheduled automatically.');
