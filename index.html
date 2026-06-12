@@ -3938,7 +3938,7 @@ function jcDayCrewHtml(ds,log){
           <option value="custom"${c.crewIdx===-1?' selected':''}>— Custom —</option>
           ${CREW_DATA.map((cd,ci)=>`<option value="${ci}"${c.crewIdx===ci?' selected':''}>${cd.full}</option>`).join('')}
         </select>
-        ${c.crewIdx===-1?`<input class="form-input" placeholder="Name" value="${(c.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetCrew('${ds}',${i},'name',this.value)" style="flex:1;font-size:12px;padding:4px 6px;"/>`:``}
+        ${c.crewIdx===-1?`<input class="form-input" placeholder="Name" value="${(c.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetCrew('${ds}',${i},'name',this.value)" onblur="jcLogSetCrew('${ds}',${i},'name',this.value)" style="flex:1;font-size:12px;padding:4px 6px;"/>`:``}
         <button onclick="jcLogRemoveCrewMember('${ds}',${i})" style="background:none;border:none;cursor:pointer;color:var(--red);font-size:16px;padding:0 2px;line-height:1;" title="Remove">×</button>
       </div>
       <div style="display:flex;align-items:center;gap:5px;padding:3px 8px 5px;border-top:1px solid var(--border2);background:var(--surface2);${dimTime}">
@@ -4099,9 +4099,9 @@ function jcDayMatsHtml(ds,log){
         <option value="custom"${m.matIdx===-1?' selected':''}>— Custom —</option>
         ${MATERIALS.map((mat,mi)=>({mat,mi})).sort((a,b)=>a.mat.name.localeCompare(b.mat.name)).map(({mat,mi})=>`<option value="${mi}"${m.matIdx===mi?' selected':''}>${mat.name}</option>`).join('')}
       </select>
-      ${m.matIdx===-1?`<input class="form-input" placeholder="Material name" value="${(m.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetMaterial('${ds}',${i},'name',this.value)" style="flex:1;font-size:12px;padding:4px 6px;"/>`:``}
-      <input class="form-input" type="number" min="0" step="any" placeholder="Qty" value="${m.qty||''}" oninput="jcLogSetMaterial('${ds}',${i},'qty',this.value)" style="width:65px;flex:none;font-size:12px;padding:4px 6px;" title="Amount actually used"/>
-      <input class="form-input" placeholder="Unit" value="${(m.usageUnit||'').replace(/"/g,'&quot;')}" oninput="jcLogSetMaterial('${ds}',${i},'usageUnit',this.value)" style="width:52px;flex:none;font-size:12px;padding:4px 6px;" title="e.g. Gal, Lbs, SF"/>
+      ${m.matIdx===-1?`<input class="form-input" placeholder="Material name" value="${(m.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetMaterial('${ds}',${i},'name',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'name',this.value)" style="flex:1;font-size:12px;padding:4px 6px;"/>`:``}
+      <input class="form-input" type="number" min="0" step="any" placeholder="Qty" value="${m.qty||''}" oninput="jcLogSetMaterial('${ds}',${i},'qty',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'qty',this.value)" style="width:65px;flex:none;font-size:12px;padding:4px 6px;" title="Amount actually used"/>
+      <input class="form-input" placeholder="Unit" value="${(m.usageUnit||'').replace(/"/g,'&quot;')}" oninput="jcLogSetMaterial('${ds}',${i},'usageUnit',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'usageUnit',this.value)" style="width:52px;flex:none;font-size:12px;padding:4px 6px;" title="e.g. Gal, Lbs, SF"/>
       <button onclick="jcLogRemoveMat('${ds}',${i})" style="background:none;border:none;cursor:pointer;color:var(--danger,#e74c3c);font-size:16px;padding:0 2px;line-height:1;" title="Remove">×</button>
     </div>`;
   });
