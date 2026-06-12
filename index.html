@@ -3966,7 +3966,7 @@ function jcDayCrewHtml(ds,log){
           oninput="jcLogSetCrew('${ds}',${i},'endTime',this.value);jcUpdateCrewHrs('${ds}',${i})"
           onblur="jcFmtCrewTime(this,'${ds}',${i},'endTime')"
           style="font-size:11px;padding:2px 5px;width:70px;flex:none;" />
-        <span id="jccrh-${key}-${i}" style="font-size:11px;font-weight:700;color:${hasCustom?'var(--accent)':'var(--text3)'};">${hrsText}</span>
+        ${localStorage.getItem('fpRole')!=='crew'?`<span id="jccrh-${key}-${i}" style="font-size:11px;font-weight:700;color:${hasCustom?'var(--accent)':'var(--text3)'};">${hrsText}</span>`:''}
       </div>
     </div>`;
   });
