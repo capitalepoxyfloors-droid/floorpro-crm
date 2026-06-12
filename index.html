@@ -695,6 +695,12 @@
         <div class="jobs-block" id="sales-visit-list">
           <div style="padding:28px;text-align:center;color:var(--text3);font-size:13px;">No visits scheduled yet — tap + Add Visit to get started.</div>
         </div>
+        <!-- Bid History & Analysis — shown when any Bid Due entries exist -->
+        <div id="bid-tracking-section" style="display:none;margin-top:28px;">
+          <div class="section-header"><div class="section-title">Bid History &amp; Analysis</div></div>
+          <div id="bid-history-stats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px;"></div>
+          <div class="jobs-block" id="bid-history-list"></div>
+        </div>
       </div>
     </div>
 
@@ -975,6 +981,58 @@
   </div>
 </div>
 
+  </div>
+</div>
+
+<!-- BID DETAILS MODAL -->
+<div class="modal-overlay" id="modal-biddetails">
+  <div class="modal" style="max-width:500px;">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title" id="bd-project">Bid Details</div>
+        <div id="bd-date" style="font-size:12px;color:var(--text3);margin-top:2px;"></div>
+      </div>
+      <button class="modal-close" onclick="closeModal('biddetails')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Your Bid</label>
+          <div style="position:relative;">
+            <span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text2);font-weight:600;">$</span>
+            <input class="form-input" id="bd-your-bid" type="number" min="0" step="any" placeholder="0.00" style="padding-left:26px;" oninput="updateBidCalc()"/>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Square Footage</label>
+          <input class="form-input" id="bd-sqft" type="number" min="0" step="any" placeholder="0" oninput="updateBidCalc()"/>
+        </div>
+      </div>
+      <div id="bd-your-psf" style="font-size:12px;color:var(--accent);font-weight:700;margin:-8px 0 16px;min-height:16px;"></div>
+      <div class="form-group">
+        <label class="form-label">Result</label>
+        <select class="form-select" id="bd-result">
+          <option value="pending">Pending — not decided yet</option>
+          <option value="won">Won ✓</option>
+          <option value="lost">Lost ✗</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label" style="display:flex;align-items:center;justify-content:space-between;">
+          <span>Competitor Bids</span>
+          <button onclick="addBidCompetitor()" style="font-size:11px;color:var(--accent);background:none;border:1px dashed var(--accent);border-radius:6px;padding:2px 10px;cursor:pointer;">+ Add</button>
+        </label>
+        <div id="bd-competitors"></div>
+      </div>
+      <div class="form-group" style="margin-bottom:0;">
+        <label class="form-label">Notes</label>
+        <textarea class="form-textarea" id="bd-notes" placeholder="Scope details, why you won or lost, customer feedback, market conditions..." style="min-height:68px;resize:none;overflow-y:auto;" oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('biddetails')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveBidDetails()">Save Details</button>
+    </div>
   </div>
 </div>
 
@@ -5993,6 +6051,138 @@ function showPage(id){
 let SALES_VISITS = [];
 let salesWeekOffset = new Date().getDay()===0 ? 1 : 0; // Sunday → show next week
 
+// ── BID TRACKING ───────────────────────────────────────────────────────────────
+let _editingBidIdx = null;
+let _bidCompetitors = [];
+
+function toggleBidSubmitted(idx){
+  const v=SALES_VISITS[idx]; if(!v) return;
+  v.submitted=!v.submitted;
+  persistSalesVisits();
+  renderSalesSchedule();
+}
+
+function openBidDetails(idx){
+  _editingBidIdx=idx;
+  const v=SALES_VISITS[idx];
+  _bidCompetitors=JSON.parse(JSON.stringify(v.competitors||[]));
+  document.getElementById('bd-project').textContent=v.name;
+  const d=new Date(v.date+'T00:00:00');
+  document.getElementById('bd-date').textContent=v.date?d.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'}):'';
+  document.getElementById('bd-your-bid').value=v.yourBid||'';
+  document.getElementById('bd-sqft').value=v.sqft||'';
+  document.getElementById('bd-result').value=v.result||'pending';
+  document.getElementById('bd-notes').value=v.bidNotes||'';
+  renderBidCompetitors();
+  updateBidCalc();
+  openModal('biddetails');
+}
+
+function renderBidCompetitors(){
+  const el=document.getElementById('bd-competitors'); if(!el) return;
+  if(!_bidCompetitors.length){
+    el.innerHTML='<div style="font-size:12px;color:var(--text3);padding:4px 0;">No competitor bids added yet.</div>';
+    return;
+  }
+  el.innerHTML=_bidCompetitors.map((c,i)=>`
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+      <input class="form-input" placeholder="Company or source" value="${(c.name||'').replace(/"/g,'&quot;')}"
+        oninput="_bidCompetitors[${i}].name=this.value" onblur="_bidCompetitors[${i}].name=this.value" style="flex:1;font-size:13px;"/>
+      <span style="color:var(--text3);flex-shrink:0;">$</span>
+      <input class="form-input" type="number" min="0" step="any" placeholder="Amount" value="${c.amount||''}"
+        oninput="_bidCompetitors[${i}].amount=this.value;updateBidCalc()" onblur="_bidCompetitors[${i}].amount=this.value;updateBidCalc()" style="width:120px;font-size:13px;flex:none;"/>
+      <button onclick="_bidCompetitors.splice(${i},1);renderBidCompetitors();updateBidCalc();"
+        style="background:none;border:none;cursor:pointer;color:var(--red);font-size:18px;padding:0 3px;line-height:1;">×</button>
+    </div>`).join('');
+}
+
+function addBidCompetitor(){
+  _bidCompetitors.push({name:'',amount:''});
+  renderBidCompetitors();
+}
+
+function updateBidCalc(){
+  const yourBid=parseFloat(document.getElementById('bd-your-bid')?.value)||0;
+  const sqft=parseFloat(document.getElementById('bd-sqft')?.value)||0;
+  const el=document.getElementById('bd-your-psf'); if(!el) return;
+  el.textContent=(yourBid>0&&sqft>0)?'→ $'+(yourBid/sqft).toFixed(2)+' per SF':'';
+}
+
+function saveBidDetails(){
+  if(_editingBidIdx===null) return;
+  const v=SALES_VISITS[_editingBidIdx];
+  v.yourBid=document.getElementById('bd-your-bid').value;
+  v.sqft=document.getElementById('bd-sqft').value;
+  v.competitors=_bidCompetitors.filter(c=>c.name||c.amount);
+  v.result=document.getElementById('bd-result').value;
+  v.bidNotes=document.getElementById('bd-notes').value.trim();
+  persistSalesVisits();
+  closeModal('biddetails');
+  renderSalesSchedule();
+  showToast('✓ Bid details saved!');
+}
+
+function renderBidHistory(){
+  const section=document.getElementById('bid-tracking-section'); if(!section) return;
+  const allBids=SALES_VISITS.filter(v=>v.type==='Bid Due').sort((a,b)=>b.date.localeCompare(a.date));
+  if(!allBids.length){ section.style.display='none'; return; }
+  section.style.display='';
+
+  // ── Stats ──
+  const withResult=allBids.filter(v=>v.result&&v.result!=='pending');
+  const won=allBids.filter(v=>v.result==='won');
+  const lost=allBids.filter(v=>v.result==='lost');
+  const winRate=withResult.length?Math.round(won.length/withResult.length*100):null;
+  const bidsWithPsf=arr=>arr.filter(v=>parseFloat(v.yourBid)>0&&parseFloat(v.sqft)>0).map(v=>parseFloat(v.yourBid)/parseFloat(v.sqft));
+  const avg=arr=>arr.length?(arr.reduce((a,b)=>a+b,0)/arr.length):null;
+  const avgWonPsf=avg(bidsWithPsf(won));
+  const avgLostPsf=avg(bidsWithPsf(lost));
+  const statCard=(label,val,color='var(--text)')=>
+    `<div style="background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);padding:14px 16px;">
+      <div style="font-size:10px;color:var(--text3);font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">${label}</div>
+      <div style="font-size:22px;font-weight:800;color:${color};">${val}</div>
+    </div>`;
+  const statsEl=document.getElementById('bid-history-stats');
+  statsEl.innerHTML=[
+    statCard('Total Bids',allBids.length),
+    statCard('Submitted',allBids.filter(v=>v.submitted).length),
+    winRate!==null?statCard('Win Rate',winRate+'%',winRate>=50?'var(--green)':'var(--red)'):'',
+    avgWonPsf!==null?statCard('Avg $/SF Won','$'+avgWonPsf.toFixed(2),'var(--green)'):'',
+    avgLostPsf!==null?statCard('Avg $/SF Lost','$'+avgLostPsf.toFixed(2),'var(--red)'):'',
+  ].join('');
+
+  // ── Bid rows ──
+  const fmtMoney=n=>n>0?'$'+parseFloat(n).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0}):'—';
+  document.getElementById('bid-history-list').innerHTML=allBids.map(v=>{
+    const realIdx=SALES_VISITS.indexOf(v);
+    const d=new Date(v.date+'T00:00:00');
+    const dateLabel=d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'});
+    const yourBid=parseFloat(v.yourBid)||0;
+    const sqft=parseFloat(v.sqft)||0;
+    const psf=yourBid>0&&sqft>0?'$'+(yourBid/sqft).toFixed(2)+'/SF':'';
+    const result=v.result||'pending';
+    const rColor=result==='won'?'var(--green)':result==='lost'?'var(--text3)':'var(--accent)';
+    const rBg=result==='won'?'var(--green-dim)':result==='lost'?'var(--surface3)':'var(--accent-dim)';
+    const rLabel=result==='won'?'Won ✓':result==='lost'?'Lost':'Pending';
+    const compAmts=(v.competitors||[]).map(c=>parseFloat(c.amount)).filter(a=>a>0);
+    const lowComp=compAmts.length?Math.min(...compAmts):null;
+    return `<div class="job-row" style="grid-template-columns:1fr auto;">
+      <div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span class="job-row-name">${v.name}</span>
+          ${v.submitted?`<span style="font-size:10px;color:var(--green);font-family:'DM Mono',monospace;font-weight:700;">SUBMITTED</span>`:''}
+        </div>
+        <div class="job-row-detail">${dateLabel}${yourBid>0?' · Your bid: '+fmtMoney(yourBid)+(psf?' ('+psf+')':''):''}${lowComp?' · Low comp: '+fmtMoney(lowComp):''}</div>
+        ${v.bidNotes?`<div style="font-size:11px;color:var(--text3);margin-top:3px;">${v.bidNotes}</div>`:''}
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span style="font-size:10.5px;font-weight:700;padding:3px 10px;border-radius:20px;background:${rBg};color:${rColor};font-family:'DM Mono',monospace;">${rLabel}</span>
+        <button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;" onclick="openBidDetails(${realIdx})" title="View / edit bid details">📊</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
 // ── SALES VISIT NOTIFICATIONS ──────────────────────────────────────────────
 let _svNotifGranted = false;
 const _SV_NOTIF_SS_KEY = 'sv_fired_notifs';
@@ -6495,9 +6685,17 @@ function renderSalesSchedule(){
           dayVisits.forEach(v=>{
             const sc=SV_COLORS[v.type]||SV_COLORS['Other'];
             const chip=mk('div','sch-job');
-            chip.style.cssText=`background:${sc.bg};color:${sc.color};border-left:3px solid ${sc.color};text-align:center;`;
             const fmt=t=>{if(!t)return '';const[h,m]=t.split(':');const hr=parseInt(h);return(hr%12||12)+':'+m+(hr<12?'am':'pm');};
-            chip.textContent=(v.type==='Bid Due'?'DUE: ':'')+v.name+(v.time?' '+fmt(v.time):'');
+            if(v.type==='Bid Due'&&v.result==='won'){
+              chip.style.cssText=`background:var(--green-dim);color:var(--green);border-left:3px solid var(--green);text-align:center;`;
+              chip.textContent='WON: '+v.name+(v.time?' '+fmt(v.time):'');
+            } else if(v.type==='Bid Due'&&v.result==='lost'){
+              chip.style.cssText=`background:${sc.bg};color:${sc.color};border-left:3px solid ${sc.color};text-align:center;opacity:0.5;`;
+              chip.textContent='DUE: '+v.name+(v.time?' '+fmt(v.time):'');
+            } else {
+              chip.style.cssText=`background:${sc.bg};color:${sc.color};border-left:3px solid ${sc.color};text-align:center;`;
+              chip.textContent=(v.type==='Bid Due'?(v.submitted?'✓ DUE: ':'DUE: '):'')+v.name+(v.time?' '+fmt(v.time):'');
+            }
             cell.appendChild(chip);
           });
         } else {
@@ -6520,25 +6718,34 @@ function renderSalesVisitList(mon, fri){
     .sort((a,b)=>a.date.localeCompare(b.date)||a.time.localeCompare(b.time));
   if(!weekVisits.length){
     list.innerHTML='<div style="padding:28px;text-align:center;color:var(--text3);font-size:13px;">Nothing scheduled these two weeks — tap + Add Visit or 📋 + Bid Due to get started.</div>';
-    return;
+    renderBidHistory(); return;
   }
+  const fmt=t=>{if(!t)return '';const[h,m]=t.split(':');const hr=parseInt(h);return(hr%12||12)+':'+m+(hr<12?'am':'pm');};
   list.innerHTML=weekVisits.map((v)=>{
     const realIdx=SALES_VISITS.indexOf(v);
     const sc=SV_COLORS[v.type]||SV_COLORS['Other'];
     const d=new Date(v.date+'T00:00:00');
     const dateLabel=d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
-    const fmt=t=>{if(!t)return '';const[h,m]=t.split(':');const hr=parseInt(h);return(hr%12||12)+':'+m+(hr<12?'am':'pm');};
-    return `<div class="job-row" style="grid-template-columns:1fr auto auto auto;">
+    const isBid=v.type==='Bid Due';
+    const submitted=!!(v.submitted);
+    const result=v.result||'pending';
+    const resultPill=isBid&&result!=='pending'?`&nbsp;<span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;background:${result==='won'?'var(--green-dim)':'var(--surface3)'};color:${result==='won'?'var(--green)':'var(--text3)'};font-family:'DM Mono',monospace;">${result==='won'?'WON':'LOST'}</span>`:'';
+    return `<div class="job-row" style="grid-template-columns:1fr auto;">
       <div>
-        <div class="job-row-name">${v.name}</div>
+        <div class="job-row-name">${v.name}${resultPill}</div>
         <div class="job-row-detail">${dateLabel}${v.time?' · '+fmt(v.time):''}${v.duration?' · '+v.duration:''}${v.address?' · '+v.address.split(',')[0]:''}</div>
         ${v.notes?`<div style="font-size:11px;color:var(--text3);margin-top:3px;">${v.notes}</div>`:''}
       </div>
-      <div><span class="status-pill" style="background:${sc.bg};color:${sc.color};">${v.type}</span></div>
-      <div><button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;" onclick="editSalesVisit(${realIdx})">Edit</button></div>
-      <div><button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;color:var(--red);" onclick="deleteSalesVisit(${realIdx})">✕</button></div>
+      <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;justify-content:flex-end;">
+        <span class="status-pill" style="background:${sc.bg};color:${sc.color};">${v.type}</span>
+        ${isBid?`<button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;${submitted?'color:var(--green);':'color:var(--text3);'}" onclick="toggleBidSubmitted(${realIdx})">${submitted?'✓ Submitted':'Mark Submitted'}</button>`:''}
+        ${isBid?`<button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;" onclick="openBidDetails(${realIdx})">📊 Details</button>`:''}
+        <button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;" onclick="editSalesVisit(${realIdx})">Edit</button>
+        <button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;color:var(--red);" onclick="deleteSalesVisit(${realIdx})">✕</button>
+      </div>
     </div>`;
   }).join('');
+  renderBidHistory();
 }
 
 function svLeadSelected(val){
@@ -6676,6 +6883,16 @@ function saveSalesVisit(){
     lead_idx: selVal!==''?parseInt(selVal):null,
   };
   if(editingSvIdx!==null){
+    // Preserve bid tracking data when editing date/name/time of a bid
+    const existing=SALES_VISITS[editingSvIdx];
+    if(existing.type==='Bid Due'||visit.type==='Bid Due'){
+      visit.submitted=existing.submitted||false;
+      visit.yourBid=existing.yourBid||'';
+      visit.sqft=existing.sqft||'';
+      visit.competitors=existing.competitors||[];
+      visit.result=existing.result||'pending';
+      visit.bidNotes=existing.bidNotes||'';
+    }
     SALES_VISITS[editingSvIdx]=visit;
     editingSvIdx=null;
     showToast('✓ Visit updated!');
