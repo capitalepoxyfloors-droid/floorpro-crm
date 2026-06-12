@@ -6692,9 +6692,12 @@ function renderSalesSchedule(){
             } else if(v.type==='Bid Due'&&v.result==='lost'){
               chip.style.cssText=`background:${sc.bg};color:${sc.color};border-left:3px solid ${sc.color};text-align:center;opacity:0.5;`;
               chip.textContent='DUE: '+v.name+(v.time?' '+fmt(v.time):'');
+            } else if(v.type==='Bid Due'&&v.submitted){
+              chip.style.cssText=`background:var(--green-dim);color:var(--green);border-left:3px solid var(--green);text-align:center;`;
+              chip.textContent='✓ DUE: '+v.name+(v.time?' '+fmt(v.time):'');
             } else {
               chip.style.cssText=`background:${sc.bg};color:${sc.color};border-left:3px solid ${sc.color};text-align:center;`;
-              chip.textContent=(v.type==='Bid Due'?(v.submitted?'✓ DUE: ':'DUE: '):'')+v.name+(v.time?' '+fmt(v.time):'');
+              chip.textContent=(v.type==='Bid Due'?'DUE: ':'')+v.name+(v.time?' '+fmt(v.time):'');
             }
             cell.appendChild(chip);
           });
