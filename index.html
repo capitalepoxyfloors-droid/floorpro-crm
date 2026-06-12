@@ -323,8 +323,11 @@
   /* Crew mode — hide everything except Crew View */
   .crew-mode .sidebar{display:none!important;}
   .crew-mode .cv-lock-btn{display:none!important;}
+  .crew-mode #jc-lock-btn{display:none!important;}
   .crew-mode #jc-value-group{display:none!important;}
   .crew-mode #jc-invoice-section{display:none!important;}
+  .crew-mode #jc-delete-btn{display:none!important;}
+  .crew-mode #jc-reschedule-btn{display:none!important;}
   /* PIN login */
   @keyframes pin-shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-9px)}40%{transform:translateX(9px)}60%{transform:translateX(-6px)}80%{transform:translateX(6px)}}
   .pin-dot{width:14px;height:14px;border-radius:50%;border:2px solid var(--border2);background:transparent;transition:all .15s;}
@@ -3656,7 +3659,7 @@ function jcRenderDayLogs(){
         </div>
         <div class="form-group" style="margin:0;">
           <label class="form-label">Task Completed</label>
-          <textarea class="form-textarea" placeholder="What was done today" oninput="jcLogSet('${ds}','task',this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'" style="font-size:13px;overflow-y:auto;resize:none;min-height:60px;">${(log.task||'').replace(/</g,'&lt;')}</textarea>
+          <textarea class="form-textarea" placeholder="What was done today" oninput="jcLogSet('${ds}','task',this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'" onblur="jcLogSet('${ds}','task',this.value)" style="font-size:13px;overflow-y:auto;resize:none;min-height:60px;">${(log.task||'').replace(/</g,'&lt;')}</textarea>
         </div>
         <div class="form-group" style="margin:0;">
           <label class="form-label">Materials Actually Used</label>
@@ -3681,7 +3684,7 @@ function jcRenderDayLogs(){
         </div>
         <div class="form-group" style="margin:0;">
           <label class="form-label">Notes</label>
-          <textarea class="form-textarea" placeholder="Anything worth noting — issues, decisions, next steps..." oninput="jcLogSet('${ds}','notes',this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'" style="min-height:52px;font-size:13px;overflow-y:auto;resize:none;">${log.notes||''}</textarea>
+          <textarea class="form-textarea" placeholder="Anything worth noting — issues, decisions, next steps..." oninput="jcLogSet('${ds}','notes',this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'" onblur="jcLogSet('${ds}','notes',this.value)" style="min-height:52px;font-size:13px;overflow-y:auto;resize:none;">${log.notes||''}</textarea>
         </div>
       </div>`;
     container.appendChild(sec);
@@ -3691,6 +3694,11 @@ function jcRenderDayLogs(){
     ta.style.height='auto';
     ta.style.height=ta.scrollHeight+'px';
   });
+  // Inline save button — always visible on mobile without needing to scroll to the modal footer
+  const saveWrap=document.createElement('div');
+  saveWrap.style.cssText='padding:16px 0 4px;';
+  saveWrap.innerHTML=`<button onclick="saveJobCard()" class="btn btn-primary" style="width:100%;font-size:15px;padding:13px;border-radius:10px;letter-spacing:.3px;">💾 Save Log</button>`;
+  container.appendChild(saveWrap);
 }
 
 async function jcAddExtraDay(){
