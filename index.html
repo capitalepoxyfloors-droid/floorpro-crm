@@ -3648,6 +3648,7 @@ function jcRenderDayLogs(){
     const filled=!!(_crewFilled||log.task||_matsFilled);
     const key=ds.replace(/-/g,'');
     const sec=document.createElement('div');
+    sec.id='jcday-'+key;
     sec.style.cssText='margin-bottom:16px;background:var(--surface2);border:1px solid '+(filled?'var(--green)44':'var(--border2)')+';border-radius:var(--radius);overflow:hidden;';
     sec.innerHTML=`
       <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--border2);">
@@ -3704,6 +3705,10 @@ function jcRenderDayLogs(){
   saveWrap.style.cssText='padding:16px 0 4px;';
   saveWrap.innerHTML=`<button onclick="saveJobCard()" class="btn btn-primary" style="width:100%;font-size:15px;padding:13px;border-radius:10px;letter-spacing:.3px;">💾 Save Log</button>`;
   container.appendChild(saveWrap);
+  // Scroll to today's day section if it's in the job's date range
+  const _todayKey=new Date().toISOString().slice(0,10).replace(/-/g,'');
+  const _todayEl=document.getElementById('jcday-'+_todayKey);
+  if(_todayEl) setTimeout(()=>_todayEl.scrollIntoView({behavior:'smooth',block:'start'}),60);
 }
 
 async function jcAddExtraDay(){
