@@ -1619,25 +1619,25 @@ const sb = {
 };
 
 function showSyncStatus(msg,color='var(--green)'){
-  // Remove any existing instance cleanly
   const old=document.getElementById('sync-status');
   if(old){clearTimeout(old._t);old.remove();}
   const el=document.createElement('div');
   el.id='sync-status';
-  if(msg.startsWith('✓')){
-    // Large centered confirmation badge for successful saves
-    const label=msg.replace(/^✓\s*/,'')||'Saved';
-    el.style.cssText='position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--surface,#141414);color:'+color+';font-family:"DM Sans",sans-serif;padding:28px 52px;border-radius:22px;border:2.5px solid '+color+';z-index:99999;box-shadow:0 16px 60px rgba(0,0,0,.55);text-align:center;pointer-events:none;transition:opacity .35s ease;opacity:1;';
-    el.innerHTML='<div style="font-size:48px;line-height:1;margin-bottom:10px;">✓</div><div style="font-size:19px;font-weight:700;letter-spacing:.4px;">'+label+'</div>';
-    document.body.appendChild(el);
-    el._t=setTimeout(()=>{el.style.opacity='0';setTimeout(()=>el.remove(),380);},1500);
-  } else {
-    // Small upper-right badge for errors, warnings, and loading state
-    el.style.cssText='position:fixed;top:10px;right:14px;font-size:11px;font-family:"DM Mono",monospace;padding:4px 10px;border-radius:20px;z-index:9999;transition:opacity .5s;opacity:1;background:'+color+'22;color:'+color+';border:1px solid '+color+'44;';
-    el.textContent=msg;
-    document.body.appendChild(el);
-    el._t=setTimeout(()=>{el.style.opacity='0';setTimeout(()=>el.remove(),500);},4000);
-  }
+  el.style.cssText='position:fixed;top:10px;right:14px;font-size:11px;font-family:"DM Mono",monospace;padding:4px 10px;border-radius:20px;z-index:9999;transition:opacity .5s;opacity:1;background:'+color+'22;color:'+color+';border:1px solid '+color+'44;';
+  el.textContent=msg;
+  document.body.appendChild(el);
+  el._t=setTimeout(()=>{el.style.opacity='0';setTimeout(()=>el.remove(),500);},3000);
+}
+// Large centered save badge — only shown on explicit user-triggered saves (job card Save / Save Log)
+function showSaveBadge(msg='Saved',color='var(--green)'){
+  const old=document.getElementById('save-badge');
+  if(old){clearTimeout(old._t);old.remove();}
+  const el=document.createElement('div');
+  el.id='save-badge';
+  el.style.cssText='position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--surface,#141414);color:'+color+';font-family:"DM Sans",sans-serif;padding:28px 52px;border-radius:22px;border:2.5px solid '+color+';z-index:99999;box-shadow:0 16px 60px rgba(0,0,0,.55);text-align:center;pointer-events:none;transition:opacity .35s ease;opacity:1;';
+  el.innerHTML='<div style="font-size:48px;line-height:1;margin-bottom:10px;">✓</div><div style="font-size:19px;font-weight:700;letter-spacing:.4px;">'+msg+'</div>';
+  document.body.appendChild(el);
+  el._t=setTimeout(()=>{el.style.opacity='0';setTimeout(()=>el.remove(),380);},1500);
 }
 
 // ── DATA — CREW_DATA is the source of truth, CREW is derived from it ──────────
@@ -4808,6 +4808,7 @@ async function saveJobCard(){
     const notes=[card.dataset.address||'',card.dataset.notes||''].filter(Boolean).join('\n');
     if(dbId) dbSaveJob({customer:job.customer,jobLabel,value:card.dataset.value,displayVal:cleanDisplay,detail,status,notes,db_id:dbId});
   });
+  showSaveBadge('Saved');
   closeModal('jobcard');
   renderSchedule();
 }
