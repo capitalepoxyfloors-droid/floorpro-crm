@@ -841,6 +841,15 @@
           </div>
           <div id="pin-crew-list" style="padding:6px 18px 14px;"></div>
         </div>
+        <div class="jobs-block" style="padding:0;margin-bottom:16px;">
+          <div style="padding:14px 18px;border-bottom:1px solid var(--border);">
+            <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);">GPS Diagnostics</div>
+          </div>
+          <div style="padding:16px 18px;">
+            <p style="font-size:12.5px;color:var(--text2);margin-bottom:12px;line-height:1.45;">Check that this device's location works and see how far you are from today's jobs. To test a crew member's phone, sign in on it with the manager code and run this there.</p>
+            <button class="btn btn-primary" onclick="tcTestGps()">📍 Test GPS</button>
+          </div>
+        </div>
         <div class="jobs-block" style="padding:0;">
           <div style="padding:14px 18px;border-bottom:1px solid var(--border);">
             <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);">Session</div>
@@ -4601,6 +4610,71 @@ async function jcPinLocation(){
     jcRenderGeoStatus();
     showToast('📍 Job location pinned to your current spot ✓');
   }catch(e){ showToast('Could not read GPS — allow location access and try again.'); }
+}
+
+// Diagnostic: read this device's GPS and show distance to today's jobs (owner-facing test tool)
+async function tcTestGps(){
+  let ov=document.getElementById('gps-test-ov'); if(ov) ov.remove();
+  ov=document.createElement('div');
+  ov.id='gps-test-ov';
+  ov.style.cssText='position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px;';
+  ov.innerHTML=`<div style="background:var(--surface,#141414);border:1px solid var(--border2,#333);border-radius:16px;max-width:440px;width:100%;max-height:86vh;overflow-y:auto;box-shadow:0 20px 70px rgba(0,0,0,.6);">
+     <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--border);">
+       <div style="font-size:16px;font-weight:700;color:var(--text);">📍 GPS Test</div>
+       <button onclick="document.getElementById('gps-test-ov').remove()" style="background:none;border:none;color:var(--text2);font-size:22px;cursor:pointer;line-height:1;">×</button>
+     </div>
+     <div id="gps-test-body" style="padding:18px;font-size:13px;color:var(--text2);line-height:1.5;">
+       <div style="text-align:center;padding:24px;">Reading GPS…<br><span style="opacity:.6;font-size:12px;">tap “Allow” if your phone asks for location</span></div>
+     </div>
+   </div>`;
+  document.body.appendChild(ov);
+  const body=document.getElementById('gps-test-body');
+  if(!navigator.geolocation){ body.innerHTML='<div style="color:#e0a106;font-weight:600;">⚠ This device/browser has no location support.</div>'; return; }
+  const t0=Date.now();
+  let pos;
+  try{ pos=await _tcGetPosition({maximumAge:0}); }
+  catch(e){
+    const msg = (e&&e.code===1) ? 'Permission denied — location is blocked or off. Enable location for this site in your browser/phone settings, then try again.'
+             : (e&&e.code===2) ? 'Position unavailable — no GPS fix right now. Step outside and try again.'
+             : (e&&e.code===3) ? 'Timed out getting a fix. Try again.'
+             : ('Error: '+((e&&e.message)||'unknown'));
+    body.innerHTML='<div style="color:#e0454e;font-weight:700;margin-bottom:6px;">✗ Could not read GPS</div><div>'+msg+'</div>';
+    return;
+  }
+  const lat=pos.coords.latitude, lng=pos.coords.longitude, acc=Math.round(pos.coords.accuracy||0);
+  const secs=((Date.now()-t0)/1000).toFixed(1);
+  const accNote = acc<=50?'excellent — real GPS':acc<=150?'good':acc<=600?'rough — likely WiFi/desktop':'poor';
+  const idIdx=_tcCrewIdentity();
+  const idLine = idIdx>=0 ? ('👤 '+(((CREW||[])[idIdx]||{}).name||('Crew '+idIdx)))
+                          : '<span style="color:#e0a106;">none (owner/manager — won’t auto clock-in)</span>';
+  const jobs=_tcJobsActiveToday();
+  let jobRows='';
+  if(!jobs.length){ jobRows='<div style="color:var(--text3);padding:6px 0;">No jobs scheduled for today.</div>'; }
+  else{
+    for(const j of jobs){
+      const c=await _tcEnsureJobCoords(j);
+      const nm=(j.customer||'Job').replace(/</g,'&lt;');
+      if(!c){ jobRows+=`<div style="padding:7px 0;border-top:1px solid var(--border);"><b style="color:var(--text);">${nm}</b> — <span style="color:#e0a106;">no location set</span></div>`; continue; }
+      const dist=_tcDistM(lat,lng,c.lat,c.lng);
+      const inRange=dist<=TC_RADIUS_M;
+      const distStr = dist<1609 ? Math.round(dist)+' m' : (dist/1609.344).toFixed(1)+' mi';
+      jobRows+=`<div style="padding:7px 0;border-top:1px solid var(--border);display:flex;justify-content:space-between;gap:8px;">
+        <b style="color:var(--text);">${nm}</b>
+        <span style="color:${inRange?'var(--green,#1f9d55)':'var(--text2)'};font-weight:700;white-space:nowrap;">${distStr}${inRange?' ✓ in range':''}</span></div>`;
+    }
+  }
+  body.innerHTML=`
+    <div style="color:var(--green,#1f9d55);font-weight:700;font-size:15px;margin-bottom:12px;">✓ GPS is working</div>
+    <div style="display:grid;grid-template-columns:auto 1fr;gap:5px 12px;margin-bottom:14px;">
+      <span style="color:var(--text3);">Coordinates</span><span style="color:var(--text);font-family:'DM Mono',monospace;">${lat.toFixed(5)}, ${lng.toFixed(5)}</span>
+      <span style="color:var(--text3);">Accuracy</span><span style="color:var(--text);">±${acc} m <span style="color:var(--text3);">(${accNote})</span></span>
+      <span style="color:var(--text3);">Fix time</span><span style="color:var(--text);">${secs}s</span>
+      <span style="color:var(--text3);">Signed in as</span><span style="color:var(--text);">${idLine}</span>
+      <span style="color:var(--text3);">Clock-in radius</span><span style="color:var(--text);">${TC_RADIUS_M} m (~${Math.round(TC_RADIUS_M*3.28084)} ft)</span>
+    </div>
+    <a href="https://maps.google.com/?q=${lat},${lng}" target="_blank" rel="noopener" style="color:var(--accent,#1a73e8);font-size:12px;">Open this spot in Google Maps →</a>
+    <div style="margin-top:16px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);font-family:'DM Mono',monospace;">Today's jobs — distance from here</div>
+    <div style="margin-top:4px;">${jobRows}</div>`;
 }
 
 function jcHours(key,ds){
