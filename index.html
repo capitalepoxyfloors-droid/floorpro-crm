@@ -30,7 +30,7 @@
   .app{display:flex;height:100vh;overflow:hidden;}
   .sidebar{width:220px;background:#fff;border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;}
   .main{flex:1;overflow-y:auto;display:flex;flex-direction:column;}
-  .logo{padding:14px 18px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;}
+  .logo{padding:14px 18px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;box-sizing:border-box;min-height:67px;}
   #cef-logo-img{width:40px;height:40px;border-radius:9px;object-fit:cover;flex-shrink:0;display:block;}
   .logo-mark{font-size:17px;font-weight:600;letter-spacing:-0.3px;}
   .logo-mark span{color:var(--accent);}
@@ -48,7 +48,7 @@
   .avatar{width:30px;height:30px;border-radius:50%;background:var(--accent-dim);border:1px solid var(--accent2);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:var(--accent);flex-shrink:0;}
   .user-name{font-size:12.5px;font-weight:500;}
   .user-role{font-size:11px;color:var(--text3);}
-  .topbar{display:flex;align-items:center;justify-content:space-between;padding:16px 24px;border-bottom:1px solid var(--border);background:var(--bg);position:sticky;top:0;z-index:10;flex-wrap:wrap;gap:10px;}
+  .topbar{display:flex;align-items:center;justify-content:space-between;padding:16px 24px;border-bottom:1px solid var(--border);background:var(--bg);position:sticky;top:0;z-index:10;flex-wrap:wrap;gap:10px;box-sizing:border-box;min-height:67px;}
   .page-title{font-size:18px;font-weight:600;letter-spacing:-0.3px;}
   .topbar-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
   .btn{padding:7px 14px;border-radius:var(--radius-sm);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:500;cursor:pointer;border:none;transition:all .15s;display:inline-flex;align-items:center;gap:6px;}
