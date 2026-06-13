@@ -328,6 +328,7 @@
   .crew-mode #jc-invoice-section{display:none!important;}
   .crew-mode #jc-delete-btn{display:none!important;}
   .crew-mode #jc-reschedule-btn{display:none!important;}
+  .crew-mode #jc-geo-row{display:none!important;}
   /* PIN login */
   @keyframes pin-shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-9px)}40%{transform:translateX(9px)}60%{transform:translateX(-6px)}80%{transform:translateX(6px)}}
   .pin-dot{width:14px;height:14px;border-radius:50%;border:2px solid var(--border2);background:transparent;transition:all .15s;}
@@ -2778,7 +2779,7 @@ document.addEventListener('DOMContentLoaded',()=>{
       document.body.classList.add('crew-mode');
       const ml = document.getElementById('cv-manager-link');
       if(ml) ml.style.display = 'block';
-      loadAllFromSupabase().then(()=>{ showPage('crewview'); });
+      loadAllFromSupabase().then(()=>{ showPage('crewview'); tcInit(); });
     } else {
       localStorage.removeItem('fpRole');
       document.body.classList.remove('crew-mode');
@@ -2795,6 +2796,8 @@ document.addEventListener('DOMContentLoaded',()=>{
   ['click','keydown','touchstart','mousemove'].forEach(ev=>
     document.addEventListener(ev, _resetAutoLockTimer, {passive:true})
   );
+  // When a crew device is brought back to the foreground (e.g. arriving on site), re-check GPS for auto clock-in
+  document.addEventListener('visibilitychange',()=>{ if(!document.hidden) tcAutoClockIn(); });
 });
 
 function goStep3(){
@@ -3395,6 +3398,7 @@ function openJobCard(jobId){
   document.getElementById('jc-jobtype').value=job.jobType||'epoxy';
   document.getElementById('jc-value').value=job.value||'';
   document.getElementById('jc-map-btn').style.display=job.address?'':'none';
+  jcRenderGeoStatus();
   document.getElementById('jc-dates-row').textContent='📅 '+(job.startDate?jcFmtDate(job.startDate):'—')+' – '+(job.endDate?jcFmtDate(job.endDate):'—');
   jcRenderCrewPicker();
   jcPopulateMatDatalist(); // keep materials list in sync
@@ -4025,6 +4029,7 @@ function jcDayCrewHtml(ds,log){
           onblur="jcFmtCrewTime(this,'${ds}',${i},'endTime')"
           style="font-size:11px;padding:2px 5px;width:70px;flex:none;" />
         ${localStorage.getItem('fpRole')!=='crew'?`<span id="jccrh-${key}-${i}" style="font-size:11px;font-weight:700;color:${hasCustom?'var(--accent)':'var(--text3)'};">${hrsText}</span>`:''}
+        ${_tcRowBadge(c)}
       </div>
     </div>`;
   });
@@ -4084,6 +4089,7 @@ function jcLogSetCrew(ds,idx,field,val){
   _jcMigrateCrewPresent(job.dayLogs[ds]);
   const c=job.dayLogs[ds].crewPresent[idx]; if(!c) return;
   c[field]=val;
+  if((field==='startTime'||field==='endTime')&&c.clockIn) c.manualEdit=true; // hand override of a GPS time
 }
 
 // Format a crew member's time input (same smart-parse as fmtTimeInput but saves to crewPresent)
@@ -4353,6 +4359,238 @@ async function jcCalcMileage(){
     const b=document.getElementById('jc-mile-calc-btn');
     if(b){b.textContent='📍 Auto-Calculate';b.disabled=false;}
   }
+}
+
+// ══ GPS TIMECLOCK ═════════════════════════════════════════════════════════════
+// Auto clock-in crew when they open the app at a scheduled job site, and stamp
+// real start/end times instead of relying on hand-typed (often wrong) entries.
+const TC_RADIUS_M = 300;          // arrival radius in meters (~985 ft / 0.19 mi)
+let _tcBusy = false;
+let _tcLastTry = 0;
+let _tcActive = (()=>{ try{ return JSON.parse(localStorage.getItem('fpClockActive')||'null'); }catch(e){ return null; } })();
+
+function _tcDistM(lat1,lng1,lat2,lng2){
+  const R=6371000, toR=Math.PI/180;
+  const dLat=(lat2-lat1)*toR, dLng=(lng2-lng1)*toR;
+  const a=Math.sin(dLat/2)**2+Math.cos(lat1*toR)*Math.cos(lat2*toR)*Math.sin(dLng/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+function _tcGetPosition(opts){
+  return new Promise((resolve,reject)=>{
+    if(!navigator.geolocation){ reject(new Error('This device has no GPS')); return; }
+    navigator.geolocation.getCurrentPosition(resolve,reject,
+      Object.assign({enableHighAccuracy:true,timeout:12000,maximumAge:20000},opts||{}));
+  });
+}
+function _tcCrewIdentity(){
+  try{ const s=localStorage.getItem('fpCvCrew'); return (s!==null&&s!=='')?parseInt(s):-1; }catch(e){ return -1; }
+}
+function _tcTimeStr(date){
+  let h=date.getHours(), m=date.getMinutes();
+  const ap=h>=12?'PM':'AM'; h=h%12; if(h===0)h=12;
+  return h+':'+String(m).padStart(2,'0')+' '+ap;
+}
+// Cache a job's coordinates (geocode the saved address once via Photon, same API as mileage)
+async function _tcEnsureJobCoords(job){
+  if(!job) return null;
+  if(job.lat!=null && job.lng!=null && job.geoAddr===job.address) return {lat:job.lat,lng:job.lng};
+  if(!job.address) return (job.lat!=null&&job.lng!=null)?{lat:job.lat,lng:job.lng}:null;
+  try{
+    const r=await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(job.address)}&limit=1&lang=en`);
+    const j=await r.json();
+    const f=j?.features?.[0]; if(!f) return null;
+    const [lng,lat]=f.geometry.coordinates;
+    job.lat=lat; job.lng=lng; job.geoAddr=job.address;
+    await saveJobRecords();
+    return {lat,lng};
+  }catch(e){ return null; }
+}
+// Jobs whose date range covers today — assignment-agnostic ("they're there for a reason")
+function _tcJobsActiveToday(){
+  const today=new Date().toISOString().slice(0,10);
+  return (JOB_RECORDS||[]).filter(j=>{
+    if(!j.startDate) return false;
+    const end=j.endDate||j.startDate;
+    const inRange = today>=j.startDate && today<=end;
+    const inExtra = Array.isArray(j.extraDays) && j.extraDays.includes(today);
+    return inRange || inExtra;
+  });
+}
+// Nearest active job with known coords (caller checks the radius)
+async function _tcNearestJob(lat,lng){
+  let best=null;
+  for(const j of _tcJobsActiveToday()){
+    const c=await _tcEnsureJobCoords(j);
+    if(!c) continue;
+    const dist=_tcDistM(lat,lng,c.lat,c.lng);
+    if(!best||dist<best.dist) best={job:j,dist};
+  }
+  return best;
+}
+// Find-or-create this crew member's row in a day log
+function _tcCrewEntry(job,ds,crewIdx){
+  if(!job.dayLogs) job.dayLogs={};
+  if(!job.dayLogs[ds]) job.dayLogs[ds]={crewPresent:[],task:'',materialsUsed:[],startTime:'',endTime:'',notes:''};
+  const log=job.dayLogs[ds];
+  if(!Array.isArray(log.crewPresent)) log.crewPresent=[];
+  let c=log.crewPresent.find(x=>x.crewIdx===crewIdx);
+  if(!c){
+    const cd=CREW_DATA[crewIdx];
+    c={crewIdx,name:cd?cd.full:'',burdenedRate:cd?(calcBurdenForCrew(cd)||''):'',startTime:'',endTime:''};
+    log.crewPresent.push(c);
+  }
+  return c;
+}
+async function tcClockIn(jobId,pos,dist){
+  const job=(JOB_RECORDS||[]).find(j=>j.id===jobId); if(!job) return;
+  const crewIdx=_tcCrewIdentity(); if(crewIdx<0) return;
+  const ds=new Date().toISOString().slice(0,10);
+  const now=new Date();
+  const c=_tcCrewEntry(job,ds,crewIdx);
+  if(c.clockIn) return;                 // already on the clock today for this job
+  c.clockIn=now.toISOString();
+  c.startTime=_tcTimeStr(now);
+  c.manualEdit=false;
+  if(pos){ c.clockInLat=pos.coords.latitude; c.clockInLng=pos.coords.longitude; c.clockInAcc=Math.round(pos.coords.accuracy||0); }
+  if(dist!=null) c.clockInDist=Math.round(dist);
+  _tcActive={jobId,ds,crewIdx};
+  try{ localStorage.setItem('fpClockActive',JSON.stringify(_tcActive)); }catch(e){}
+  await saveJobRecords();
+  tcRenderChip();
+  if(_jcId===jobId && document.getElementById('jc-day-logs')) jcRenderDayLogs();
+}
+async function tcClockOut(){
+  const a=_tcActive; if(!a){ tcRenderChip(); return; }
+  const job=(JOB_RECORDS||[]).find(j=>j.id===a.jobId); if(!job){ _tcActive=null; localStorage.removeItem('fpClockActive'); tcRenderChip(); return; }
+  const now=new Date();
+  let pos=null; try{ pos=await _tcGetPosition(); }catch(e){}
+  const c=_tcCrewEntry(job,a.ds,a.crewIdx);
+  c.clockOut=now.toISOString();
+  c.endTime=_tcTimeStr(now);
+  if(pos){
+    c.clockOutLat=pos.coords.latitude; c.clockOutLng=pos.coords.longitude;
+    const cc=await _tcEnsureJobCoords(job);
+    if(cc) c.clockOutDist=Math.round(_tcDistM(pos.coords.latitude,pos.coords.longitude,cc.lat,cc.lng));
+  }
+  _tcActive=null;
+  try{ localStorage.removeItem('fpClockActive'); }catch(e){}
+  await saveJobRecords();
+  tcRenderChip();
+  if(_jcId===a.jobId && document.getElementById('jc-day-logs')) jcRenderDayLogs();
+  showSaveBadge('Clocked Out');
+}
+// Run on app-open / focus for crew devices: detect site by GPS and clock in
+async function tcAutoClockIn(){
+  if(localStorage.getItem('fpRole')!=='crew') return;
+  if(_tcCrewIdentity()<0){ tcRenderChip(); return; }
+  if(_tcActive){ tcRenderChip(); return; }
+  if(_tcBusy) return;
+  if(Date.now()-_tcLastTry < 25000){ tcRenderChip(); return; }   // throttle refocus checks
+  _tcBusy=true; _tcLastTry=Date.now();
+  try{
+    const pos=await _tcGetPosition();
+    const near=await _tcNearestJob(pos.coords.latitude,pos.coords.longitude);
+    if(near && near.dist<=TC_RADIUS_M){
+      await tcClockIn(near.job.id,pos,near.dist);
+      showSaveBadge('Clocked In');
+    }
+  }catch(e){ /* permission denied / no signal — stay silent, manual button remains */ }
+  finally{ _tcBusy=false; tcRenderChip(); }
+}
+// Called once after a crew device finishes loading
+function tcInit(){
+  if(localStorage.getItem('fpRole')!=='crew'){ const el=document.getElementById('tc-chip'); if(el) el.remove(); return; }
+  // Clear an "on the clock" flag left over from a previous day
+  if(_tcActive && _tcActive.ds !== new Date().toISOString().slice(0,10)){
+    _tcActive=null; try{ localStorage.removeItem('fpClockActive'); }catch(e){}
+  }
+  tcRenderChip();
+  tcAutoClockIn();
+}
+async function tcManualClockIn(){
+  if(_tcCrewIdentity()<0){ showToast('Open Crew View and tap your name first so the app knows who you are.'); return; }
+  if(_tcBusy) return; _tcBusy=true;
+  try{
+    const pos=await _tcGetPosition();
+    const near=await _tcNearestJob(pos.coords.latitude,pos.coords.longitude);
+    if(!near){ showToast('No scheduled job for today has a saved location yet. Ask the office to set the job address.'); return; }
+    if(near.dist>TC_RADIUS_M){
+      if(!confirm(`Nearest job "${near.job.customer}" is ${(near.dist/1609.344).toFixed(1)} mi away.\n\nClock in anyway?`)) return;
+    }
+    await tcClockIn(near.job.id,pos,near.dist);
+    showSaveBadge('Clocked In');
+  }catch(e){ showToast('Could not read GPS — allow location access and try again.'); }
+  finally{ _tcBusy=false; }
+}
+// Floating "on the clock" status chip (crew devices only)
+function tcRenderChip(){
+  const isCrew=localStorage.getItem('fpRole')==='crew';
+  let el=document.getElementById('tc-chip');
+  if(!isCrew){ if(el) el.remove(); return; }
+  if(!el){
+    el=document.createElement('div'); el.id='tc-chip';
+    el.style.cssText='position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:9998;display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:30px;font-family:"DM Sans",sans-serif;font-size:14px;font-weight:600;box-shadow:0 8px 30px rgba(0,0,0,.45);max-width:92vw;';
+    document.body.appendChild(el);
+  }
+  if(_tcCrewIdentity()<0){
+    el.style.background='var(--surface,#141414)'; el.style.color='var(--text2,#aaa)'; el.style.border='1px solid var(--border2,#333)';
+    el.innerHTML='⏱️ Tap your name in Crew View to enable clock-in';
+    return;
+  }
+  if(_tcActive){
+    const job=(JOB_RECORDS||[]).find(j=>j.id===_tcActive.jobId);
+    const c=job?.dayLogs?.[_tcActive.ds]?.crewPresent?.find(x=>x.crewIdx===_tcActive.crewIdx);
+    const since=c?.startTime||'';
+    el.style.background='var(--green,#1f9d55)'; el.style.color='#fff'; el.style.border='none';
+    el.innerHTML=`🟢 On the clock · ${((job?.customer)||'Job')}${since?' · since '+since:''}`+
+      `<button onclick="tcClockOut()" style="margin-left:6px;background:rgba(255,255,255,.25);border:none;color:#fff;font-weight:700;padding:6px 12px;border-radius:18px;cursor:pointer;font-size:13px;">Clock Out</button>`;
+  } else {
+    el.style.background='var(--surface,#141414)'; el.style.color='var(--text2,#bbb)'; el.style.border='1px solid var(--border2,#333)';
+    el.innerHTML='⏱️ Not clocked in'+
+      `<button onclick="tcManualClockIn()" style="margin-left:6px;background:var(--accent,#1a73e8);border:none;color:#fff;font-weight:700;padding:6px 12px;border-radius:18px;cursor:pointer;font-size:13px;">Clock In</button>`;
+  }
+}
+// Small badge shown in the day-log crew row indicating a GPS-stamped time + distance flag
+function _tcRowBadge(c){
+  if(!c||!c.clockIn) return '';
+  const isCrew=localStorage.getItem('fpRole')==='crew';
+  const mark = c.manualEdit
+    ? '<span title="Time edited by hand" style="font-size:11px;color:var(--text3);">✎</span>'
+    : '<span title="GPS clock-in" style="font-size:12px;">🛰️</span>';
+  let flag='';
+  if(!isCrew && c.clockInDist!=null){
+    flag = c.clockInDist<=TC_RADIUS_M
+      ? '<span style="font-size:10px;font-weight:700;color:var(--green,#1f9d55);">✓ on-site</span>'
+      : '<span style="font-size:10px;font-weight:700;color:#e0a106;">⚠ '+(c.clockInDist/1609.344).toFixed(1)+' mi off</span>';
+  }
+  return `<span style="display:inline-flex;align-items:center;gap:5px;margin-left:2px;">${mark}${flag}</span>`;
+}
+// Owner: show whether this job has a GPS location set (for auto clock-in)
+function jcRenderGeoStatus(){
+  const el=document.getElementById('jc-geo-status'); if(!el) return;
+  const job=getJobRecord(_jcId);
+  if(job&&job.lat!=null&&job.lng!=null){
+    el.innerHTML='📍 Location set ✓';
+    el.style.color='var(--green,#1f9d55)';
+  } else if(job&&job.address){
+    el.innerHTML='📍 Will locate from address on save';
+    el.style.color='var(--text3)';
+  } else {
+    el.innerHTML='⚠ No location — crew auto clock-in won’t work';
+    el.style.color='#e0a106';
+  }
+}
+// Owner: pin this job's site to the device's current GPS reading (for jobs without a clean address)
+async function jcPinLocation(){
+  const job=getJobRecord(_jcId); if(!job){ showToast('Open a job first.'); return; }
+  showToast('Reading GPS…');
+  try{
+    const pos=await _tcGetPosition({maximumAge:0});
+    job.lat=pos.coords.latitude; job.lng=pos.coords.longitude; job.geoAddr=job.address||'(pinned)';
+    await saveJobRecords();
+    jcRenderGeoStatus();
+    showToast('📍 Job location pinned to your current spot ✓');
+  }catch(e){ showToast('Could not read GPS — allow location access and try again.'); }
 }
 
 function jcHours(key,ds){
@@ -4872,6 +5110,7 @@ async function saveJobCard(){
     if(dbId) dbSaveJob({customer:job.customer,jobLabel,value:card.dataset.value,displayVal:cleanDisplay,detail,status,notes,db_id:dbId});
   });
   await jcSyncCrewSlots(job);   // heal any missing slots after date/crew changes
+  if(job.address && (job.lat==null || job.geoAddr!==job.address)) _tcEnsureJobCoords(job); // refresh GPS coords for clock-in (non-blocking)
   showSaveBadge('Saved');
   closeModal('jobcard');
   renderSchedule();
@@ -10465,6 +10704,11 @@ async function deleteMaintEntry(id){
             <div id="jc-addr-drop" class="addr-drop" style="display:none;"></div>
           </div>
           <button class="btn btn-ghost" id="jc-map-btn" onclick="jcOpenMaps()" style="white-space:nowrap;display:none;flex-shrink:0;">📍 Maps</button>
+        </div>
+        <div id="jc-geo-row" style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap;">
+          <span id="jc-geo-status" style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;"></span>
+          <button class="btn btn-ghost" onclick="jcPinLocation()" style="font-size:11px;padding:3px 9px;">📍 Pin to my GPS</button>
+          <span style="font-size:10.5px;color:var(--text3);">Used for crew auto clock-in</span>
         </div>
       </div>
       <div class="form-group">
