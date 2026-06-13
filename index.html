@@ -837,6 +837,13 @@
             </div>
           </div>
         </div>
+        <div class="jobs-block" style="padding:0;margin-bottom:16px;">
+          <div style="padding:14px 18px;border-bottom:1px solid var(--border);">
+            <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);">Personal Crew Sign-In PINs</div>
+            <div style="font-size:11.5px;color:var(--text2);margin-top:5px;line-height:1.4;">Give each crew member their own 4-digit PIN. When they sign in with it, the app identifies them automatically and uses that name for GPS clock-in — no need to tap a name. Leave blank to disable.</div>
+          </div>
+          <div id="pin-crew-list" style="padding:6px 18px 14px;"></div>
+        </div>
         <div class="jobs-block" style="padding:0;">
           <div style="padding:14px 18px;border-bottom:1px solid var(--border);">
             <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);">Session</div>
@@ -4383,7 +4390,12 @@ function _tcGetPosition(opts){
   });
 }
 function _tcCrewIdentity(){
-  try{ const s=localStorage.getItem('fpCvCrew'); return (s!==null&&s!=='')?parseInt(s):-1; }catch(e){ return -1; }
+  try{
+    const p=localStorage.getItem('fpClockCrew');           // fixed by personal-PIN sign-in
+    if(p!==null&&p!=='') return parseInt(p);
+    const s=localStorage.getItem('fpCvCrew');              // legacy: whatever name they picked
+    return (s!==null&&s!=='')?parseInt(s):-1;
+  }catch(e){ return -1; }
 }
 function _tcTimeStr(date){
   let h=date.getHours(), m=date.getMinutes();
@@ -4545,8 +4557,9 @@ function tcRenderChip(){
     el.innerHTML=`🟢 On the clock · ${((job?.customer)||'Job')}${since?' · since '+since:''}`+
       `<button onclick="tcClockOut()" style="margin-left:6px;background:rgba(255,255,255,.25);border:none;color:#fff;font-weight:700;padding:6px 12px;border-radius:18px;cursor:pointer;font-size:13px;">Clock Out</button>`;
   } else {
+    const meName=((CREW||[])[_tcCrewIdentity()]||{}).name||'';
     el.style.background='var(--surface,#141414)'; el.style.color='var(--text2,#bbb)'; el.style.border='1px solid var(--border2,#333)';
-    el.innerHTML='⏱️ Not clocked in'+
+    el.innerHTML=(meName?'👤 '+meName+' · ':'')+'⏱️ Not clocked in'+
       `<button onclick="tcManualClockIn()" style="margin-left:6px;background:var(--accent,#1a73e8);border:none;color:#fff;font-weight:700;padding:6px 12px;border-radius:18px;cursor:pointer;font-size:13px;">Clock In</button>`;
   }
 }
@@ -5268,11 +5281,13 @@ function cvLockDevice(){
   const ml=document.getElementById('cv-manager-link');
   if(ml) ml.style.display='block';
   showPage('crewview');
+  tcInit();
 }
 
 function cvUnlock(){
   localStorage.removeItem(_pinAuthKey());
   localStorage.removeItem('fpRole');
+  localStorage.removeItem('fpClockCrew');
   showLoginScreen();
 }
 
@@ -5569,7 +5584,7 @@ function renderCrewView(){
   rangeLabel+=' – '+(startSun.getMonth()!==endSat.getMonth()?MO[endSat.getMonth()]+' ':'')+endSat.getDate()+', '+endSat.getFullYear();
   elLabel.textContent=rangeLabel;
 
-  // Crew chips
+  // Crew chips (view filter — independent of who you're clocked in as)
   const allSel=cvCrewIdx===-1;
   let chips=`<button class="cv-crew-chip" onclick="cvSelectCrew(-1)" style="color:var(--text2);background:${allSel?'var(--surface3)':'var(--surface2)'};border-color:${allSel?'var(--border2)':'transparent'};">All</button>`;
   chips+=CREW.map((c,i)=>{
@@ -6121,6 +6136,7 @@ function renderMaterialCalc(){
 
 // ── PIN AUTH ─────────────────────────────────────────────────────────────────
 let ADMIN_PIN='0061', CREW_PIN='1234', _pinBuf='';
+let CREW_PINS={};   // { crewIdx: "pin" } — personal per-crew sign-in PINs (KV 'crew_pins')
 let _sessionAuthed = false;
 let _autoLockTimer  = null;
 const AUTO_LOCK_MS  = 24 * 60 * 60 * 1000; // 24 hours since last activity
@@ -6159,6 +6175,7 @@ function _resetAutoLockTimer(){
     _sessionAuthed = false;
     localStorage.removeItem(_pinAuthKey());
     localStorage.removeItem('fpRole');
+    localStorage.removeItem('fpClockCrew');
     document.body.classList.remove('crew-mode');
     showLoginScreen();
     showToast('🔒 App locked due to inactivity.');
@@ -6175,6 +6192,8 @@ async function showLoginScreen(){
     if(ap) ADMIN_PIN=String(ap).trim();
     const cp=await sb.getKV('crew_pin');
     if(cp) CREW_PIN=String(cp).trim();
+    const cpins=await sb.getKV('crew_pins');
+    if(cpins){ try{ CREW_PINS=JSON.parse(cpins)||{}; }catch(e){} }
   }catch(e){}
 }
 
@@ -6197,22 +6216,36 @@ function pinKey(d){
 
 function pinDel(){ if(_pinBuf.length){_pinBuf=_pinBuf.slice(0,-1);_pinRender();} }
 
+function _crewPinMatch(pin){
+  for(const k in CREW_PINS){ if(String(CREW_PINS[k])===String(pin)) return parseInt(k); }
+  return -1;
+}
 function pinSubmit(){
   if(!_pinBuf) return;
-  if(_pinBuf===ADMIN_PIN){ _pinSuccess('admin'); }
-  else if(_pinBuf===CREW_PIN){ _pinSuccess('crew'); }
-  else { _pinFail(); }
+  if(_pinBuf===ADMIN_PIN){ _pinSuccess('admin'); return; }
+  const ci=_crewPinMatch(_pinBuf);
+  if(ci!==-1){ _pinSuccess('crew', ci); return; }   // personal PIN → crew identity auto-set
+  if(_pinBuf===CREW_PIN){ _pinSuccess('crew'); return; }   // legacy shared crew code (no identity)
+  _pinFail();
 }
 
-function _pinSuccess(role){
+function _pinSuccess(role, crewIdx){
   _saveSession(role);
   _hideLoginScreen();
   if(role==='crew'){
     localStorage.setItem('fpRole','crew');
+    if(crewIdx!=null && crewIdx>=0){
+      // Signed in with a personal PIN — fix the clock identity to this crew member.
+      // fpClockCrew is the immutable "who am I clocked as"; fpCvCrew is just the default calendar filter.
+      try{ localStorage.setItem('fpClockCrew', crewIdx); localStorage.setItem('fpCvCrew', crewIdx); }catch(e){}
+      cvCrewIdx=crewIdx;
+    } else {
+      try{ localStorage.removeItem('fpClockCrew'); }catch(e){}   // legacy shared code — no fixed identity
+    }
     document.body.classList.add('crew-mode');
     const ml=document.getElementById('cv-manager-link');
     if(ml) ml.style.display='block';
-    loadAllFromSupabase().then(()=>{ showPage('crewview'); });
+    loadAllFromSupabase().then(()=>{ showPage('crewview'); tcInit(); });
   } else {
     localStorage.removeItem('fpRole');
     document.body.classList.remove('crew-mode');
@@ -6239,6 +6272,7 @@ function pinLogout(){
   clearTimeout(_autoLockTimer);
   localStorage.removeItem(_pinAuthKey());
   localStorage.removeItem('fpRole');
+  localStorage.removeItem('fpClockCrew');
   document.body.classList.remove('crew-mode');
   showLoginScreen();
 }
@@ -6260,6 +6294,42 @@ async function pinSaveSettings(){
   if(na){ ADMIN_PIN=na; await sb.setKV('admin_pin',na); document.getElementById('pin-new-admin').value=''; }
   if(nc){ CREW_PIN=nc; await sb.setKV('crew_pin',nc); document.getElementById('pin-new-crew').value=''; }
   showToast('✅ Codes updated.');
+}
+
+// Owner: list each crew member with their personal sign-in PIN
+async function renderCrewPins(){
+  const host=document.getElementById('pin-crew-list'); if(!host) return;
+  try{ const cp=await sb.getKV('crew_pins'); if(cp) CREW_PINS=JSON.parse(cp)||{}; }catch(e){}
+  const list=(CREW_DATA||[]);
+  if(!list.length){ host.innerHTML='<div style="color:var(--text3);font-size:13px;padding:8px 0;">No crew members yet — add them under Installers.</div>'; return; }
+  host.innerHTML=list.map((cd,i)=>{
+    const pin=CREW_PINS[i]!=null?String(CREW_PINS[i]):'';
+    const col=cd.color||'var(--accent)';
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);">
+      <span style="width:9px;height:9px;border-radius:50%;background:${col};flex-shrink:0;"></span>
+      <span style="flex:1;font-size:13px;color:var(--text);">${(cd.full||('Crew '+(i+1))).replace(/</g,'&lt;')}</span>
+      <input class="form-input" id="cpin-${i}" type="text" inputmode="numeric" maxlength="6" value="${pin}" placeholder="— set —" style="width:104px;font-size:16px;letter-spacing:3px;text-align:center;font-family:'DM Mono',monospace;"/>
+      <button class="btn btn-ghost" onclick="saveCrewPin(${i})" style="font-size:12px;padding:6px 12px;">Save</button>
+    </div>`;
+  }).join('');
+}
+async function saveCrewPin(i){
+  const el=document.getElementById('cpin-'+i); if(!el) return;
+  const v=el.value.trim();
+  const who=(CREW_DATA[i]&&CREW_DATA[i].full)||('crew '+(i+1));
+  if(v===''){
+    delete CREW_PINS[i];
+    await sb.setKV('crew_pins',JSON.stringify(CREW_PINS));
+    showToast('PIN cleared for '+who);
+    return;
+  }
+  if(v.length<4||!/^\d+$/.test(v)){ showToast('PIN must be at least 4 digits, numbers only.'); return; }
+  if(v===ADMIN_PIN){ showToast('That matches the manager code — pick a different PIN.'); return; }
+  if(v===CREW_PIN){ showToast('That matches the shared crew code — pick a different PIN.'); return; }
+  for(const k in CREW_PINS){ if(parseInt(k)!==i && String(CREW_PINS[k])===v){ showToast('That PIN is already used by '+((CREW_DATA[k]&&CREW_DATA[k].full)||('crew '+(parseInt(k)+1)))+'.'); return; } }
+  CREW_PINS[i]=v;
+  await sb.setKV('crew_pins',JSON.stringify(CREW_PINS));
+  showToast('✅ PIN saved for '+who);
 }
 
 function showPage(id){
@@ -6284,6 +6354,7 @@ function showPage(id){
   if(id==='materialcalc') renderMaterialCalc();
   if(id==='matreqs') renderMatRequestsPage();
   if(id==='ptoreqs') renderPtoRequestsPage();
+  if(id==='pinsettings') renderCrewPins();
   try{localStorage.setItem('fpLastPage',id);}catch(e){}
 }
 
