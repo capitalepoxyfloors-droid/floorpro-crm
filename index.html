@@ -828,12 +828,9 @@
               <label class="form-label">Manager Code <span style="color:var(--text3);font-weight:400;">(full access — keep private)</span></label>
               <input class="form-input" id="pin-new-admin" type="password" inputmode="numeric" maxlength="6" placeholder="New manager code" style="width:200px;font-size:18px;letter-spacing:4px;font-family:'DM Mono',monospace;"/>
             </div>
-            <div class="form-group" style="margin:0;">
-              <label class="form-label">Crew Code <span style="color:var(--text3);font-weight:400;">(crew view only — schedule, no financial data)</span></label>
-              <input class="form-input" id="pin-new-crew" type="password" inputmode="numeric" maxlength="6" placeholder="New crew code" style="width:200px;font-size:18px;letter-spacing:4px;font-family:'DM Mono',monospace;"/>
-            </div>
+            <div style="font-size:11.5px;color:var(--text2);line-height:1.4;">Crew sign in with their own personal PINs (set below) — there is no shared crew code.</div>
             <div>
-              <button class="btn btn-primary" onclick="pinSaveSettings()">Save Codes</button>
+              <button class="btn btn-primary" onclick="pinSaveSettings()">Save Manager Code</button>
             </div>
           </div>
         </div>
@@ -6135,8 +6132,8 @@ function renderMaterialCalc(){
 }
 
 // ── PIN AUTH ─────────────────────────────────────────────────────────────────
-let ADMIN_PIN='0061', CREW_PIN='1234', _pinBuf='';
-let CREW_PINS={};   // { crewIdx: "pin" } — personal per-crew sign-in PINs (KV 'crew_pins')
+let ADMIN_PIN='0061', _pinBuf='';
+let CREW_PINS={};   // { crewIdx: "pin" } — personal per-crew sign-in PINs (KV 'crew_pins'). Shared crew code retired.
 let _sessionAuthed = false;
 let _autoLockTimer  = null;
 const AUTO_LOCK_MS  = 24 * 60 * 60 * 1000; // 24 hours since last activity
@@ -6190,8 +6187,6 @@ async function showLoginScreen(){
   try{
     const ap=await sb.getKV('admin_pin');
     if(ap) ADMIN_PIN=String(ap).trim();
-    const cp=await sb.getKV('crew_pin');
-    if(cp) CREW_PIN=String(cp).trim();
     const cpins=await sb.getKV('crew_pins');
     if(cpins){ try{ CREW_PINS=JSON.parse(cpins)||{}; }catch(e){} }
   }catch(e){}
@@ -6225,8 +6220,7 @@ function pinSubmit(){
   if(_pinBuf===ADMIN_PIN){ _pinSuccess('admin'); return; }
   const ci=_crewPinMatch(_pinBuf);
   if(ci!==-1){ _pinSuccess('crew', ci); return; }   // personal PIN → crew identity auto-set
-  if(_pinBuf===CREW_PIN){ _pinSuccess('crew'); return; }   // legacy shared crew code (no identity)
-  _pinFail();
+  _pinFail();                                        // shared crew code retired — personal PIN required
 }
 
 function _pinSuccess(role, crewIdx){
@@ -6279,21 +6273,12 @@ function pinLogout(){
 
 async function pinSaveSettings(){
   const na=document.getElementById('pin-new-admin').value.trim();
-  const nc=document.getElementById('pin-new-crew').value.trim();
-  if(!na&&!nc){ showToast('Enter at least one code to update.'); return; }
-  if(na){
-    if(na.length<4){ showToast('Manager code must be at least 4 digits.'); return; }
-    if(!/^\d+$/.test(na)){ showToast('Manager code must be numbers only.'); return; }
-    if(na===CREW_PIN){ showToast('Manager and crew codes must be different.'); return; }
-  }
-  if(nc){
-    if(nc.length<4){ showToast('Crew code must be at least 4 digits.'); return; }
-    if(!/^\d+$/.test(nc)){ showToast('Crew code must be numbers only.'); return; }
-    if(nc===(na||ADMIN_PIN)){ showToast('Manager and crew codes must be different.'); return; }
-  }
-  if(na){ ADMIN_PIN=na; await sb.setKV('admin_pin',na); document.getElementById('pin-new-admin').value=''; }
-  if(nc){ CREW_PIN=nc; await sb.setKV('crew_pin',nc); document.getElementById('pin-new-crew').value=''; }
-  showToast('✅ Codes updated.');
+  if(!na){ showToast('Enter a new manager code.'); return; }
+  if(na.length<4){ showToast('Manager code must be at least 4 digits.'); return; }
+  if(!/^\d+$/.test(na)){ showToast('Manager code must be numbers only.'); return; }
+  for(const k in CREW_PINS){ if(String(CREW_PINS[k])===na){ showToast('That matches a crew PIN — pick a different manager code.'); return; } }
+  ADMIN_PIN=na; await sb.setKV('admin_pin',na); document.getElementById('pin-new-admin').value='';
+  showToast('✅ Manager code updated.');
 }
 
 // Owner: list each crew member with their personal sign-in PIN
@@ -6325,7 +6310,6 @@ async function saveCrewPin(i){
   }
   if(v.length<4||!/^\d+$/.test(v)){ showToast('PIN must be at least 4 digits, numbers only.'); return; }
   if(v===ADMIN_PIN){ showToast('That matches the manager code — pick a different PIN.'); return; }
-  if(v===CREW_PIN){ showToast('That matches the shared crew code — pick a different PIN.'); return; }
   for(const k in CREW_PINS){ if(parseInt(k)!==i && String(CREW_PINS[k])===v){ showToast('That PIN is already used by '+((CREW_DATA[k]&&CREW_DATA[k].full)||('crew '+(parseInt(k)+1)))+'.'); return; } }
   CREW_PINS[i]=v;
   await sb.setKV('crew_pins',JSON.stringify(CREW_PINS));
