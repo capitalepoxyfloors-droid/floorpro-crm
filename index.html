@@ -2155,7 +2155,7 @@ async function loadPTO(){
       const d=new Date(dateEnc+'T00:00:00');
       if(!isNaN(d)){
         wOff=Math.floor((d-BASE)/(7*24*60*60*1000));
-        dIdx=d.getDay()-1;
+        const _dow=d.getDay(); dIdx=_dow===0?6:_dow-1; // Sun→6, Mon→0…Sat→5
       }
     }
     if(!ptoSlots[r.crew_idx])ptoSlots[r.crew_idx]={};
@@ -2191,7 +2191,7 @@ async function loadScheduledSlots(){
       const d=new Date(dateEnc+'T00:00:00');
       if(!isNaN(d)){
         wOff=Math.floor((d-BASE)/(7*24*60*60*1000));
-        dIdx=d.getDay()-1; // 0=Mon … 4=Fri
+        const _dow=d.getDay(); dIdx=_dow===0?6:_dow-1; // Sun→6, Mon→0…Sat→5
       }
     }
     if(!newSlots[r.crew_idx])newSlots[r.crew_idx]={};
@@ -4871,6 +4871,7 @@ async function saveJobCard(){
     const notes=[card.dataset.address||'',card.dataset.notes||''].filter(Boolean).join('\n');
     if(dbId) dbSaveJob({customer:job.customer,jobLabel,value:card.dataset.value,displayVal:cleanDisplay,detail,status,notes,db_id:dbId});
   });
+  await jcSyncCrewSlots(job);   // heal any missing slots after date/crew changes
   showSaveBadge('Saved');
   closeModal('jobcard');
   renderSchedule();
