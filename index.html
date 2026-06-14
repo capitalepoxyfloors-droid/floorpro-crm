@@ -4042,8 +4042,8 @@ function jcDayCrewHtml(ds,log){
           onblur="jcFmtCrewTime(this,'${ds}',${i},'endTime')"
           style="font-size:11px;padding:2px 5px;width:70px;flex:none;" />
         ${localStorage.getItem('fpRole')!=='crew'?`<span id="jccrh-${key}-${i}" style="font-size:11px;font-weight:700;color:${hasCustom?'var(--accent)':'var(--text3)'};">${hrsText}</span>`:''}
-        ${_tcRowBadge(c)}
       </div>
+      ${_tcRowStatus(c)}
     </div>`;
   });
   return `<div id="jc-crew-${key}">`+
@@ -4569,20 +4569,29 @@ function tcRenderChip(){
       `<button onclick="tcManualClockIn()" style="margin-left:6px;background:var(--accent,#1a73e8);border:none;color:#fff;font-weight:700;padding:6px 12px;border-radius:18px;cursor:pointer;font-size:13px;">Clock In</button>`;
   }
 }
-// Small badge shown in the day-log crew row indicating a GPS-stamped time + distance flag
-function _tcRowBadge(c){
-  if(!c||!c.clockIn) return '';
+// Explicit time-source line on every day-log crew row, so the owner can always tell
+// whether the time came from a GPS clock-in (and was on-site) or was entered by hand.
+function _tcRowStatus(c){
   const isCrew=localStorage.getItem('fpRole')==='crew';
-  const mark = c.manualEdit
-    ? '<span title="Time edited by hand" style="font-size:11px;color:var(--text3);">✎</span>'
-    : '<span title="GPS clock-in" style="font-size:12px;">🛰️</span>';
-  let flag='';
-  if(!isCrew && c.clockInDist!=null){
-    flag = c.clockInDist<=TC_RADIUS_M
-      ? '<span style="font-size:10px;font-weight:700;color:var(--green,#1f9d55);">✓ on-site</span>'
-      : '<span style="font-size:10px;font-weight:700;color:#e0a106;">⚠ '+(c.clockInDist/1609.344).toFixed(1)+' mi off</span>';
+  const fmtT=iso=>{ try{ const d=new Date(iso); let h=d.getHours(),m=d.getMinutes(); const ap=h>=12?'PM':'AM'; h=h%12||12; return h+':'+String(m).padStart(2,'0')+' '+ap; }catch(e){ return '?'; } };
+  const base='padding:3px 8px 6px;font-size:10.5px;background:var(--surface2);border-top:1px dashed var(--border2);';
+  if(!c||!c.clockIn){
+    return `<div style="${base}color:var(--text3);">✋ No GPS clock-in — time entered by hand</div>`;
   }
-  return `<span style="display:inline-flex;align-items:center;gap:5px;margin-left:2px;">${mark}${flag}</span>`;
+  const inT=fmtT(c.clockIn);
+  const outPart = c.clockOut ? (' · out '+fmtT(c.clockOut)) : ' · <span style="color:#e0a106;">not clocked out</span>';
+  let extra='';
+  if(!isCrew){
+    if(c.clockInDist!=null){
+      const onSite=c.clockInDist<=TC_RADIUS_M;
+      const dStr = c.clockInDist<1609 ? Math.round(c.clockInDist*3.28084)+' ft' : (c.clockInDist/1609.344).toFixed(1)+' mi';
+      extra += onSite ? ' · <span style="color:var(--green,#1f9d55);font-weight:700;">✓ on-site</span>'
+                      : ' · <span style="color:#e0a106;font-weight:700;">⚠ '+dStr+' from job</span>';
+    }
+    if(c.clockInAcc!=null) extra += ' <span style="color:var(--text3);">(±'+c.clockInAcc+' m)</span>';
+  }
+  const edited = c.manualEdit ? ' · <span style="color:var(--text3);">edited by hand</span>' : '';
+  return `<div style="${base}color:var(--text2);">🛰️ GPS clock-in ${inT}${outPart}${extra}${edited}</div>`;
 }
 // Owner: show whether this job has a GPS location set (for auto clock-in)
 function jcRenderGeoStatus(){
