@@ -4176,15 +4176,25 @@ function _jcMigrateMats(log){
   log.materialsUsed.forEach(m=>{ if(m.unit!==undefined&&m.usageUnit===undefined){ m.usageUnit=m.unit; delete m.unit; } });
 }
 
+// Resolve a logged material entry to its CURRENT price-list index. matIdx is a positional
+// index that drifts whenever the price list is reordered or added to (which silently mis-priced
+// jobs), so the saved material name is authoritative. Falls back to matIdx only when no name.
+function jcResolveMatIdx(m){
+  if(!m||m.matIdx===-1) return -1;                         // custom / no price-list material
+  if(m.name){ const i=MATERIALS.findIndex(x=>x.name===m.name); if(i!==-1) return i; }
+  return (m.matIdx>=0 && m.matIdx<MATERIALS.length) ? m.matIdx : -1;
+}
+
 function jcDayMatsHtml(ds,log){
   const mats=log.materialsUsed||[];
   let rows='';
   mats.forEach((m,i)=>{
-    const selVal=m.matIdx>=0?m.matIdx:'custom';
+    const ri=jcResolveMatIdx(m);
+    const selVal=ri>=0?ri:'custom';
     rows+=`<div class="jc-mat-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
       <select class="form-input" style="flex:1;font-size:12px;padding:4px 6px;" onchange="jcLogPickMaterial('${ds}',${i},this)">
         <option value="custom"${m.matIdx===-1?' selected':''}>— Custom —</option>
-        ${MATERIALS.map((mat,mi)=>({mat,mi})).sort((a,b)=>a.mat.name.localeCompare(b.mat.name)).map(({mat,mi})=>`<option value="${mi}"${m.matIdx===mi?' selected':''}>${mat.name}</option>`).join('')}
+        ${MATERIALS.map((mat,mi)=>({mat,mi})).sort((a,b)=>a.mat.name.localeCompare(b.mat.name)).map(({mat,mi})=>`<option value="${mi}"${ri===mi?' selected':''}>${mat.name}</option>`).join('')}
       </select>
       ${m.matIdx===-1?`<input class="form-input" placeholder="Material name" value="${(m.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetMaterial('${ds}',${i},'name',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'name',this.value)" style="flex:1;font-size:12px;padding:4px 6px;"/>`:``}
       <input class="form-input" type="number" min="0" step="any" placeholder="Qty" value="${m.qty||''}" oninput="jcLogSetMaterial('${ds}',${i},'qty',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'qty',this.value)" style="width:65px;flex:none;font-size:12px;padding:4px 6px;" title="Amount actually used"/>
@@ -4786,8 +4796,9 @@ function renderJobCostingPage(){
       }
       // Materials
       (Array.isArray(log.materialsUsed)?log.materialsUsed:[]).forEach(m=>{
-        if(!m.qty||m.matIdx<0||!MATERIALS[m.matIdx]) return;
-        const mat=MATERIALS[m.matIdx];
+        const ri=jcResolveMatIdx(m);
+        if(!m.qty||ri<0||!MATERIALS[ri]) return;
+        const mat=MATERIALS[ri];
         const pkgQty=parseFloat((mat.unit||'').match(/^(\d+\.?\d*)/)?.[1])||1;
         const unitCost=(parseFloat(mat.price)||0)/pkgQty;
         matCost+=(parseFloat(m.qty)||0)*unitCost;
@@ -4911,9 +4922,10 @@ function renderJobCosting(){
     mats.forEach(m=>{
       if(!m.name||!m.qty) return;
       const qty=parseFloat(m.qty)||0;
+      const ri=jcResolveMatIdx(m);
       let unitCost=0, pkgNote='';
-      if(m.matIdx>=0&&MATERIALS[m.matIdx]){
-        const mat=MATERIALS[m.matIdx];
+      if(ri>=0&&MATERIALS[ri]){
+        const mat=MATERIALS[ri];
         const pkgQty=parseFloat((mat.unit||'').match(/^(\d+\.?\d*)/)?.[1])||1;
         unitCost=Math.round((parseFloat(mat.price)||0)/pkgQty*100)/100;
         pkgNote=mat.unit?'$'+(parseFloat(mat.price)||0).toFixed(2)+'/'+mat.unit:'';
