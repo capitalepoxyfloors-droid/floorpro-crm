@@ -2387,6 +2387,7 @@ async function loadAllFromSupabase(){
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
+    jcBackfillMaterialIds();            // anchor logged materials to permanent IDs (one-time, idempotent)
     await fixSlotDrift();               // correct any week-offset drift before rendering
     await deduplicateSlotsByJobRecord(); // remove stale/duplicate slots outside job date ranges
     // Backfill schedule slots for any jobs that have extra days added via the day log
@@ -4176,13 +4177,36 @@ function _jcMigrateMats(log){
   log.materialsUsed.forEach(m=>{ if(m.unit!==undefined&&m.usageUnit===undefined){ m.usageUnit=m.unit; delete m.unit; } });
 }
 
-// Resolve a logged material entry to its CURRENT price-list index. matIdx is a positional
-// index that drifts whenever the price list is reordered or added to (which silently mis-priced
-// jobs), so the saved material name is authoritative. Falls back to matIdx only when no name.
+// Resolve a logged material entry to its CURRENT price-list index. References are tried most-
+// stable first so pricing survives any price-list change:
+//   1) matId  = the material's permanent Supabase id — survives renames, reorders, deletes-of-others
+//   2) name   = stable across reorders/additions (but not renames)
+//   3) matIdx = raw position — last resort, drifts when the list changes
 function jcResolveMatIdx(m){
-  if(!m||m.matIdx===-1) return -1;                         // custom / no price-list material
+  if(!m||m.matIdx===-1) return -1;                                                                  // custom / no price-list material
+  if(m.matId!=null){ const i=MATERIALS.findIndex(x=>x.db_id===m.matId); if(i!==-1) return i; }
   if(m.name){ const i=MATERIALS.findIndex(x=>x.name===m.name); if(i!==-1) return i; }
   return (m.matIdx>=0 && m.matIdx<MATERIALS.length) ? m.matIdx : -1;
+}
+
+// One-time migration: stamp every already-logged material with the material's permanent id so
+// future renames/deletes can't knock its price loose. Safe + idempotent — only fills a missing
+// matId from an exact current name match, and skips entirely if the price list didn't load.
+function jcBackfillMaterialIds(){
+  if(!Array.isArray(JOB_RECORDS)||!Array.isArray(MATERIALS)||!MATERIALS.length) return;
+  let changed=false;
+  JOB_RECORDS.forEach(job=>{
+    if(!job||!job.dayLogs) return;
+    Object.values(job.dayLogs).forEach(log=>{
+      if(!log||!Array.isArray(log.materialsUsed)) return;
+      log.materialsUsed.forEach(m=>{
+        if(!m||m.matIdx===-1||m.matId!=null||!m.name) return;     // skip custom / already anchored / nameless
+        const mat=MATERIALS.find(x=>x.name===m.name);
+        if(mat&&mat.db_id!=null){ m.matId=mat.db_id; changed=true; }
+      });
+    });
+  });
+  if(changed){ saveJobRecords(); console.log('✓ Anchored logged materials to permanent IDs.'); }
 }
 
 function jcDayMatsHtml(ds,log){
@@ -4240,12 +4264,12 @@ function jcLogPickMaterial(ds,idx,sel){
   const m=job.dayLogs[ds].materialsUsed[idx]; if(!m) return;
   const v=sel.value;
   if(v==='custom'){
-    m.matIdx=-1; m.name=''; m.usageUnit='';
+    m.matIdx=-1; m.name=''; m.usageUnit=''; m.matId=null;
   } else {
     const mi=parseInt(v);
     const mat=MATERIALS[mi];
     if(mat){
-      m.matIdx=mi; m.name=mat.name;
+      m.matIdx=mi; m.name=mat.name; m.matId=(mat.db_id!=null?mat.db_id:null);   // anchor to permanent id
       // Strip leading quantity from unit (e.g. "15 Gal" → "Gal", "2 Gallon" → "Gallon")
       const rawUnit=mat.unit||'';
       m.usageUnit=rawUnit.replace(/^\d+\.?\d*\s*/,'').trim()||rawUnit;
