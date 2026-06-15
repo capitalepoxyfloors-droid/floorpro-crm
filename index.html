@@ -2377,7 +2377,7 @@ async function deduplicateSlotsByJobRecord(){
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
   try{
-    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance()]);
+    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs()]);
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
@@ -10489,6 +10489,8 @@ function skipReplacement(){
 // ── VEHICLES ───────────────────────────────────────────────────────────────────
 let VEHICLES = [];
 let VEHICLE_MAINT = [];
+let VEHICLE_DOCS = {};   // { vehicleId: [{id,date,category,name,path,url,size}] }
+const VEH_DOCS_BUCKET = 'vehicle-docs';
 let _editingVehicleId = null;
 let _editingMaintId = null;
 let _activeVehicleId = null;
@@ -10521,6 +10523,101 @@ async function dbSaveMaintEntry(obj){
   showSyncStatus('✓ Saved','var(--green)');return true;
 }
 async function dbDeleteMaintEntry(id){await sb.delete('vehicle_maintenance',id);}
+
+// ── VEHICLE DOCUMENTS (Supabase Storage + per-vehicle metadata) ────────────────
+async function loadVehicleDocs(){
+  const v=await sb.getKV('vehicle_docs');
+  if(v){ try{ VEHICLE_DOCS=JSON.parse(v)||{}; }catch(e){ console.error('loadVehicleDocs parse error:',e); } }
+}
+async function saveVehicleDocs(){ await sb.setKV('vehicle_docs', JSON.stringify(VEHICLE_DOCS)); }
+
+function _vehDocPath(p){ return p.split('/').map(encodeURIComponent).join('/'); }
+function _vehDocPublicUrl(path){ return `${SUPABASE_URL}/storage/v1/object/public/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`; }
+function _vehFmtBytes(b){ b=+b||0; if(b<1024)return b+' B'; if(b<1048576)return Math.round(b/1024)+' KB'; return (b/1048576).toFixed(1)+' MB'; }
+function _vehDocIcon(name){ return /\.pdf$/i.test(name)?'📄':/\.(jpe?g|png|heic|gif|webp)$/i.test(name)?'🖼️':'📎'; }
+
+async function vehUploadDocs(vehId){
+  const fileInput=document.getElementById('veh-doc-file');
+  const catSel=document.getElementById('veh-doc-cat');
+  const btn=document.getElementById('veh-doc-upload-btn');
+  const files=fileInput&&fileInput.files?Array.from(fileInput.files):[];
+  if(!files.length) return;
+  const category=catSel?catSel.value:'Other';
+  let ok=0,fail=0;
+  for(const file of files){
+    if(file.size>25*1024*1024){ showToast(`"${file.name}" is over 25 MB — skipped.`); fail++; continue; }
+    if(btn){ btn.textContent='Uploading '+file.name+'…'; btn.disabled=true; }
+    const safe=(file.name||'file').replace(/[^\w.\-]+/g,'_');
+    const path=`${vehId}/${Date.now()}_${safe}`;
+    try{
+      const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
+        method:'POST',
+        headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
+        body:file
+      });
+      if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
+      if(!VEHICLE_DOCS[vehId]) VEHICLE_DOCS[vehId]=[];
+      VEHICLE_DOCS[vehId].push({
+        id: (crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)),
+        date:new Date().toISOString().split('T')[0],
+        category, name:file.name, path, url:_vehDocPublicUrl(path), size:file.size
+      });
+      ok++;
+    }catch(e){ console.error('vehicle doc upload failed:',e); fail++; }
+  }
+  if(ok) await saveVehicleDocs();
+  if(btn){ btn.textContent='📎 Upload Document'; btn.disabled=false; }
+  if(fileInput) fileInput.value='';
+  renderVehicles();
+  if(ok&&!fail) showToast(`✓ ${ok} document${ok!==1?'s':''} uploaded.`);
+  else if(ok&&fail) showToast(`${ok} uploaded, ${fail} failed.`);
+  else showToast('Upload failed — the storage bucket may not be set up yet.');
+}
+
+async function vehDeleteDoc(vehId,docId){
+  const list=VEHICLE_DOCS[vehId]||[]; const doc=list.find(d=>d.id===docId); if(!doc) return;
+  if(!confirm(`Delete "${doc.name}"?\n\nThis removes it from the app (and it will drop out of the Drive sync on the next run).`)) return;
+  try{
+    await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(doc.path)}`,{
+      method:'DELETE', headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY }
+    });
+  }catch(e){ console.error('storage delete failed',e); }
+  VEHICLE_DOCS[vehId]=list.filter(d=>d.id!==docId);
+  await saveVehicleDocs();
+  renderVehicles();
+  showToast('Document removed.');
+}
+
+// Documents section HTML for a vehicle's detail view
+function vehDocsHtml(v){
+  const docs=(VEHICLE_DOCS[v.id]||[]).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+  const catColor={Receipt:'var(--green)',Service:'var(--accent)',Registration:'var(--purple)',Insurance:'var(--orange)',Other:'var(--text3)'};
+  const fmtD=d=>d?new Date(d+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'';
+  const rows = docs.length===0
+    ? `<div style="padding:18px;text-align:center;color:var(--text3);font-size:12.5px;">No documents yet — upload receipts or service paperwork above.</div>`
+    : docs.map(d=>`<div style="display:flex;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px solid var(--border);">
+        <span style="font-size:18px;flex-shrink:0;">${_vehDocIcon(d.name||'')}</span>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(d.name||'').replace(/</g,'&lt;')}</div>
+          <div style="font-size:11px;color:var(--text3);"><span style="color:${catColor[d.category]||'var(--text3)'};font-weight:600;">${d.category||'Other'}</span> · ${fmtD(d.date)}${d.size?' · '+_vehFmtBytes(d.size):''}</div>
+        </div>
+        <a class="btn btn-ghost" href="${d.url}" target="_blank" rel="noopener" style="font-size:11px;padding:4px 10px;flex-shrink:0;">View</a>
+        <button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;color:var(--red);flex-shrink:0;" onclick="vehDeleteDoc('${v.id}','${d.id}')">✕</button>
+      </div>`).join('');
+  return `
+      <div class="section-header" style="margin-top:24px;"><div class="section-title">Documents</div></div>
+      <div class="jobs-block" style="padding:14px 16px;">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
+          <select id="veh-doc-cat" class="form-input" style="width:auto;font-size:12px;padding:6px 8px;">
+            <option>Receipt</option><option>Service</option><option>Registration</option><option>Insurance</option><option>Other</option>
+          </select>
+          <input type="file" id="veh-doc-file" multiple style="display:none;" onchange="vehUploadDocs('${v.id}')"/>
+          <button id="veh-doc-upload-btn" class="btn btn-primary" style="font-size:12px;" onclick="document.getElementById('veh-doc-file').click()">📎 Upload Document</button>
+          <span style="font-size:11px;color:var(--text3);">Receipts, service records, registration, insurance…</span>
+        </div>
+        <div id="veh-doc-list">${rows}</div>
+      </div>`;
+}
 
 function renderVehicles(){
   const content=document.getElementById('vehicles-content');
@@ -10579,7 +10676,8 @@ function renderVehicles(){
       </div>
       ${v.notes?`<div class="info-box" style="margin-bottom:20px;">📝 ${v.notes}</div>`:''}
       <div class="section-header"><div class="section-title">Service History</div></div>
-      <div class="jobs-block" style="padding:0;">${maintRows}</div>`;
+      <div class="jobs-block" style="padding:0;">${maintRows}</div>
+      ${vehDocsHtml(v)}`;
   } else {
     // List view — vehicle cards
     titleEl.textContent='Vehicles';
