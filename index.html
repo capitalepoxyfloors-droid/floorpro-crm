@@ -2297,23 +2297,11 @@ async function fixSlotDrift(){
   await sb.setKV('schedule_base_date', newBaseStr);
   if(driftWeeks===0) return;
 
-  // Shift all in-memory slot offsets and persist corrections to DB
-  const adjusted={};
-  const dbUpdates=[];
-  for(const ci in newSlots){
-    adjusted[ci]={};
-    for(const w in newSlots[ci]){
-      const nw=parseInt(w)-driftWeeks;
-      adjusted[ci][nw]=newSlots[ci][w];
-      for(const d in newSlots[ci][w]){
-        const s=newSlots[ci][w][d];
-        if(s?.db_id) dbUpdates.push(sb.update('scheduled_slots',s.db_id,{week_offset:nw}));
-      }
-    }
-  }
-  await Promise.all(dbUpdates);
-  Object.keys(newSlots).forEach(k=>delete newSlots[k]);
-  Object.assign(newSlots,adjusted);
+  // IMPORTANT: do NOT shift slot week-offsets here. loadScheduledSlots already recomputes every
+  // slot's offset from its absolute encoded date on load, so shifting again double-corrected them
+  // — placing valid slots on the wrong date and causing deduplicateSlotsByJobRecord to DELETE them
+  // (this wiped out a job's first week). We only re-key SLOT_JOB_MAP so its keys line up with the
+  // offsets loadScheduledSlots produced.
 
   // Re-key SLOT_JOB_MAP (keys embed the week offset)
   const newMap={};
@@ -2357,11 +2345,17 @@ async function deduplicateSlotsByJobRecord(){
         const endDate=job.endDate||job.startDate;
         const validDates=new Set([...jcAllDays(job.startDate,endDate),...(job.extraDays||[])]);
 
-        const slotMon=getMonday(wN);
-        const slotDate=new Date(slotMon);
-        slotDate.setDate(slotMon.getDate()+dN);
-        slotDate.setHours(0,0,0,0);
-        const slotDateStr=slotDate.toISOString().split('T')[0];
+        // Use the slot's stored absolute date. Reconstructing from the week-offset position is
+        // unreliable when the schedule's base week shifts (it can place a valid slot on the wrong
+        // date and wrongly delete it). Only fall back to reconstruction for legacy slots with no date.
+        let slotDateStr=slot.dt;
+        if(!slotDateStr){
+          const slotMon=getMonday(wN);
+          const slotDate=new Date(slotMon);
+          slotDate.setDate(slotMon.getDate()+dN);
+          slotDate.setHours(0,0,0,0);
+          slotDateStr=slotDate.toISOString().split('T')[0];
+        }
 
         if(!validDates.has(slotDateStr)){
           if(slot.db_id) toDeleteIds.push(slot.db_id);
