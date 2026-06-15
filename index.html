@@ -10576,7 +10576,7 @@ async function vehUploadDocs(vehId){
 
 async function vehDeleteDoc(vehId,docId){
   const list=VEHICLE_DOCS[vehId]||[]; const doc=list.find(d=>d.id===docId); if(!doc) return;
-  if(!confirm(`Delete "${doc.name}"?\n\nThis removes it from the app (and it will drop out of the Drive sync on the next run).`)) return;
+  if(!confirm(`Delete "${doc.name}"?\n\nThis removes it from the app. Any copy already synced to your Google Drive folder stays there as an archive.`)) return;
   try{
     await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(doc.path)}`,{
       method:'DELETE', headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY }
