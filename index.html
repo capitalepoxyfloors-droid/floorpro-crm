@@ -2017,7 +2017,11 @@ async function loadJobs(){
   const statusRank={approved:0,scheduled:1,inprogress:2,complete:3,invoiced:4};
   const best={};
   rows.forEach(r=>{
-    const key=(r.customer||'').trim().toLowerCase();
+    // De-dup key: prefer the Wave estimate # (unique per estimate) so two genuinely separate
+    // jobs for the same customer (e.g. two accepted Small Wonder estimates) are NOT merged.
+    // Fall back to customer name only for jobs with no Wave # (legacy advance-card duplicates).
+    const _wn=(r.notes||'').match(/Wave #(\d+)/);
+    const key=_wn?('wave#'+_wn[1]):(r.customer||'').trim().toLowerCase();
     const existing=best[key];
     if(!existing||(statusRank[r.status]||0)>(statusRank[existing.status]||0)){
       if(existing) dbDeleteJob(existing.id); // remove stale record
@@ -7673,7 +7677,8 @@ function renderJobsListView(){
       const detail   = dets[1]?.textContent.trim()||'';
       const displayVal = card.querySelector('.lead-value')?.textContent.trim()||'—';
       const dbId     = card.dataset.dbId||'';
-      allJobs.push({customer,jobLabel,detail,displayVal,status,dbId});
+      const notes    = card.dataset.notes||'';
+      allJobs.push({customer,jobLabel,detail,displayVal,status,dbId,notes});
     });
   });
 
@@ -7693,12 +7698,14 @@ function renderJobsListView(){
     jobs.forEach(job=>{
       const sid=job.dbId.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
       const sc=job.customer.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      const _lwn=(job.notes||'').match(/Wave #(\d+)/);
+      const _lwt=_lwn?` <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--text3);font-weight:400;">#${_lwn[1]}</span>`:'';
       html+=`<div style="display:flex;align-items:center;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius-sm);margin-bottom:5px;overflow:hidden;cursor:pointer;transition:background .12s;min-height:54px;"
            onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background='var(--surface)'"
            onclick="listJobOpen('${sid}','${sc}')">
         <div style="width:4px;align-self:stretch;background:${color};flex-shrink:0;"></div>
         <div style="flex:1;padding:10px 16px;min-width:0;overflow:hidden;">
-          <div style="font-size:13.5px;font-weight:600;color:var(--text);line-height:1.2;">${job.customer}</div>
+          <div style="font-size:13.5px;font-weight:600;color:var(--text);line-height:1.2;">${job.customer}${_lwt}</div>
           ${(job.jobLabel||job.detail)?`<div style="font-size:11px;color:var(--text2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${[job.jobLabel,job.detail].filter(Boolean).join(' &nbsp;·&nbsp; ')}</div>`:''}
         </div>
         <div style="font-family:'DM Mono',monospace;font-size:13px;font-weight:700;color:var(--accent);padding:0 16px;flex-shrink:0;white-space:nowrap;">${job.displayVal}</div>
@@ -7791,9 +7798,11 @@ function addJobCard(customer, jobLabel, value, displayVal, detail, status, exist
     if(match){ openJobCard(match.id); }
     else { openJobEdit(this); }
   };
+  const _cardWn=(addrNote||'').match(/Wave #(\d+)/);
+  const _waveTag=_cardWn?` <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--text3);font-weight:400;vertical-align:middle;">#${_cardWn[1]}</span>`:'';
   card.innerHTML=`
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px;">
-      <div class="lead-name" style="flex:1;">${customer}</div>
+      <div class="lead-name" style="flex:1;">${customer}${_waveTag}</div>
       <div style="display:flex;gap:2px;flex-shrink:0;margin-top:-2px;">
         <button onclick="event.stopPropagation();openJobEdit(this)" title="Edit job" style="background:none;border:none;cursor:pointer;color:var(--text3);padding:3px 5px;font-size:13px;line-height:1;border-radius:4px;transition:color .15s;" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">✏</button>
         <button onclick="event.stopPropagation();deleteJobCard(this)" title="Delete job" style="background:none;border:none;cursor:pointer;color:var(--text3);padding:3px 5px;font-size:13px;line-height:1;border-radius:4px;transition:color .15s;" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text3)'">✕</button>
