@@ -7849,6 +7849,7 @@ function addJobCard(customer, jobLabel, value, displayVal, detail, status, exist
   card.dataset.status=status;
   card.dataset.dbId=existingDbId||'';
   card.dataset.value=value||'';
+  card.dataset.customer=customer;   // clean name — readers must use this, NOT .lead-name text (which includes the #Wave badge and would compound)
   if(extraData){
     if(extraData.address) card.dataset.address=extraData.address;
     if(extraData.notes)   card.dataset.notes=extraData.notes;
@@ -7856,7 +7857,7 @@ function addJobCard(customer, jobLabel, value, displayVal, detail, status, exist
   }
   card.onclick = function(e){
     if(e.target.closest('button')) return;
-    const name=this.querySelector('.lead-name').textContent.trim();
+    const name=(this.dataset.customer||this.querySelector('.lead-name').textContent).trim();
     const match=JOB_RECORDS.find(j=>j.customer===name);
     if(match){ openJobCard(match.id); }
     else { openJobEdit(this); }
@@ -7889,7 +7890,7 @@ function addJobCard(customer, jobLabel, value, displayVal, detail, status, exist
 function advanceJobCard(btn, nextStatus){
   const card=btn.closest('.lead-card');
   const dbId=card.dataset.dbId||null;
-  const customer=card.querySelector('.lead-name').textContent;
+  const customer=card.dataset.customer||card.querySelector('.lead-name').textContent.trim();
   const jobLabel=card.querySelector('.lead-detail').textContent;
   const numericValue=card.dataset.value||'';
   const displayVal=card.querySelector('.lead-value')?.textContent||'—';
@@ -7910,7 +7911,7 @@ function openJobEdit(btn){
   window._editingJobCard = card;
 
   // Read current values from the card
-  const customer  = card.querySelector('.lead-name').textContent.trim();
+  const customer  = card.dataset.customer || card.querySelector('.lead-name').textContent.trim();
   const detailEls = card.querySelectorAll('.lead-detail');
   const jobLabel  = detailEls[0]?.textContent.trim() || '';
   const detail    = detailEls[1]?.textContent.trim() || '';
@@ -7974,7 +7975,7 @@ function saveJobEdit(){
 
 function deleteJobCard(btn){
   const card = btn.closest('.lead-card');
-  const customer = card.querySelector('.lead-name').textContent.trim();
+  const customer = card.dataset.customer || card.querySelector('.lead-name').textContent.trim();
   if(!confirm('Delete job for "' + customer + '"?\n\nThis cannot be undone.')) return;
   const dbId = card.dataset.dbId || null;
   if(dbId) dbDeleteJob(dbId);
@@ -7988,7 +7989,7 @@ function deleteJobCard(btn){
 
 function markJobInvoiced(btn){
   const card=btn.closest('.lead-card');
-  const customer=card.querySelector('.lead-name').textContent;
+  const customer=card.dataset.customer||card.querySelector('.lead-name').textContent.trim();
   const jobLabel=card.querySelector('.lead-detail').textContent;
   const displayVal=card.querySelector('.lead-value')?.textContent||'—';
   const detailEls=card.querySelectorAll('.lead-detail');
