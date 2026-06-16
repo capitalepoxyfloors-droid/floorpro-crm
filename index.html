@@ -573,6 +573,7 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
             Open Wave
           </a>
+          <button class="btn btn-ghost" id="jobs-wave-sync-btn" onclick="requestWaveSync()" title="Pull newly-accepted estimates from Wave into Approved now">🔄 Sync Wave</button>
           <button class="btn btn-ghost" id="jobs-invoiced-btn" onclick="toggleInvoicedSection()" style="display:none;">📄 Invoiced (0)</button>
           <button class="btn btn-ghost" onclick="openModal('wavepdf')">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -7662,6 +7663,36 @@ function setJobsView(mode){
     if(btnBoard){ btnBoard.style.background='var(--accent)'; btnBoard.style.color='#fff'; }
     if(btnList){  btnList.style.background='transparent';    btnList.style.color='var(--text2)'; }
   }
+}
+
+// Force a Wave sync on demand. The web app can't run the local Wave script directly, so it
+// flags a request; the background watcher on this PC (every ~2 min) runs the sync, then we
+// detect completion via wave_sync_status and refresh the board automatically.
+let _waveSyncPolling = false;
+async function requestWaveSync(){
+  if(_waveSyncPolling) return;
+  const btn=document.getElementById('jobs-wave-sync-btn');
+  const ts=new Date().toISOString();
+  let prevStatus=''; try{ prevStatus=(await sb.getKV('wave_sync_status'))||''; }catch(e){}
+  try{ await sb.setKV('wave_sync_request', ts); }
+  catch(e){ showToast('Could not reach the server — try again.'); return; }
+  _waveSyncPolling=true;
+  const orig = btn?btn.innerHTML:'';
+  if(btn){ btn.disabled=true; btn.innerHTML='🔄 Syncing…'; }
+  showToast('Sync requested — checking Wave for new accepted estimates…');
+  let tries=0;
+  const finish=(msg,badge)=>{ _waveSyncPolling=false; if(btn){ btn.disabled=false; btn.innerHTML=orig; } if(badge) showSaveBadge(badge); showToast(msg); };
+  const iv=setInterval(async()=>{
+    tries++;
+    let st=''; try{ st=(await sb.getKV('wave_sync_status'))||''; }catch(e){}
+    const finishedTs=(st.split('|')[0]||'');
+    if(st && st!==prevStatus && finishedTs>=ts){
+      clearInterval(iv);
+      const added=parseInt(st.split('|')[1]||'0')||0;
+      try{ await loadJobs(); if(typeof _jobsViewMode!=='undefined' && _jobsViewMode==='list') renderJobsListView(); }catch(e){}
+      finish(added>0?('Wave sync done — added '+added+' approved job'+(added!==1?'s':'')+'.'):'Wave sync done — no new accepted estimates.', added>0?('Synced — '+added+' new'):'Up to date');
+    } else if(tries>=18){ clearInterval(iv); finish('Sync is still working — give it a moment, then refresh the Jobs page.'); }
+  }, 12000);
 }
 
 let _jobsSortMode = 'default';   // 'default' | 'date_desc' | 'date_asc'
