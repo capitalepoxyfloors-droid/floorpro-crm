@@ -1119,7 +1119,7 @@
       <div class="form-group" id="sv-address-row">
         <label class="form-label">Address</label>
         <div style="position:relative;">
-          <input class="form-input" id="sv-address" placeholder="Start typing address..." oninput="svAddrInput(this.value)" autocomplete="off"/>
+          <input class="form-input" id="sv-address" placeholder="Start typing address..." oninput="svAddrInput(this.value)" onblur="setTimeout(()=>{const d=document.getElementById('sv-addr-drop');if(d)d.style.display='none';},200)" autocomplete="off"/>
           <div id="sv-addr-drop" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:9999;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);box-shadow:0 4px 16px rgba(0,0,0,.18);max-height:220px;overflow-y:auto;"></div>
         </div>
       </div>
