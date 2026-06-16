@@ -5726,6 +5726,16 @@ function cvTapEvent(jobId,ci,w,d,dateStr){
     const slot=newSlots[ci]?.[w]?.[d]||getSlot(ci,w,d);
     if(!slot) return;
     const label=slot.l;
+    // FIRST: reuse an existing job record with the same customer name. This prevents the
+    // duplicate-record bug (a 2nd record for the same job whose day logs then look "lost"
+    // because the app opens the other copy). Only create a new record if none exists.
+    const existingRec=JOB_RECORDS.find(j=>(j.customer||'').trim().toLowerCase()===(label||'').trim().toLowerCase());
+    if(existingRec){
+      const cw=newSlots[ci]||{};
+      Object.entries(cw).forEach(([wStr,days])=>{ Object.entries(days||{}).forEach(([dStr,s])=>{ if(s&&s.l===label){ SLOT_JOB_MAP[jcSlotKey(ci,+wStr,+dStr)]=existingRec.id; } }); });
+      saveSlotJobMap();
+      jobId=existingRec.id;
+    } else {
     // Scan all weeks for this crew to find every slot with the same label
     let minDate=null,maxDate=null;
     const newJobId=(typeof crypto!=='undefined'&&crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2));
@@ -5755,6 +5765,7 @@ function cvTapEvent(jobId,ci,w,d,dateStr){
     JOB_RECORDS.push(jobRecord);
     saveJobRecords(); saveSlotJobMap();
     jobId=newJobId;
+    }
   }
 
   openJobCard(jobId);
