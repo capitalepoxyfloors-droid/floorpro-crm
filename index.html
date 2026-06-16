@@ -7111,6 +7111,9 @@ function renderSalesSchedule(){
               chip.style.cssText=`background:${sc.bg};color:${sc.color};border-left:3px solid ${sc.color};text-align:center;`;
               chip.textContent=(v.type==='Bid Due'?'DUE: ':'')+v.name+(v.time?' '+fmt(v.time):'');
             }
+            chip.style.cursor='pointer';
+            chip.title='Click to edit';
+            chip.onclick=()=>editSalesVisit(SALES_VISITS.indexOf(v));
             cell.appendChild(chip);
           });
         } else {
@@ -7169,6 +7172,7 @@ function renderSalesVisitList(mon, fri){
         <span class="status-pill" style="background:${pill.bg};color:${pill.c};">${pill.t}</span>
         ${isBid?`<button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;${submitted?'color:var(--green);':'color:var(--text3);'}" onclick="toggleBidSubmitted(${realIdx})">${submitted?'✓ Submitted':'Mark Submitted'}</button>`:''}
         ${isBid?`<button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;" onclick="openBidDetails(${realIdx})">📊 Details</button>`:''}
+        ${v.address?`<button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;" onclick="svOpenMap(${realIdx})" title="Open in Google Maps">📍 Map</button>`:''}
         <button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;" onclick="editSalesVisit(${realIdx})">Edit</button>
         <button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;color:var(--red);" onclick="deleteSalesVisit(${realIdx})">✕</button>
       </div>
@@ -7344,6 +7348,11 @@ function saveSalesVisit(){
   persistSalesVisits();
   renderSalesSchedule();
   renderPipeline();
+}
+
+function svOpenMap(idx){
+  const v=SALES_VISITS[idx];
+  if(v&&v.address){ window.open('https://maps.google.com/?q='+encodeURIComponent(v.address),'_blank'); }
 }
 
 function editSalesVisit(idx){
