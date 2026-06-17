@@ -3186,12 +3186,99 @@ async function deleteSlotEdit(){
 
 // ── JOB RECORDS — full job detail, materials & daily log ──────────────────────
 let JOB_RECORDS = [];
+let _jrBaseline = [];      // deep copy of JOB_RECORDS as last synced with the server (3-way-merge ancestor)
+let _jrSaveChain = Promise.resolve(); // serializes saves within this tab so they can't collide
 let SLOT_JOB_MAP = {}; // "ci_w_d" → job_id
 let _jcId = null;
 let _seForceOpen = false; // bypass job-card routing for reschedule flow
 
-async function loadJobRecords(){ const v=await sb.getKV('job_records'); if(v){try{JOB_RECORDS=JSON.parse(v)||[];}catch(e){console.error('loadJobRecords parse error – job_records may be corrupt:',e);}} }
-async function saveJobRecords(){ await sb.setKV('job_records',JSON.stringify(JOB_RECORDS)); showSyncStatus('✓ Saved'); }
+function _jrClone(x){ try{ return JSON.parse(JSON.stringify(x)); }catch(e){ return x; } }
+function _jrEq(a,b){ return JSON.stringify(a===undefined?null:a)===JSON.stringify(b===undefined?null:b); }
+
+async function loadJobRecords(){
+  const v=await sb.getKV('job_records');
+  if(v){try{JOB_RECORDS=JSON.parse(v)||[];}catch(e){console.error('loadJobRecords parse error – job_records may be corrupt:',e);}}
+  _jrBaseline=_jrClone(JOB_RECORDS); // remember the server state this device started from
+}
+
+// Saving used to overwrite the entire shared job_records blob with THIS device's copy, so a
+// second tab or a crew phone (e.g. a GPS auto-clock-in) could silently wipe edits made
+// elsewhere ("I saved it and it's gone"). Now every save 3-way MERGES: re-read the server
+// copy and apply only the changes this device actually made since it loaded (vs _jrBaseline),
+// preserving everyone else's changes. Saves are also serialized per-tab via _jrSaveChain.
+function saveJobRecords(){
+  const run=_jrSaveChain.then(()=>_saveJobRecordsNow());
+  _jrSaveChain=run.catch(()=>{}); // keep the chain alive even if one save errors
+  return run;
+}
+async function _saveJobRecordsNow(){
+  let serverArr=null;
+  try{ const sv=await sb.getKV('job_records'); if(sv){ serverArr=JSON.parse(sv); if(!Array.isArray(serverArr)) serverArr=null; } }
+  catch(e){ serverArr=null; }
+  // Only merge if we got a plausible server array. A failed/empty read (e.g. a transient
+  // during another device's write) must NOT be read as "everything was deleted" — in that
+  // case we just write our own copy, same as the old behavior.
+  if(serverArr){ try{ _mergeServerIntoLocal(serverArr); }catch(e){ console.error('job_records merge failed — writing local copy:',e); } }
+  await sb.setKV('job_records',JSON.stringify(JOB_RECORDS));
+  _jrBaseline=_jrClone(JOB_RECORDS); // our copy is now the synced baseline
+  showSyncStatus('✓ Saved');
+}
+
+// Merge the latest server records into our in-memory JOB_RECORDS *in place* (so object
+// references the UI/callers hold stay valid). Rule: any field we changed since load keeps
+// our value; every other field adopts the server's. dayLogs merge per-date and per-field.
+function _mergeServerIntoLocal(serverArr){
+  const baseById=new Map((_jrBaseline||[]).map(r=>[String(r.id),r]));
+  const localById=new Map(JOB_RECORDS.map(r=>[String(r.id),r]));
+  const serverById=new Map((serverArr||[]).map(r=>[String(r.id),r]));
+  for(const [id,sRec] of serverById){
+    const lRec=localById.get(id), bRec=baseById.get(id);
+    if(!lRec){
+      if(bRec && _jrEq(bRec,sRec)) continue;   // we deleted it & nobody else touched it → stay deleted
+      JOB_RECORDS.push(_jrClone(sRec));        // server added/changed it → adopt
+    } else {
+      _jrMergeFields(lRec,bRec,sRec);          // both have it → field-level merge
+    }
+  }
+  for(const [id,lRec] of localById){
+    if(serverById.has(id)) continue;
+    const bRec=baseById.get(id);
+    if(bRec && _jrEq(bRec,lRec)){              // server deleted it & we didn't change it → drop
+      const idx=JOB_RECORDS.findIndex(r=>String(r.id)===id);
+      if(idx>=0) JOB_RECORDS.splice(idx,1);
+    } // else we added or edited it → keep
+  }
+}
+function _jrMergeFields(lRec,bRec,sRec){
+  const keys=new Set([...Object.keys(sRec||{}),...Object.keys(lRec||{})]);
+  for(const k of keys){
+    if(k==='dayLogs'){ _jrMergeDayLogs(lRec,bRec,sRec); continue; }
+    if(!_jrEq(lRec[k], bRec?bRec[k]:undefined)) continue; // we changed this field → keep ours
+    if(k in sRec) lRec[k]=sRec[k]; else delete lRec[k];   // otherwise take the server's value
+  }
+}
+function _jrMergeDayLogs(lRec,bRec,sRec){
+  const lDL=lRec.dayLogs||(lRec.dayLogs={});
+  const bDL=(bRec&&bRec.dayLogs)||{};
+  const sDL=(sRec&&sRec.dayLogs)||{};
+  for(const d of new Set([...Object.keys(sDL),...Object.keys(lDL)])){
+    const lE=lDL[d], bE=bDL[d], sE=sDL[d];
+    if(lE===undefined){
+      if(bE!==undefined && _jrEq(bE,sE)) continue;        // we removed this day, untouched elsewhere
+      if(sE!==undefined) lDL[d]=_jrClone(sE);             // else adopt server's day
+    } else if(sE===undefined){
+      if(bE!==undefined && _jrEq(bE,lE)) delete lDL[d];   // server removed day & we didn't change it
+    } else {
+      _jrMergeDayEntry(lE,bE,sE);
+    }
+  }
+}
+function _jrMergeDayEntry(lE,bE,sE){
+  for(const k of new Set([...Object.keys(sE||{}),...Object.keys(lE||{})])){
+    if(!_jrEq(lE[k], bE?bE[k]:undefined)) continue;       // we changed it (e.g. crewPresent from a clock-in) → keep
+    if(k in sE) lE[k]=sE[k]; else delete lE[k];           // otherwise take server's (e.g. office task/notes)
+  }
+}
 async function loadSlotJobMap(){ const v=await sb.getKV('slot_job_map'); if(v){try{SLOT_JOB_MAP=JSON.parse(v)||{};}catch(e){console.error('loadSlotJobMap parse error – slot_job_map may be corrupt:',e);}} }
 async function saveSlotJobMap(){ await sb.setKV('slot_job_map',JSON.stringify(SLOT_JOB_MAP)); }
 
