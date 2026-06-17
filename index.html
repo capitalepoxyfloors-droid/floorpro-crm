@@ -1677,7 +1677,17 @@ const sb = {
     return res.ok?res.json():null;
   },
   async setKV(key,value){
-    // Delete all rows for this key, then insert fresh — works without a unique constraint
+    // Prefer an ATOMIC upsert (needs a unique index on settings.key). If that constraint
+    // isn't present yet, fall back to delete-then-insert for the rest of this session.
+    if(this._upsertOk!==false){
+      const res=await fetch(`${SUPABASE_URL}/rest/v1/settings?on_conflict=key`,{
+        method:'POST',
+        headers:{...this.headers,'Prefer':'resolution=merge-duplicates,return=representation'},
+        body:JSON.stringify({key,value})
+      });
+      if(res.ok){ this._upsertOk=true; return res.json(); }
+      this._upsertOk=false; // no unique constraint on settings.key — stop trying upsert this session
+    }
     await fetch(`${SUPABASE_URL}/rest/v1/settings?key=eq.${encodeURIComponent(key)}`,{method:'DELETE',headers:this.headers});
     return this.insert('settings',{key,value});
   },
@@ -1974,7 +1984,7 @@ async function saveTodoEdit(id, cancelled){
   renderTodos();
 }
 async function dbSaveTodos(){
-  await sb.setKV('todos', JSON.stringify(TODOS));
+  TODOS = await _saveKVMerged('todos', TODOS);
 }
 async function loadTodos(){
   const val = await sb.getKV('todos');
@@ -2013,23 +2023,17 @@ async function loadJobs(){
   // Clear invoiced section
   const invCol=document.getElementById('jobs-col-invoiced');
   if(invCol)invCol.querySelectorAll('.inv-row').forEach(c=>c.remove());
-  // Deduplicate: if the same customer has multiple records (from old advance-card bug),
-  // keep only the most-advanced status and delete the stale duplicates from the DB.
+  // Collapse only TRUE duplicates for DISPLAY (most-advanced status wins). We NEVER delete
+  // from the DB here — auto-deleting on every render previously wiped real jobs that merely
+  // shared a customer name. Wave jobs key on their unique estimate #; non-Wave jobs key on
+  // their own row id so two distinct same-customer jobs are both kept and shown.
   const statusRank={approved:0,scheduled:1,inprogress:2,complete:3,invoiced:4};
   const best={};
   rows.forEach(r=>{
-    // De-dup key: prefer the Wave estimate # (unique per estimate) so two genuinely separate
-    // jobs for the same customer (e.g. two accepted Small Wonder estimates) are NOT merged.
-    // Fall back to customer name only for jobs with no Wave # (legacy advance-card duplicates).
     const _wn=(r.notes||'').match(/Wave #(\d+)/);
-    const key=_wn?('wave#'+_wn[1]):(r.customer||'').trim().toLowerCase();
+    const key=_wn?('wave#'+_wn[1]):('id#'+r.id);
     const existing=best[key];
-    if(!existing||(statusRank[r.status]||0)>(statusRank[existing.status]||0)){
-      if(existing) dbDeleteJob(existing.id); // remove stale record
-      best[key]=r;
-    } else {
-      dbDeleteJob(r.id); // this one is stale
-    }
+    if(!existing||(statusRank[r.status]||0)>(statusRank[existing.status]||0)) best[key]=r;
   });
   Object.values(best).forEach(r=>{
     if(r.status==='invoiced'){
@@ -2245,7 +2249,7 @@ async function loadCustomJobTypes(){
   if(renames){try{const r=JSON.parse(renames);r.forEach(({key,label,color})=>{const t=BUILTIN_JOB_TYPES.find(b=>b.key===key);if(t){t.label=label;t.color=color;}});}catch(e){}}
 }
 async function saveCustomJobTypes(){
-  await sb.setKV('custom_job_types',JSON.stringify(CUSTOM_JOB_TYPES));
+  CUSTOM_JOB_TYPES = await _saveKVMerged('custom_job_types', CUSTOM_JOB_TYPES);
   await sb.setKV('deleted_builtin_keys',JSON.stringify([...DELETED_BUILTIN_KEYS]));
   // Save any renamed builtins
   const renames=BUILTIN_JOB_TYPES.filter(t=>{const d=_BUILTIN_JOB_TYPES_DEFAULT.find(b=>b.key===t.key);return d&&(d.label!==t.label||d.color!==t.color);}).map(({key,label,color})=>({key,label,color}));
@@ -2265,7 +2269,7 @@ async function loadJobSystems(){
   }catch(e){}}
 }
 async function saveJobSystems(){
-  await sb.setKV('job_systems',JSON.stringify(JOB_SYSTEMS));
+  JOB_SYSTEMS = await _saveKVMerged('job_systems', JOB_SYSTEMS);
 }
 
 async function fixSlotDrift(){
@@ -2386,6 +2390,7 @@ async function loadAllFromSupabase(){
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
+    _kvSnapshotBaselines();             // remember loaded server state as the merge ancestor for saves
     jcBackfillMaterialIds();            // anchor logged materials to permanent IDs (one-time, idempotent)
     await fixSlotDrift();               // correct any week-offset drift before rendering
     await deduplicateSlotsByJobRecord(); // remove stale/duplicate slots outside job date ranges
@@ -3279,8 +3284,74 @@ function _jrMergeDayEntry(lE,bE,sE){
     if(k in sE) lE[k]=sE[k]; else delete lE[k];           // otherwise take server's (e.g. office task/notes)
   }
 }
+// ── Generic 3-way merge for the OTHER shared KV collections (same principle as job_records) ──
+// Recursive: objects merge per key; arrays of {id} objects merge by id; anything else keeps
+// our value if we changed it vs the baseline, otherwise takes the server's. This stops a
+// stale tab/phone from blind-overwriting these shared lists/maps.
+const _kvBaselines = {};                 // key → snapshot of the collection as last synced
+function _kvIsObj(x){ return x && typeof x==='object' && !Array.isArray(x); }
+function merge3(base, local, server){
+  if(_kvIsObj(local) && _kvIsObj(server)){
+    const out={}, b=_kvIsObj(base)?base:{};
+    for(const k of new Set([...Object.keys(local),...Object.keys(server)])){
+      const lHas=k in local, sHas=k in server;
+      if(lHas && sHas) out[k]=merge3(b[k], local[k], server[k]);
+      else if(lHas){ if(!((k in b)&&_jrEq(b[k],local[k]))) out[k]=local[k]; }   // keep unless server deleted it & we didn't change
+      else { if(!((k in b)&&_jrEq(b[k],server[k]))) out[k]=server[k]; }         // adopt unless we deleted it & server didn't change
+    }
+    return out;
+  }
+  if(Array.isArray(local) && Array.isArray(server)){
+    const hasIds=a=>a.every(e=>_kvIsObj(e)&&'id'in e);
+    if(!hasIds(local)||!hasIds(server)) return _jrEq(local,base)?server:local;  // no stable ids → atomic, our change wins
+    const bArr=Array.isArray(base)?base:[];
+    const bById=new Map(bArr.map(e=>[String(e.id),e]));
+    const sById=new Map(server.map(e=>[String(e.id),e]));
+    const out=[], seen=new Set();
+    for(const e of local){
+      const id=String(e.id); seen.add(id);
+      if(sById.has(id)) out.push(merge3(bById.get(id), e, sById.get(id)));
+      else if(!(bById.has(id)&&_jrEq(bById.get(id),e))) out.push(e);            // keep unless server deleted it & we didn't change
+    }
+    for(const e of server){
+      const id=String(e.id); if(seen.has(id)) continue;
+      if(!(bById.has(id)&&_jrEq(bById.get(id),e))) out.push(e);                 // adopt unless we deleted it & server didn't change
+    }
+    return out;
+  }
+  return _jrEq(local,base)?server:local;                                         // scalar / type change → our change wins
+}
+// Persist a shared collection by MERGING with the latest server copy. Returns the merged
+// value (caller reassigns its global). Surfaces a real failure instead of a false "Saved".
+async function _saveKVMerged(key, localVal){
+  let serverVal=null;
+  try{ const sv=await sb.getKV(key); if(sv!=null) serverVal=(typeof sv==='string'?JSON.parse(sv):sv); }catch(e){ serverVal=null; }
+  let merged=localVal;
+  if(serverVal!==null && serverVal!==undefined){
+    try{ merged=merge3(_kvBaselines[key], localVal, serverVal); }catch(e){ console.error('merge failed for '+key+', writing local copy:',e); merged=localVal; }
+  }
+  const ok=await sb.setKV(key, JSON.stringify(merged));
+  _kvBaselines[key]=_jrClone(merged);
+  if(!ok) showSyncStatus('⚠ Save failed – check connection','var(--red)');
+  return merged;
+}
+// Snapshot every shared collection right after a full load (the merge ancestor for the session).
+function _kvSnapshotBaselines(){
+  _kvBaselines['slot_job_map']=_jrClone(SLOT_JOB_MAP);
+  _kvBaselines['todos']=_jrClone(TODOS);
+  _kvBaselines['sales_visits']=_jrClone(SALES_VISITS);
+  _kvBaselines['material_requests']=_jrClone(MATERIAL_REQUESTS);
+  _kvBaselines['pto_requests']=_jrClone(PTO_REQUESTS);
+  _kvBaselines['vehicle_docs']=_jrClone(VEHICLE_DOCS);
+  _kvBaselines['crew_history']=_jrClone(CREW_HISTORY);
+  _kvBaselines['crew_attachments']=_jrClone(CREW_ATTACHMENTS);
+  _kvBaselines['lead_quoted_dates']=_jrClone(LEAD_QUOTED_DATES);
+  _kvBaselines['mat_categories']=_jrClone(CUSTOM_MAT_CATS);
+  _kvBaselines['custom_job_types']=_jrClone(CUSTOM_JOB_TYPES);
+  _kvBaselines['job_systems']=_jrClone(JOB_SYSTEMS);
+}
 async function loadSlotJobMap(){ const v=await sb.getKV('slot_job_map'); if(v){try{SLOT_JOB_MAP=JSON.parse(v)||{};}catch(e){console.error('loadSlotJobMap parse error – slot_job_map may be corrupt:',e);}} }
-async function saveSlotJobMap(){ await sb.setKV('slot_job_map',JSON.stringify(SLOT_JOB_MAP)); }
+async function saveSlotJobMap(){ SLOT_JOB_MAP = await _saveKVMerged('slot_job_map', SLOT_JOB_MAP); }
 
 function getJobRecord(id){ return JOB_RECORDS.find(j=>String(j.id)===String(id))||null; }
 
@@ -6776,7 +6847,7 @@ async function loadMatRequests(){
   _updateMrBadge();
 }
 async function saveMatRequests(){
-  await sb.setKV('material_requests',JSON.stringify(MATERIAL_REQUESTS));
+  MATERIAL_REQUESTS = await _saveKVMerged('material_requests', MATERIAL_REQUESTS);
   _updateMrBadge();
 }
 
@@ -6911,7 +6982,7 @@ async function loadPtoRequests(){
   _updatePtoBadge();
 }
 async function savePtoRequests(){
-  await sb.setKV('pto_requests',JSON.stringify(PTO_REQUESTS));
+  PTO_REQUESTS = await _saveKVMerged('pto_requests', PTO_REQUESTS);
   _updatePtoBadge();
 }
 
@@ -7127,7 +7198,7 @@ async function loadSalesVisits(){
   }catch(e){}
 }
 async function persistSalesVisits(){
-  try{ await sb.setKV('sales_visits', JSON.stringify(SALES_VISITS)); }catch(e){}
+  try{ SALES_VISITS = await _saveKVMerged('sales_visits', SALES_VISITS); }catch(e){}
 }
 let editingSvIdx = null;
 
@@ -7535,7 +7606,7 @@ async function loadLeadQuotedDates(){
   LEAD_QUOTED_DATES=data||{};
 }
 async function saveLeadQuotedDates(){
-  await sb.setKV('lead_quoted_dates',LEAD_QUOTED_DATES);
+  LEAD_QUOTED_DATES = await _saveKVMerged('lead_quoted_dates', LEAD_QUOTED_DATES);
 }
 
 async function autoMoveStaleQuotedLeads(){
@@ -8357,7 +8428,7 @@ async function loadMatCategories(){
   renderMatCategoryTabs();
   populateMatCatSelect();
 }
-async function saveMatCategories(){ await sb.setKV('mat_categories',JSON.stringify(CUSTOM_MAT_CATS)); }
+async function saveMatCategories(){ CUSTOM_MAT_CATS = await _saveKVMerged('mat_categories', CUSTOM_MAT_CATS); }
 
 function renderMatCategoryTabs(){
   const wrap=document.getElementById('mat-cat-tabs'); if(!wrap) return;
@@ -8830,7 +8901,7 @@ async function loadCrewHistory(){
   if(v){ try{ CREW_HISTORY=JSON.parse(v)||{}; }catch(e){ console.error('loadCrewHistory parse error:',e); } }
 }
 async function saveCrewHistory(){
-  await sb.setKV('crew_history', JSON.stringify(CREW_HISTORY));
+  CREW_HISTORY = await _saveKVMerged('crew_history', CREW_HISTORY);
 }
 
 function ceEvTypeChange(){
@@ -8913,7 +8984,7 @@ async function loadCrewAttachments(){
   if(v){ try{ CREW_ATTACHMENTS=JSON.parse(v)||{}; }catch(e){ console.error('loadCrewAttachments parse error:',e); } }
 }
 async function saveCrewAttachments(){
-  await sb.setKV('crew_attachments', JSON.stringify(CREW_ATTACHMENTS));
+  CREW_ATTACHMENTS = await _saveKVMerged('crew_attachments', CREW_ATTACHMENTS);
 }
 
 function ceAddAttachment(){
@@ -10694,7 +10765,7 @@ async function loadVehicleDocs(){
   const v=await sb.getKV('vehicle_docs');
   if(v){ try{ VEHICLE_DOCS=JSON.parse(v)||{}; }catch(e){ console.error('loadVehicleDocs parse error:',e); } }
 }
-async function saveVehicleDocs(){ await sb.setKV('vehicle_docs', JSON.stringify(VEHICLE_DOCS)); }
+async function saveVehicleDocs(){ VEHICLE_DOCS = await _saveKVMerged('vehicle_docs', VEHICLE_DOCS); }
 
 function _vehDocPath(p){ return p.split('/').map(encodeURIComponent).join('/'); }
 function _vehDocPublicUrl(path){ return `${SUPABASE_URL}/storage/v1/object/public/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`; }
