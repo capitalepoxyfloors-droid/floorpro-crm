@@ -41,6 +41,8 @@
   .nav-item:hover{background:var(--surface2);color:var(--text);}
   .nav-item.active{background:var(--accent-dim);color:var(--accent);font-weight:500;}
   .nav-item svg{width:16px;height:16px;flex-shrink:0;}
+  .nav-item.nav-dragging{opacity:.4;}
+  .nav-item.nav-drop{box-shadow:inset 0 2px 0 var(--accent);}
   .nav-badge{margin-left:auto;background:var(--accent);color:#fff;font-size:10px;font-weight:600;padding:1px 6px;border-radius:20px;font-family:'DM Mono',monospace;}
   .nav-badge.red{background:var(--red);color:#fff;}
   .sidebar-bottom{padding:14px 10px;border-top:1px solid var(--border);}
@@ -2448,11 +2450,12 @@ async function deduplicateSlotsByJobRecord(){
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
   try{
-    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs()]);
+    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadNavOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs()]);
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
     _kvSnapshotBaselines();             // remember loaded server state as the merge ancestor for saves
+    applyNavOrder();                    // restore the user's saved sidebar tab order
     jcBackfillMaterialIds();            // anchor logged materials to permanent IDs (one-time, idempotent)
     await fixSlotDrift();               // correct any week-offset drift before rendering
     await deduplicateSlotsByJobRecord(); // remove stale/duplicate slots outside job date ranges
@@ -6669,8 +6672,11 @@ function showPage(id){
   if(localStorage.getItem('fpRole')==='crew'&&id!=='crewview') return;
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
-  const map={dashboard:0,pipeline:1,jobs:2,schedule:3,salesschedule:4,jobcosting:5,matreqs:6,ptoreqs:7,reference:8,installers:9,overhead:10,vehicles:11,materials:12,materialcalc:13,jobtypes:14,holidays:15,pinsettings:16,crewview:17};
-  document.querySelectorAll('.nav-item').forEach((n,i)=>n.classList.toggle('active',i===map[id]));
+  // Highlight by page id (not DOM position) so the sidebar can be reordered freely.
+  document.querySelectorAll('.nav-item').forEach(n=>{
+    const pid=n.dataset.page||((n.getAttribute('onclick')||'').match(/showPage\('([^']+)'\)/)||[])[1];
+    n.classList.toggle('active', pid===id);
+  });
   if(id==='dashboard') renderDashboard();
   if(id==='schedule') renderSchedule();
   if(id==='salesschedule') renderSalesSchedule();
@@ -6690,6 +6696,110 @@ function showPage(id){
   if(id==='pinsettings') renderCrewPins();
   try{localStorage.setItem('fpLastPage',id);}catch(e){}
 }
+
+// ── SIDEBAR NAV — DRAG TO REORDER (within each section) ─────────────────────────
+let NAV_ORDER = null;     // { workspace:[pageIds], settings:[...], crew:[...] }
+let _navDragSrc = null;   // page id currently being dragged
+
+// Stamp each nav item with its page id + section, and wire drag handlers (owner only).
+function _navStamp(){
+  const nav=document.querySelector('nav.nav'); if(!nav) return;
+  const isCrew=localStorage.getItem('fpRole')==='crew';
+  let sec='';
+  [...nav.children].forEach(ch=>{
+    if(ch.classList&&ch.classList.contains('nav-label')){
+      sec=ch.textContent.trim().toLowerCase();
+      ch.setAttribute('data-section-label',sec);
+    } else if(ch.classList&&ch.classList.contains('nav-item')){
+      if(!ch.dataset.page){
+        const m=(ch.getAttribute('onclick')||'').match(/showPage\('([^']+)'\)/);
+        if(m) ch.setAttribute('data-page',m[1]);
+      }
+      ch.setAttribute('data-section',sec);
+      if(!isCrew && !ch._navDnd){
+        ch._navDnd=true;
+        ch.setAttribute('draggable','true');
+        ch.title='Drag to reorder';
+        ch.addEventListener('dragstart',navDragStart);
+        ch.addEventListener('dragover',navDragOver);
+        ch.addEventListener('dragleave',e=>e.currentTarget.classList.remove('nav-drop'));
+        ch.addEventListener('drop',navDrop);
+        ch.addEventListener('dragend',navDragEnd);
+      }
+    }
+  });
+}
+function navDragStart(e){
+  if(localStorage.getItem('fpRole')==='crew') return;
+  const it=e.currentTarget;
+  _navDragSrc=it.dataset.page;
+  e.dataTransfer.effectAllowed='move';
+  try{e.dataTransfer.setData('text/plain',_navDragSrc);}catch(_){}
+  setTimeout(()=>it.classList.add('nav-dragging'),0);
+}
+function navDragOver(e){
+  if(!_navDragSrc) return;
+  const it=e.currentTarget;
+  const src=document.querySelector('.nav-item[data-page="'+_navDragSrc+'"]');
+  if(!src||it===src||it.dataset.section!==src.dataset.section) return; // same section only
+  e.preventDefault();
+  e.dataTransfer.dropEffect='move';
+  document.querySelectorAll('.nav-item.nav-drop').forEach(n=>n.classList.remove('nav-drop'));
+  it.classList.add('nav-drop');
+}
+function navDrop(e){
+  if(!_navDragSrc) return;
+  const target=e.currentTarget;
+  const src=document.querySelector('.nav-item[data-page="'+_navDragSrc+'"]');
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('nav-drop','nav-dragging'));
+  if(src&&target!==src&&target.dataset.section===src.dataset.section){
+    e.preventDefault();
+    const items=[...document.querySelectorAll('.nav-item[data-section="'+src.dataset.section+'"]')];
+    const from=items.indexOf(src), to=items.indexOf(target);
+    if(from<to) target.after(src); else target.before(src);
+    saveNavOrder();
+  }
+  _navDragSrc=null;
+}
+function navDragEnd(){
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('nav-drop','nav-dragging'));
+  _navDragSrc=null;
+}
+function _navCurrentOrder(){
+  const o={};
+  document.querySelectorAll('nav.nav .nav-item').forEach(it=>{
+    const sec=it.dataset.section||''; const pid=it.dataset.page; if(!pid) return;
+    (o[sec]=o[sec]||[]).push(pid);
+  });
+  return o;
+}
+async function saveNavOrder(){
+  NAV_ORDER=_navCurrentOrder();
+  try{ await sb.setKV('nav_order', JSON.stringify(NAV_ORDER)); showSyncStatus('✓ Menu order saved'); }
+  catch(e){ console.error('saveNavOrder failed:',e); }
+}
+async function loadNavOrder(){
+  const v=await sb.getKV('nav_order');
+  if(v){ try{ const o=JSON.parse(v); if(o&&typeof o==='object') NAV_ORDER=o; }catch(e){ console.error('loadNavOrder parse error:',e); } }
+}
+function applyNavOrder(){
+  if(!document.querySelector('.nav-item[data-section]')) _navStamp();
+  if(!NAV_ORDER) return;
+  const nav=document.querySelector('nav.nav'); if(!nav) return;
+  Object.keys(NAV_ORDER).forEach(sec=>{
+    const order=NAV_ORDER[sec]; if(!Array.isArray(order)) return;
+    const label=nav.querySelector('.nav-label[data-section-label="'+sec+'"]');
+    const items=[...nav.querySelectorAll('.nav-item[data-section="'+sec+'"]')];
+    if(!items.length) return;
+    const ordered=order.map(pid=>items.find(it=>it.dataset.page===pid)).filter(Boolean);
+    items.forEach(it=>{ if(!ordered.includes(it)) ordered.push(it); }); // newly-added tabs go last
+    let ref=label||ordered[0];
+    ordered.forEach(it=>{ if(ref) ref.after(it); ref=it; });
+  });
+}
+// Stamp + wire drag as soon as the DOM is ready; saved order is applied after Supabase load.
+if(document.readyState!=='loading') _navStamp();
+else document.addEventListener('DOMContentLoaded',_navStamp);
 
 // ── SALES SCHEDULE ─────────────────────────────────────────────────────────────
 let SALES_VISITS = [];
