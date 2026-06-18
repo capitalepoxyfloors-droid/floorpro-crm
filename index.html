@@ -753,6 +753,7 @@
       <div class="topbar">
         <div class="page-title">Material Price List</div>
         <div class="topbar-actions">
+          <input id="mat-search" class="form-input" type="text" placeholder="Search materials…" oninput="searchMaterials(this.value)" autocomplete="off" style="width:200px;padding:7px 12px;font-size:13px;"/>
           <div id="mat-cat-tabs" style="display:flex;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);overflow:hidden;flex-wrap:wrap;"></div>
           <button class="btn btn-primary" onclick="populateMatCatSelect();openModal('addmaterial')">+ Add Material</button>
         </div>
@@ -8417,6 +8418,7 @@ let MATERIALS = [
 
 let editingMatIdx = null;
 let matFilter = 'all';
+let matSearch = '';
 
 const BUILTIN_MAT_CATS=['Epoxy','Polyaspartic','Urethane','Urethane Cement','Overlay','Flake','Quartz','Sand','Misc'];
 let CUSTOM_MAT_CATS=[];
@@ -8495,10 +8497,17 @@ function costPerSqft(m){
 
 function renderMaterials(){
   const list = document.getElementById('materials-list');
-  const filtered = matFilter==='all' ? MATERIALS : MATERIALS.filter(m=>m.cat===matFilter||m.cat.includes(matFilter));
+  let filtered = matFilter==='all' ? MATERIALS : MATERIALS.filter(m=>m.cat===matFilter||m.cat.includes(matFilter));
+  const sq = matSearch.trim().toLowerCase();
+  if(sq){
+    filtered = filtered.filter(m=>[m.name,m.mfr,m.supplier,m.notes,m.cat,m.unit].filter(Boolean).join(' ').toLowerCase().includes(sq));
+  }
 
   if(!filtered.length){
-    list.innerHTML = `<div style="padding:36px;text-align:center;color:var(--text3);font-size:13px;">No materials yet — tap + Add Material to get started.</div>`;
+    const msg = sq
+      ? `No materials match "<b>${matSearch.trim().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</b>".<br><span style="font-size:12px;">Try a different search${matFilter!=='all'?' or tap <b>All</b> to search every category':''}.</span>`
+      : 'No materials yet — tap + Add Material to get started.';
+    list.innerHTML = `<div style="padding:36px;text-align:center;color:var(--text3);font-size:13px;">${msg}</div>`;
     return;
   }
 
@@ -8539,6 +8548,11 @@ function filterMaterials(cat, btn){
     b.style.background='transparent'; b.style.color='var(--text2)';
   });
   btn.style.background='var(--accent)'; btn.style.color='#fff';
+  renderMaterials();
+}
+
+function searchMaterials(q){
+  matSearch = q||'';
   renderMaterials();
 }
 
