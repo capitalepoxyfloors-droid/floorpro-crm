@@ -109,7 +109,7 @@
   .stage-lost .pipeline-stage{color:var(--red);}
   .two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px;}
   .schedule-block{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;overflow-x:auto;}
-  .schedule-week{display:grid;grid-template-columns:100px repeat(5,1fr) repeat(2,0.8fr);min-width:640px;}
+  .schedule-week{display:grid;grid-template-columns:100px 0.8fr repeat(5,1fr) 0.8fr;min-width:640px;}
   .sch-header{padding:10px 0;text-align:center;font-size:11px;font-family:'DM Mono',monospace;color:var(--text2);border-bottom:1px solid var(--border2);text-transform:uppercase;letter-spacing:.5px;font-weight:600;}
   .sch-header:first-child{text-align:left;padding-left:12px;}
   .sch-installer{padding:11px 0 11px 12px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border2);background:var(--surface);}
@@ -126,7 +126,7 @@
   .sch-row{display:grid;grid-template-columns:100px 1fr;min-width:640px;border-bottom:1px solid var(--border2);}
   .sch-row:last-child{border-bottom:none;}
   .sch-row .sch-installer{border-bottom:none;align-self:stretch;}
-  .sch-row-body{position:relative;display:grid;grid-template-columns:repeat(5,1fr) repeat(2,0.8fr);}
+  .sch-row-body{position:relative;display:grid;grid-template-columns:0.8fr repeat(5,1fr) 0.8fr;}
   .sch-row-body .sch-cell{border-bottom:none;min-height:52px;}
   .sch-span-bar{position:absolute;top:10px;height:24px;border-radius:11px;padding:0 10px;font-size:11px;font-weight:700;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;display:flex;align-items:center;background:var(--accent);color:#fff;border:none;transition:filter .12s;z-index:1;}
   .sch-span-bar:hover{filter:brightness(1.12);}
@@ -1892,7 +1892,7 @@ function renderDashboard(){
   const dashSchedEl = document.getElementById('dash-sched-container');
   if(dashSchedEl && typeof buildWeekGrid === 'function'){
     const dashW = new Date().getDay()===0 ? 1 : 0; // Sunday → show next week
-    const dNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    const dNames=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
     const wGrid = buildWeekGrid(dashW, getMonday(dashW), dNames);
     wGrid.style.minWidth='640px';
     dashSchedEl.appendChild(wGrid);
@@ -10264,17 +10264,18 @@ function renderSchedule(){
   if(!container) return;
   container.innerHTML='';
 
-  const dNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  const dNames=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
   for(let wIdx=0;wIdx<schedViewWeeks;wIdx++){
     const wOff=weekOffset+wIdx;
     const mon=getMonday(wOff);
-    const sun=new Date(mon); sun.setDate(sun.getDate()+6);
+    const wkStart=new Date(mon); wkStart.setDate(wkStart.getDate()-1); // Sunday opens the week
+    const wkEnd=new Date(mon); wkEnd.setDate(wkEnd.getDate()+5);        // Saturday closes it
 
     if(schedViewWeeks>1){
       const label=document.createElement('div');
       label.className='week-block-label';
-      label.textContent='Week of '+fmtDate(mon)+' – '+fmtDate(sun);
+      label.textContent='Week of '+fmtDate(wkStart)+' – '+fmtDate(wkEnd);
       const block=document.createElement('div');
       block.className='week-block';
       block.appendChild(label);
@@ -10288,17 +10289,26 @@ function renderSchedule(){
   }
 
   // Update label
-  const mon0=getMonday(weekOffset);
-  const monEnd=getMonday(weekOffset+schedViewWeeks-1);
-  const sunEnd=new Date(monEnd); sunEnd.setDate(sunEnd.getDate()+6);
-  document.getElementById('week-label').textContent=fmtDate(mon0)+' – '+fmtDate(sunEnd);
+  const startMon=getMonday(weekOffset);
+  const start0=new Date(startMon); start0.setDate(start0.getDate()-1);
+  const endMon=getMonday(weekOffset+schedViewWeeks-1);
+  const end0=new Date(endMon); end0.setDate(end0.getDate()+5);
+  document.getElementById('week-label').textContent=fmtDate(start0)+' – '+fmtDate(end0);
 
 }
 
 function buildWeekGrid(wOff,mon,dNames){
-  const TOTAL_DAYS=7; // Mon–Sun
+  const TOTAL_DAYS=7; // Sun–Sat
   const wrap=document.createElement('div');
   wrap.className='schedule-block';
+
+  // Display week starts on Sunday (the day before this week's Monday). Storage stays
+  // Monday-anchored (day idx Mon=0..Sun=6); map each display column back to it:
+  //   col 0 (Sun) → previous storage week, day 6;  cols 1-6 (Mon-Sat) → this week, day 0-5.
+  const weekStart=new Date(mon); weekStart.setDate(weekStart.getDate()-1); weekStart.setHours(0,0,0,0);
+  const colSW=d=>d===0?wOff-1:wOff;
+  const colSD=d=>d===0?6:d-1;
+  const colDate=d=>{const dd=new Date(weekStart);dd.setDate(weekStart.getDate()+d);dd.setHours(0,0,0,0);return dd;};
 
   // Today's midnight timestamp for column highlighting
   const _todayMs=(()=>{const t=new Date();t.setHours(0,0,0,0);return t.getTime();})();
@@ -10308,11 +10318,12 @@ function buildWeekGrid(wOff,mon,dNames){
   hdrGrid.className='schedule-week';
   const h0=mk('div','sch-header','Crew');h0.style.cssText='text-align:left;padding-left:14px;';hdrGrid.appendChild(h0);
   for(let d=0;d<TOTAL_DAYS;d++){
-    const dd=new Date(mon);dd.setDate(dd.getDate()+d);
+    const dd=colDate(d);
+    const isWknd=(d===0||d===6);
     const _isTodayHdr=dd.getTime()===_todayMs;
-    const cls='sch-header'+(d>=5?' weekend':'')+((_isTodayHdr)?' sch-today':'');
+    const cls='sch-header'+(isWknd?' weekend':'')+((_isTodayHdr)?' sch-today':'');
     const hdr=mk('div',cls,dNames[d]+' '+(dd.getMonth()+1)+'/'+dd.getDate());
-    if(d<5&&isHoliday(dd)&&!_isTodayHdr) hdr.style.color='var(--orange)';
+    if(!isWknd&&isHoliday(dd)&&!_isTodayHdr) hdr.style.color='var(--orange)';
     hdrGrid.appendChild(hdr);
   }
   wrap.appendChild(hdrGrid);
@@ -10326,21 +10337,21 @@ function buildWeekGrid(wOff,mon,dNames){
     nameCell.innerHTML=`<div class="installer-dot" style="background:${cr.color}"></div>${cr.name}`;
     rowDiv.appendChild(nameCell);
 
-    // Gather slot data for all 7 days
+    // Gather slot data for all 7 display days (Sun..Sat)
     const days=[];
-    const slotMon=getMonday(wOff);
     for(let d=0;d<TOTAL_DAYS;d++){
-      const isWknd=d>=5;
-      const pto=ptoSlots[i]?.[wOff]?.[d];
-      const hol=(!isWknd)?getHolidayForCell(wOff,d):null;
-      const slotRaw=(!hol)?(getSlot(i,wOff,d)||getNew(i,wOff,d)):null; // always fetch — PTO days too
+      const sw=colSW(d), sd=colSD(d);
+      const isWknd=(d===0||d===6);
+      const pto=ptoSlots[i]?.[sw]?.[sd];
+      const hol=(!isWknd)?getHolidayForCell(sw,sd):null;
+      const slotRaw=(!hol)?(getSlot(i,sw,sd)||getNew(i,sw,sd)):null; // always fetch — PTO days too
       const slot=(!pto&&!hol)?slotRaw:null; // for cell display only — suppressed by PTO/holiday
+      const dd=colDate(d);
       // Detect extension days (in job.extraDays but outside original date range)
       let isExtra=false;
       if(slotRaw){  // use slotRaw so PTO-day jobs still get correct isExtra flag
-        const sd=new Date(slotMon); sd.setDate(slotMon.getDate()+d); sd.setHours(0,0,0,0);
-        const sdStr=sd.toISOString().split('T')[0];
-        const slotJobId=SLOT_JOB_MAP[jcSlotKey(i,wOff,d)];
+        const sdStr=dd.toISOString().split('T')[0];
+        const slotJobId=SLOT_JOB_MAP[jcSlotKey(i,sw,sd)];
         const _rawJr=slotJobId?JOB_RECORDS.find(j=>j.id===slotJobId):null;
         // Verify mapped job matches slot label (stale when a double-book overwrote the map entry)
         const jr=(_rawJr&&_rawJr.customer===slotRaw.l)?_rawJr:JOB_RECORDS.find(j=>j.customer===slotRaw.l);
@@ -10351,14 +10362,13 @@ function buildWeekGrid(wOff,mon,dNames){
           isExtra=!origSched.has(sdStr);
         }
       }
-      const _dd=new Date(slotMon); _dd.setDate(slotMon.getDate()+d); _dd.setHours(0,0,0,0);
-      days.push({pto,hol,slot,slotRaw,isWknd,isExtra,isToday:_dd.getTime()===_todayMs});
+      days.push({pto,hol,slot,slotRaw,isWknd,isExtra,isToday:dd.getTime()===_todayMs,sw,sd});
     }
 
     // Events body — 7 background cells + absolutely positioned spanning bars
     const body=mk('div','sch-row-body');
 
-    days.forEach(({pto,hol,slot,slotRaw,isWknd,isToday},dIdx)=>{
+    days.forEach(({pto,hol,slot,slotRaw,isWknd,isToday,sw,sd},dIdx)=>{
       const cell=mk('div','sch-cell'+(isWknd?' wknd':'')+(isToday?' sch-today':''));
       if(hol){
         cell.appendChild(mk('div','sch-job holiday',hol));
@@ -10369,7 +10379,7 @@ function buildWeekGrid(wOff,mon,dNames){
         const ptoEl=mk('div','sch-job pto','🚫 '+pto.label);
         ptoEl.style.cursor='pointer';
         ptoEl.title='Click to edit PTO';
-        (function(ci,wo,di){ ptoEl.onclick=()=>openPtoDayEdit(ci,wo,di); })(i,wOff,dIdx);
+        (function(ci,wo,di){ ptoEl.onclick=()=>openPtoDayEdit(ci,wo,di); })(i,sw,sd);
         cell.appendChild(ptoEl);
       } else if(slot){
         // slot is covered by a span bar — leave cell empty
@@ -10378,7 +10388,7 @@ function buildWeekGrid(wOff,mon,dNames){
         const addBtn=mk('div','sch-avail','+ Add');
         addBtn.style.cssText='cursor:pointer;color:var(--orange);opacity:.7;';
         addBtn.title='Add weekend work';
-        (function(ci,wo,di){ addBtn.onclick=()=>openWeekendWorkModal(ci,wo,di); })(i,wOff,dIdx);
+        (function(ci,wo,di){ addBtn.onclick=()=>openWeekendWorkModal(ci,wo,di); })(i,sw,sd);
         cell.appendChild(addBtn);
       } else {
         cell.appendChild(mk('div','sch-avail','Free'));
@@ -10389,7 +10399,7 @@ function buildWeekGrid(wOff,mon,dNames){
     // Spanning bars: collect runs then render with gradient connection between adjacent primary→extension bars
     const _TYP_RGBA={epoxy:'26,115,232',flake:'26,115,232',concrete:'227,116,0',
       overlay:'132,48,206',metallic:'132,48,206',prep:'0,151,167',newjob:'24,128,56'};
-    const COL_FR=[1,1,1,1,1,0.8,0.8]; // Mon-Fri=1fr, Sat-Sun=0.8fr — must match CSS grid
+    const COL_FR=[0.8,1,1,1,1,1,0.8]; // Sun=0.8fr, Mon-Fri=1fr, Sat=0.8fr — must match CSS grid
     const TOTAL_FR=COL_FR.reduce((a,b)=>a+b,0);
     // Pass 1: collect run segments
     const _runs=[];
@@ -10405,7 +10415,7 @@ function buildWeekGrid(wOff,mon,dNames){
     // Pre-collect extra slots so the merge pass below can reference them
     const extraDays=[];
     for(let d=0;d<TOTAL_DAYS;d++){
-      const extras=getExtraSlots(i,wOff,d);
+      const extras=getExtraSlots(i,days[d].sw,days[d].sd);
       if(extras.length) extraDays.push({d,extras});
     }
     // Merge extra-slot days adjacent to a primary run of the same label into one span bar.
@@ -10439,10 +10449,10 @@ function buildWeekGrid(wOff,mon,dNames){
       if(suppressedRunIdxs.has(ri)) return; // this run's days merged into a row-2 span bar
       const{s:startDay,e:endExcl,l:label,t:type,x:isExtra}=run;
       const span=endExcl-startDay;
-      const jobId=SLOT_JOB_MAP[jcSlotKey(i,wOff,startDay)];
+      const jobId=SLOT_JOB_MAP[jcSlotKey(i,days[startDay].sw,days[startDay].sd)];
       const jr=jobId?JOB_RECORDS.find(j=>j.id===jobId):JOB_RECORDS.find(j=>j.customer===label);
       const isDone=jr?.status==='complete';
-      const isWkndBar=startDay>=5;
+      const isWkndBar=(startDay===0||startDay===6);
       const nxt=_runs[ri+1],prv=_runs[ri-1];
       // Gradient connection: normal bar ending exactly where an extension of same job begins
       const fadeToNext=!isExtra&&!isDone&&nxt&&nxt.x&&nxt.l===label&&nxt.s===endExcl;
@@ -10489,7 +10499,7 @@ function buildWeekGrid(wOff,mon,dNames){
         st=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);`;
       }
       bar.style.cssText=st;
-      bar.onclick=()=>openSlotEdit(i,wOff,startDay);
+      bar.onclick=()=>openSlotEdit(i,days[startDay].sw,days[startDay].sd);
       body.appendChild(bar);
     });
 
@@ -10514,7 +10524,7 @@ function buildWeekGrid(wOff,mon,dNames){
           bar.textContent=(isDone?'✓ ':'')+ex.l;
           bar.title='Double-booked · click to open';
           bar.style.cssText=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);top:${topPx}px;`;
-          bar.onclick=()=>{ if(exJobId) openJobCard(exJobId); else openSlotEdit(i,wOff,d); };
+          bar.onclick=()=>{ if(exJobId) openJobCard(exJobId); else openSlotEdit(i,days[d].sw,days[d].sd); };
           body.appendChild(bar);
         });
       });
@@ -10532,7 +10542,7 @@ function buildWeekGrid(wOff,mon,dNames){
         bar.textContent=(isDone?'✓ ':'')+l;
         bar.title='Click to open';
         bar.style.cssText=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);top:38px;`;
-        bar.onclick=()=>{ if(exJobId) openJobCard(exJobId); else openSlotEdit(i,wOff,s); };
+        bar.onclick=()=>{ if(exJobId) openJobCard(exJobId); else openSlotEdit(i,days[s].sw,days[s].sd); };
         body.appendChild(bar);
       });
     }
@@ -10553,7 +10563,7 @@ function buildWeekGrid(wOff,mon,dNames){
         const prevHasSameJob=(d>0)&&(days[d-1].slot?.l===slotRaw.l||(days[d-1].pto&&days[d-1].slotRaw?.l===slotRaw.l));
         const nextHasSameJob=(d+1<TOTAL_DAYS)&&(days[d+1]?.slot?.l===slotRaw.l||(days[d+1]?.pto&&days[d+1]?.slotRaw?.l===slotRaw.l));
         // Row 1 — job bar (top:10px from CSS; same look as normal span bars)
-        const pjJobId=SLOT_JOB_MAP[jcSlotKey(i,wOff,d)];
+        const pjJobId=SLOT_JOB_MAP[jcSlotKey(i,days[d].sw,days[d].sd)];
         const pjJr=pjJobId?JOB_RECORDS.find(j=>j.id===pjJobId):JOB_RECORDS.find(j=>j.customer===slotRaw.l);
         const pjDone=pjJr?.status==='complete';
         const jobBar=document.createElement('div');
@@ -10578,7 +10588,7 @@ function buildWeekGrid(wOff,mon,dNames){
           jst=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);`;
         }
         jobBar.style.cssText=jst;
-        jobBar.onclick=()=>openSlotEdit(i,wOff,d);
+        jobBar.onclick=()=>openSlotEdit(i,days[d].sw,days[d].sd);
         body.appendChild(jobBar);
         // Row 2 — PTO bar
         const ptoBar=document.createElement('div');
@@ -10586,7 +10596,7 @@ function buildWeekGrid(wOff,mon,dNames){
         ptoBar.textContent='🚫 '+pto.label;
         ptoBar.title='Click to edit PTO';
         ptoBar.style.cssText=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);top:38px;`;
-        (function(ci,wo,di){ ptoBar.onclick=()=>openPtoDayEdit(ci,wo,di); })(i,wOff,d);
+        (function(ci,wo,di){ ptoBar.onclick=()=>openPtoDayEdit(ci,wo,di); })(i,days[d].sw,days[d].sd);
         body.appendChild(ptoBar);
       });
     }
