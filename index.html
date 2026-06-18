@@ -888,9 +888,10 @@
           <button class="cv-nav-btn" onclick="cvNextWeek()">&#8250;</button>
           <div id="cv-month-label" class="cv-month-label"></div>
         </div>
-        <div style="display:flex;gap:8px;align-items:center;">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end;">
           <button class="cv-today-btn" onclick="cvGoToday()">Today</button>
           <button class="cv-today-btn" onclick="openPtoRequestModal()" style="color:var(--accent);border-color:var(--accent);">✋ Request PTO</button>
+          <button class="cv-today-btn" onclick="openMatRequestModal()" style="color:var(--accent);border-color:var(--accent);">🛒 Request Material</button>
           <button class="cv-lock-btn cv-today-btn" onclick="cvLockDevice()" style="color:var(--red);border-color:var(--red-dim);">🔒 Crew Mode</button>
         </div>
       </div>
@@ -987,6 +988,51 @@
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closePtoRequestModal()">Cancel</button>
       <button class="btn btn-primary" id="ptoreq-submit-btn" onclick="submitPtoRequest()">Send Request</button>
+    </div>
+  </div>
+</div>
+
+<!-- MATERIAL REQUEST MODAL (crew) -->
+<div class="modal-overlay" id="modal-matrequest">
+  <div class="modal" style="max-width:480px;">
+    <div class="modal-header">
+      <div class="modal-title">🛒 Request Material</div>
+      <button class="modal-close" onclick="closeMatRequestModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Your Name</label>
+          <select class="form-select" id="mrq-crew"></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Job <span style="color:var(--text3);font-weight:400;">(optional)</span></label>
+          <select class="form-select" id="mrq-job"></select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="flex:2;">
+          <label class="form-label">Material Needed</label>
+          <input class="form-input" id="mrq-material" placeholder="e.g. Hyperflex Urethane"/>
+        </div>
+        <div class="form-group" style="flex:1;">
+          <label class="form-label">Qty</label>
+          <input class="form-input" id="mrq-qty" placeholder="e.g. 2"/>
+        </div>
+        <div class="form-group" style="flex:1;">
+          <label class="form-label">Unit</label>
+          <input class="form-input" id="mrq-unit" placeholder="gal / bag / box"/>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Notes / Urgency <span style="color:var(--text3);font-weight:400;">(optional)</span></label>
+        <input class="form-input" id="mrq-notes" placeholder="How urgent, what it's for..."/>
+      </div>
+      <div style="font-size:12px;color:var(--text3);margin-top:4px;line-height:1.5;">Your request goes straight to Will to order — no need to open the job.</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeMatRequestModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitMatRequest()">Send Request</button>
     </div>
   </div>
 </div>
@@ -3592,7 +3638,6 @@ function openJobCard(jobId){
   jcPopulateMatDatalist(); // keep materials list in sync
   jcRenderSupplierInvoices();
   jcTab('info');
-  jcRenderMatRequests(); // seed the tab badge on open
   openModal('jobcard');
   // Apply lock state after modal is open so elements exist
   setTimeout(()=>jcApplyLockState(job),0);
@@ -3675,13 +3720,12 @@ async function jcToggleCrew(i){
 }
 
 function jcTab(name){
-  ['info','materials','log','matreq','costing'].forEach(t=>{
+  ['info','materials','log','costing'].forEach(t=>{
     document.getElementById('jc-pane-'+t).style.display=t===name?'':'none';
     document.getElementById('jc-tab-'+t).classList.toggle('active',t===name);
   });
   if(name==='costing') renderJobCosting();
   if(name==='materials') jcRenderMaterials();
-  if(name==='matreq') jcRenderMatRequests();
   if(name==='log'){
     jcRenderDayLogs();
     // Pre-fill the "add day" picker with the next weekday after the job's last day
@@ -5340,7 +5384,7 @@ function jcApplyLockState(job){
   const banner=document.getElementById('jc-lock-banner');
   if(banner) banner.style.display=locked?'flex':'none';
   // Disable / enable all inputs & textareas in the job panes
-  const panes=['jc-pane-info','jc-pane-materials','jc-pane-log','jc-pane-matreq','jc-pane-costing'];
+  const panes=['jc-pane-info','jc-pane-materials','jc-pane-log','jc-pane-costing'];
   panes.forEach(id=>{
     const pane=document.getElementById(id); if(!pane) return;
     pane.querySelectorAll('input,textarea,select,button:not(.modal-close)').forEach(el=>{
@@ -6878,57 +6922,42 @@ function _updateMrBadge(){
 
 function _mrGenId(){ return Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7); }
 
-function jcSubmitMatRequest(){
-  const job=getJobRecord(_jcId); if(!job) return;
-  const mat=document.getElementById('jcmr-material').value.trim();
+// Material requests are submitted from the Crew View top bar (not inside a job).
+function openMatRequestModal(){
+  const sel=document.getElementById('mrq-crew');
+  sel.innerHTML=CREW.map((c,i)=>`<option value="${i}">${c.full}</option>`).join('');
+  if(typeof cvCrewIdx==='number'&&cvCrewIdx>=0&&cvCrewIdx<CREW.length) sel.value=cvCrewIdx;
+  const jobSel=document.getElementById('mrq-job');
+  const jobs=(JOB_RECORDS||[]).filter(j=>j.customer).slice().sort((a,b)=>(a.customer||'').localeCompare(b.customer||''));
+  jobSel.innerHTML='<option value="">— No specific job —</option>'+jobs.map(j=>`<option value="${j.id}">${(j.customer||'').replace(/</g,'&lt;')}</option>`).join('');
+  ['mrq-material','mrq-qty','mrq-unit','mrq-notes'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+  openModal('matrequest');
+}
+
+function closeMatRequestModal(){ closeModal('matrequest'); }
+
+function submitMatRequest(){
+  const mat=document.getElementById('mrq-material').value.trim();
   if(!mat){showToast('Enter the material name.');return;}
-  const req={
+  const crewIdx=parseInt(document.getElementById('mrq-crew').value);
+  const crewName=(CREW[crewIdx]&&CREW[crewIdx].full)||'';
+  const jobId=document.getElementById('mrq-job').value;
+  const job=jobId?getJobRecord(jobId):null;
+  MATERIAL_REQUESTS.push({
     id:_mrGenId(),
-    jobId:_jcId,
-    jobName:job.customer||'Unknown Job',
+    jobId:jobId||'',
+    jobName:job?(job.customer||'Unknown Job'):'General / Shop',
+    crewName:crewName,
     submittedDate:new Date().toISOString().split('T')[0],
     material:mat,
-    qty:document.getElementById('jcmr-qty').value.trim(),
-    unit:document.getElementById('jcmr-unit').value.trim(),
-    notes:document.getElementById('jcmr-notes').value.trim(),
+    qty:document.getElementById('mrq-qty').value.trim(),
+    unit:document.getElementById('mrq-unit').value.trim(),
+    notes:document.getElementById('mrq-notes').value.trim(),
     status:'pending'
-  };
-  MATERIAL_REQUESTS.push(req);
+  });
   saveMatRequests();
-  // Clear form
-  ['jcmr-material','jcmr-qty','jcmr-unit','jcmr-notes'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
-  jcRenderMatRequests();
+  closeModal('matrequest');
   showToast('✓ Request submitted — Will will be notified.');
-}
-
-function jcRenderMatRequests(){
-  const el=document.getElementById('jc-mr-list'); if(!el) return;
-  const jobReqs=MATERIAL_REQUESTS.filter(r=>r.jobId===_jcId);
-  // Update tab badge with pending count for this job
-  const badge=document.getElementById('jc-mr-badge');
-  if(badge){const p=jobReqs.filter(r=>r.status==='pending').length;badge.style.display=p?'inline':'none';badge.textContent=p;}
-  if(!jobReqs.length){
-    el.innerHTML='<div style="font-size:12px;color:var(--text3);font-style:italic;">No requests for this job yet.</div>';
-    return;
-  }
-  const statusColor={pending:'var(--red)',ordered:'var(--accent)',received:'var(--green)'};
-  el.innerHTML=jobReqs.map(r=>`
-    <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius-sm);">
-      <div style="flex:1;min-width:0;">
-        <div style="font-size:13px;font-weight:600;color:var(--text);">${r.material}${r.qty?' — '+r.qty+(r.unit?' '+r.unit:''):''}</div>
-        ${r.notes?`<div style="font-size:11px;color:var(--text3);margin-top:2px;">${r.notes}</div>`:''}
-        <div style="font-size:11px;color:var(--text3);margin-top:2px;">${r.submittedDate}</div>
-      </div>
-      <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;background:${statusColor[r.status]}22;color:${statusColor[r.status]};text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;">${r.status}</span>
-      <button onclick="jcDeleteMatRequest('${r.id}')" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;padding:2px 4px;line-height:1;" title="Remove">✕</button>
-    </div>`).join('');
-}
-
-function jcDeleteMatRequest(id){
-  if(!confirm('Remove this material request?')) return;
-  MATERIAL_REQUESTS=MATERIAL_REQUESTS.filter(r=>r.id!==id);
-  saveMatRequests();
-  jcRenderMatRequests();
 }
 
 function renderMatRequestsPage(){
@@ -6954,7 +6983,7 @@ function renderMatRequestsPage(){
           ${r.qty?`<span style="font-size:13px;color:var(--text2);">${r.qty}${r.unit?' '+r.unit:''}</span>`:''}
           <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;background:${statusColor[r.status]}22;color:${statusColor[r.status]};text-transform:uppercase;letter-spacing:.4px;">${statusLabel[r.status]}</span>
         </div>
-        <div style="font-size:12px;color:var(--accent);font-weight:600;margin-bottom:3px;">📋 ${r.jobName}</div>
+        <div style="font-size:12px;color:var(--accent);font-weight:600;margin-bottom:3px;">📋 ${r.jobName}${r.crewName?` · <span style="color:var(--text2);font-weight:500;">🙋 ${r.crewName}</span>`:''}</div>
         ${r.notes?`<div style="font-size:12px;color:var(--text2);margin-bottom:4px;">${r.notes}</div>`:''}
         <div style="font-size:11px;color:var(--text3);">Submitted ${r.submittedDate}${r.orderedDate?' · Ordered '+r.orderedDate:''}</div>
       </div>
@@ -11375,7 +11404,6 @@ async function deleteMaintEntry(id){
       <button class="tab active" id="jc-tab-info" onclick="jcTab('info')">Job Info</button>
       <button class="tab" id="jc-tab-materials" onclick="jcTab('materials')">📦 Materials</button>
       <button class="tab" id="jc-tab-log" onclick="jcTab('log')">📅 Daily Log</button>
-      <button class="tab" id="jc-tab-matreq" onclick="jcTab('matreq')" style="position:relative;">🛒 Requests<span id="jc-mr-badge" style="display:none;margin-left:5px;background:var(--red,#e53e3e);color:#fff;font-size:9px;font-weight:700;border-radius:8px;padding:1px 5px;vertical-align:middle;"></span></button>
       <button class="tab" id="jc-tab-costing" onclick="jcTab('costing')">💰 Costing</button>
     </div>
     <!-- Info Pane -->
@@ -11467,33 +11495,6 @@ async function deleteMaintEntry(id){
         <button onclick="jcMarkComplete()" style="width:100%;padding:13px;border-radius:var(--radius-sm);background:var(--green-dim);color:var(--green);border:1.5px solid var(--green)66;font-size:14px;font-weight:700;cursor:pointer;font-family:'DM Sans',sans-serif;letter-spacing:.2px;">
           ✓ Mark Job as Complete
         </button>
-      </div>
-    </div>
-    <!-- Material Requests Pane -->
-    <div id="jc-pane-matreq" class="modal-body" style="display:none;">
-      <div style="font-size:12.5px;color:var(--text3);margin-bottom:16px;line-height:1.6;">Low on something? Submit a request and Will gets notified on his end to order it.</div>
-      <div id="jc-mr-list" style="margin-bottom:16px;display:flex;flex-direction:column;gap:6px;"></div>
-      <div style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius);padding:14px 16px;">
-        <div style="font-size:11px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;">New Request</div>
-        <div class="form-row" style="margin-bottom:8px;">
-          <div class="form-group" style="margin:0;flex:2;">
-            <label class="form-label">Material Needed</label>
-            <input class="form-input" id="jcmr-material" placeholder="e.g. Hyperflex Urethane" style="font-size:13px;"/>
-          </div>
-          <div class="form-group" style="margin:0;flex:1;">
-            <label class="form-label">Qty</label>
-            <input class="form-input" id="jcmr-qty" placeholder="e.g. 2" style="font-size:13px;"/>
-          </div>
-          <div class="form-group" style="margin:0;flex:1;">
-            <label class="form-label">Unit</label>
-            <input class="form-input" id="jcmr-unit" placeholder="gal / bag / box" style="font-size:13px;"/>
-          </div>
-        </div>
-        <div class="form-group" style="margin-bottom:10px;">
-          <label class="form-label">Notes / Urgency</label>
-          <input class="form-input" id="jcmr-notes" placeholder="How urgent, what it's for..." style="font-size:13px;"/>
-        </div>
-        <button class="btn btn-primary" style="font-size:12px;padding:6px 16px;" onclick="jcSubmitMatRequest()">+ Submit Request</button>
       </div>
     </div>
     <!-- Job Costing Pane -->
