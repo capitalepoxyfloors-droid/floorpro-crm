@@ -448,6 +448,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/><path d="M19 8v6M22 11h-6"/></svg>
         <span>Installers</span>
       </button>
+      <button class="nav-item" onclick="showPage('overhead')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21.21 15.89A10 10 0 118 2.83"/><path d="M22 12A10 10 0 0012 2v10z"/></svg>
+        <span>Overhead</span>
+      </button>
       <button class="nav-item" onclick="showPage('vehicles')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="1" y="9" width="22" height="11" rx="2"/><path d="M5 9V7a2 2 0 012-2h10a2 2 0 012 2v2"/><circle cx="7" cy="20" r="2"/><circle cx="17" cy="20" r="2"/><path d="M5 14h14"/></svg>
         <span>Vehicles</span>
@@ -782,6 +786,17 @@
         </div>
       </div>
       <div class="content" id="calc-content"></div>
+    </div>
+
+    <!-- BUSINESS OVERHEAD PAGE -->
+    <div class="page" id="page-overhead">
+      <div class="topbar">
+        <div class="page-title">Business Overhead</div>
+        <div class="topbar-actions">
+          <button class="btn btn-primary" onclick="overheadAddItem()">+ Add Expense</button>
+        </div>
+      </div>
+      <div class="content" id="overhead-content"></div>
     </div>
 
     <!-- JOB TYPES SETTINGS PAGE -->
@@ -2150,7 +2165,7 @@ async function loadMaterials(){
 }
 
 async function dbSaveCrew(c,idx){
-  const row={full_name:c.full,first_name:c.name,last_name:c.full.split(' ').slice(1).join(' '),initials:c.initials,color:c.color,role:c.role||'',phone:c.phone||'',specialties:JSON.stringify(c.specialties||[]),hourly:c.hourly||'',hours:c.hours||'40',ss:c.ss||'6.20',medicare:c.medicare||'1.45',futa:c.futa||'2.70',wc:c.wc||'10.00',gl:c.gl||'3.00',benefits:c.benefits||'0',pto_days:c.ptoDays||'0',sort_order:idx};
+  const row={full_name:c.full,first_name:c.name,last_name:c.full.split(' ').slice(1).join(' '),initials:c.initials,color:c.color,role:c.role||'',phone:c.phone||'',specialties:JSON.stringify(c.specialties||[]),hourly:c.hourly||'',hours:c.hours||'40',ss:c.ss||'6.20',medicare:c.medicare||'1.45',futa:c.futa||'2.70',wc:c.wc||'10.00',gl:c.gl||'0',benefits:c.benefits||'0',pto_days:c.ptoDays||'0',sort_order:idx};
   if(c.db_id){const ok=await sb.update('crew',c.db_id,row);if(!ok){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}}
   else{const res=await sb.insert('crew',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}CREW_DATA[idx].db_id=res[0].id;}
   showSyncStatus('✓ Synced');
@@ -2387,7 +2402,7 @@ async function deduplicateSlotsByJobRecord(){
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
   try{
-    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs()]);
+    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs()]);
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
@@ -3350,6 +3365,7 @@ function _kvSnapshotBaselines(){
   _kvBaselines['mat_categories']=_jrClone(CUSTOM_MAT_CATS);
   _kvBaselines['custom_job_types']=_jrClone(CUSTOM_JOB_TYPES);
   _kvBaselines['job_systems']=_jrClone(JOB_SYSTEMS);
+  _kvBaselines['overhead']=_jrClone(OVERHEAD);
 }
 async function loadSlotJobMap(){ const v=await sb.getKV('slot_job_map'); if(v){try{SLOT_JOB_MAP=JSON.parse(v)||{};}catch(e){console.error('loadSlotJobMap parse error – slot_job_map may be corrupt:',e);}} }
 async function saveSlotJobMap(){ SLOT_JOB_MAP = await _saveKVMerged('slot_job_map', SLOT_JOB_MAP); }
@@ -6609,7 +6625,7 @@ function showPage(id){
   if(localStorage.getItem('fpRole')==='crew'&&id!=='crewview') return;
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
-  const map={dashboard:0,pipeline:1,jobs:2,schedule:3,salesschedule:4,jobcosting:5,matreqs:6,ptoreqs:7,reference:8,installers:9,vehicles:10,materials:11,materialcalc:12,jobtypes:13,holidays:14,pinsettings:15,crewview:16};
+  const map={dashboard:0,pipeline:1,jobs:2,schedule:3,salesschedule:4,jobcosting:5,matreqs:6,ptoreqs:7,reference:8,installers:9,overhead:10,vehicles:11,materials:12,materialcalc:13,jobtypes:14,holidays:15,pinsettings:16,crewview:17};
   document.querySelectorAll('.nav-item').forEach((n,i)=>n.classList.toggle('active',i===map[id]));
   if(id==='dashboard') renderDashboard();
   if(id==='schedule') renderSchedule();
@@ -6619,6 +6635,7 @@ function showPage(id){
   if(id==='installers') renderCrewCards();
   if(id==='vehicles'){ _activeVehicleId=null; renderVehicles(); }
   if(id==='materials') renderMaterials();
+  if(id==='overhead') renderOverhead();
   if(id==='reference') renderReference();
   if(id==='pipeline') renderPipeline();
   if(id==='crewview') renderCrewView();
@@ -8765,7 +8782,7 @@ function openCrewEdit(idx){
   document.getElementById('ce-medicare').value= c.medicare || '1.45';
   document.getElementById('ce-futa').value    = c.futa     || '2.70';
   document.getElementById('ce-wc').value      = c.wc       || '10.00';
-  document.getElementById('ce-gl').value      = c.gl       || '3.00';
+  document.getElementById('ce-gl').value      = c.gl       || '0';
   document.getElementById('ce-benefits').value= c.benefits || '0';
   document.getElementById('ce-pto-days').value= c.ptoDays  || '0';
   ['epoxy','polished','overlay','metallic','flake','prep'].forEach(key=>{
@@ -8791,6 +8808,148 @@ function openCrewEdit(idx){
   renderAttachmentList();
 }
 
+// ══ BUSINESS OVERHEAD ══════════════════════════════════════════════════════
+// Annual overhead expenses (GL insurance, rent, vehicles, software, etc.) are
+// summed, then divided by the total annual crew labor hours to produce an
+// overhead $/hr that is folded into every crew member's burdened labor rate
+// (see calcBurdenForCrew / calcBurden). Stored in KV 'overhead'.
+let OVERHEAD = { items: [] };  // items: [{id, name, amount, period:'yr'|'mo'}]
+
+async function loadOverhead(){
+  const v = await sb.getKV('overhead');
+  if(v){ try{ const o=JSON.parse(v); if(o&&typeof o==='object'&&Array.isArray(o.items)) OVERHEAD={items:o.items}; }catch(e){ console.error('loadOverhead parse error:',e); } }
+}
+async function saveOverhead(){ OVERHEAD = await _saveKVMerged('overhead', OVERHEAD); }
+
+function overheadFmt(n){ return '$'+(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+
+function overheadAnnualTotal(){
+  return (OVERHEAD.items||[]).reduce((s,it)=>{
+    const amt=parseFloat(it.amount)||0;
+    return s + (it.period==='mo' ? amt*12 : amt);
+  },0);
+}
+// Σ over crew (with a real wage) of weekly hours × 52 — the hours that absorb overhead.
+function overheadAnnualLaborHours(){
+  return (CREW_DATA||[]).reduce((s,c)=>{
+    if((parseFloat(c.hourly)||0)<=0) return s;
+    return s + (parseFloat(c.hours)||40)*52;
+  },0);
+}
+function overheadPerHour(){
+  const hrs=overheadAnnualLaborHours();
+  return hrs>0 ? overheadAnnualTotal()/hrs : 0;
+}
+function overheadBreakdownText(){
+  const total=overheadAnnualTotal(), hours=overheadAnnualLaborHours();
+  if(total<=0) return 'Add your yearly business expenses to compute the overhead rate.';
+  if(hours<=0) return 'Set hourly rates on your crew so overhead can be spread across their labor hours.';
+  return overheadFmt(total)+' ÷ '+hours.toLocaleString()+' labor hrs/yr = $'+overheadPerHour().toFixed(2)+'/hr';
+}
+
+function renderOverhead(){
+  const el=document.getElementById('overhead-content'); if(!el) return;
+  const items=OVERHEAD.items||[];
+  const crewWithWage=(CREW_DATA||[]).filter(c=>(parseFloat(c.hourly)||0)>0);
+  let html=`<div style="max-width:920px;margin:0 auto;">`;
+
+  // Summary card
+  html+=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;margin-bottom:18px;">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1.1fr;gap:14px;text-align:center;align-items:center;">
+      <div><div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Total Annual Overhead</div><div id="ovh-total" style="font-size:22px;font-weight:700;font-family:'DM Mono',monospace;">${overheadFmt(overheadAnnualTotal())}</div></div>
+      <div><div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Annual Labor Hours</div><div id="ovh-hours" style="font-size:22px;font-weight:700;font-family:'DM Mono',monospace;">${overheadAnnualLaborHours().toLocaleString()}</div><div style="font-size:10.5px;color:var(--text3);">${crewWithWage.length} crew × hrs/wk × 52</div></div>
+      <div style="background:var(--accent-dim);border-radius:var(--radius-sm);padding:8px 6px;"><div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--accent);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Added to Labor</div><div id="ovh-perhour" style="font-size:23px;font-weight:800;font-family:'DM Mono',monospace;color:var(--accent);">$${overheadPerHour().toFixed(2)}/hr</div><div style="font-size:10.5px;color:var(--text3);">on every installer's burden</div></div>
+    </div>
+    <div id="ovh-breakdown" style="font-size:11.5px;color:var(--text3);text-align:center;margin-top:12px;font-family:'DM Mono',monospace;">${overheadBreakdownText()}</div>
+  </div>`;
+
+  // Quick-add chips
+  const sugg=['General Liability','Rent / Facility','Vehicles & Fuel','Equipment','Software','Marketing','Office / Admin','Accounting / Legal'];
+  html+=`<div style="margin-bottom:10px;"><span style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;margin-right:6px;">Quick add:</span>`;
+  html+=sugg.map(s=>`<button class="btn btn-ghost" style="font-size:11.5px;padding:4px 10px;margin:2px;" onclick="overheadQuickAdd('${s.replace(/'/g,"\\'")}')">+ ${s}</button>`).join('');
+  html+=`</div>`;
+
+  // Line-item list
+  if(!items.length){
+    html+=`<div style="padding:30px;text-align:center;color:var(--text3);font-size:13px;border:1px dashed var(--border2);border-radius:var(--radius);">No overhead expenses yet.<br><span style="font-size:12px;">Use the quick-add buttons above or “+ Add Expense” to list your yearly business costs.</span></div>`;
+  } else {
+    html+=`<div style="display:grid;grid-template-columns:1fr 130px 110px 80px 40px;gap:10px;padding:0 12px 6px;font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;">
+      <div>Expense</div><div style="text-align:right;">Amount</div><div>Per</div><div style="text-align:right;">$/yr</div><div></div></div>`;
+    html+=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;">`;
+    html+=items.map(it=>{
+      const ann=(parseFloat(it.amount)||0)*(it.period==='mo'?12:1);
+      const nm=(it.name||'').replace(/"/g,'&quot;');
+      return `<div style="display:grid;grid-template-columns:1fr 130px 110px 80px 40px;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border);">
+        <input class="form-input" id="ovh-name-${it.id}" value="${nm}" placeholder="Expense name" oninput="overheadSetField('${it.id}','name',this.value)" onblur="overheadCommit()" style="font-size:13px;padding:6px 10px;"/>
+        <div style="position:relative;"><span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--text3);font-size:12px;">$</span><input class="form-input" id="ovh-amt-${it.id}" type="number" min="0" step="0.01" value="${it.amount||''}" placeholder="0.00" oninput="overheadSetField('${it.id}','amount',this.value)" onblur="overheadCommit()" style="font-size:13px;padding:6px 10px 6px 20px;text-align:right;font-family:'DM Mono',monospace;"/></div>
+        <select class="form-select" onchange="overheadSetField('${it.id}','period',this.value);overheadCommit()" style="font-size:12.5px;padding:6px 8px;"><option value="yr"${it.period!=='mo'?' selected':''}>per year</option><option value="mo"${it.period==='mo'?' selected':''}>per month</option></select>
+        <div id="ovh-ann-${it.id}" style="text-align:right;font-size:12px;font-family:'DM Mono',monospace;color:var(--text2);">$${ann.toLocaleString('en-US',{maximumFractionDigits:0})}</div>
+        <button class="btn btn-ghost" style="font-size:12px;padding:4px 8px;color:var(--red);" onclick="overheadDeleteItem('${it.id}')">✕</button>
+      </div>`;
+    }).join('');
+    html+=`</div>`;
+  }
+
+  // General Liability migration notice
+  const glCrew=crewWithWage.filter(c=>(parseFloat(c.gl)||0)>0);
+  html+=`<div style="margin-top:18px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;">`;
+  if(glCrew.length){
+    html+=`<div style="font-size:12.5px;color:var(--text);margin-bottom:8px;">⚠ ${glCrew.length} installer${glCrew.length>1?'s':''} still carr${glCrew.length>1?'y':'ies'} a General Liability % inside their individual burden. Add your real GL premium as an overhead line above, then click below to remove the per-installer % so GL isn't counted twice.</div>
+      <button class="btn btn-primary" style="font-size:12px;" onclick="overheadMoveGL()">Move GL into overhead — set each installer's GL to 0%</button>`;
+  } else {
+    html+=`<div style="font-size:12.5px;color:var(--text2);">✓ No per-installer General Liability % remaining — GL is captured only through your overhead expenses above.</div>`;
+  }
+  html+=`</div>`;
+
+  html+=`<div style="font-size:11px;color:var(--text3);margin-top:14px;line-height:1.6;">This overhead rate is added to every crew member's burdened hourly cost (visible in each installer's burden breakdown and in Job Costing). It applies to work logged from now on; days already logged keep the cost recorded at the time.</div>`;
+  html+=`</div>`;
+  el.innerHTML=html;
+}
+
+function overheadRefreshSummary(){
+  const t=document.getElementById('ovh-total'); if(t) t.textContent=overheadFmt(overheadAnnualTotal());
+  const ph=document.getElementById('ovh-perhour'); if(ph) ph.textContent='$'+overheadPerHour().toFixed(2)+'/hr';
+  const bd=document.getElementById('ovh-breakdown'); if(bd) bd.textContent=overheadBreakdownText();
+}
+function overheadSetField(id,field,val){
+  const it=(OVERHEAD.items||[]).find(x=>x.id===id); if(!it) return;
+  it[field]=val;
+  if(field==='amount'||field==='period'){
+    const ann=(parseFloat(it.amount)||0)*(it.period==='mo'?12:1);
+    const cell=document.getElementById('ovh-ann-'+id); if(cell) cell.textContent='$'+ann.toLocaleString('en-US',{maximumFractionDigits:0});
+  }
+  overheadRefreshSummary();
+}
+function overheadCommit(){ saveOverhead(); }
+function overheadAddItem(name){
+  const prefilled = (typeof name==='string' && name);
+  if(!OVERHEAD.items) OVERHEAD.items=[];
+  const id='ovh_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+  OVERHEAD.items.push({id, name: prefilled?name:'', amount:'', period:'yr'});
+  saveOverhead();
+  renderOverhead();
+  setTimeout(()=>{ const f=document.getElementById((prefilled?'ovh-amt-':'ovh-name-')+id); if(f) f.focus(); },30);
+}
+function overheadQuickAdd(name){ overheadAddItem(name); }
+function overheadDeleteItem(id){
+  OVERHEAD.items=(OVERHEAD.items||[]).filter(x=>x.id!==id);
+  saveOverhead();
+  renderOverhead();
+}
+async function overheadMoveGL(){
+  const affected=(CREW_DATA||[]).filter(c=>(parseFloat(c.hourly)||0)>0 && (parseFloat(c.gl)||0)>0);
+  if(!affected.length){ showToast('No installers have a GL % to move.'); return; }
+  if(!confirm('Set the General Liability line to 0% for '+affected.length+' installer'+(affected.length>1?'s':'')+'?\n\nTheir GL will then come only from your overhead expenses. Do this AFTER adding your GL premium as an overhead line above.')) return;
+  let n=0;
+  for(let i=0;i<CREW_DATA.length;i++){
+    const c=CREW_DATA[i];
+    if((parseFloat(c.hourly)||0)>0 && (parseFloat(c.gl)||0)>0){ c.gl='0'; await dbSaveCrew(c,i); n++; }
+  }
+  showToast('✓ GL moved to overhead for '+n+' installer'+(n>1?'s':'')+'.');
+  renderOverhead();
+  renderCrewCards();
+}
+
 function calcBurdenForCrew(c){
   const hr  = parseFloat(c.hourly);
   const hrs = parseFloat(c.hours) || 40;
@@ -8804,7 +8963,7 @@ function calcBurdenForCrew(c){
   const ptoDays    = parseFloat(c.ptoDays||0);
   const annualHrs  = hrs * 52;
   const ptoHrCost  = annualHrs > 0 ? (ptoDays * 8 * hr) / annualHrs : 0;
-  return (hr*(1+ss+med+futa+wc+gl) + benefitsHr + ptoHrCost).toFixed(2);
+  return (hr*(1+ss+med+futa+wc+gl) + benefitsHr + ptoHrCost + overheadPerHour()).toFixed(2);
 }
 
 function calcBurden(){
@@ -8835,7 +8994,8 @@ function calcBurden(){
   }
 
   const totalPct = (ss+med+futa+wc+gl)*100;
-  const bHr = hr*(1+ss+med+futa+wc+gl) + benefitsHr + ptoHrCost;
+  const ovhHr = overheadPerHour();
+  const bHr = hr*(1+ss+med+futa+wc+gl) + benefitsHr + ptoHrCost + ovhHr;
   const bWk = bHr * hrs;
 
   const rows = [
@@ -8848,6 +9008,7 @@ function calcBurden(){
   ];
   if(benefitsHr>0) rows.push({label:'Health / Benefits', val:benefitsHr, note:'$'+benefitsMo.toFixed(2)+'/mo × 12 ÷ '+annualHrs+' hrs/yr'});
   if(ptoHrCost>0)  rows.push({label:'PTO ('+ptoDays+' days/yr)', val:ptoHrCost, note:'$'+ptoAnnCost.toFixed(2)+'/yr ÷ '+annualHrs+' hrs worked'});
+  if(ovhHr>0)      rows.push({label:'Business Overhead', val:ovhHr, note:'$'+Math.round(overheadAnnualTotal()).toLocaleString()+'/yr ÷ '+overheadAnnualLaborHours().toLocaleString()+' crew hrs/yr'});
 
   document.getElementById('ce-breakdown').innerHTML = rows.map(r=>
     `<div style="display:grid;grid-template-columns:1fr auto;padding:8px 16px;border-bottom:1px solid var(--border);background:${r.highlight?'var(--surface3)':'transparent'};">
@@ -8863,7 +9024,7 @@ function calcBurden(){
 
   document.getElementById('ce-burdened-hr').textContent = '$'+bHr.toFixed(2)+'/hr';
   document.getElementById('ce-burdened-wk').textContent = '$'+bWk.toFixed(2)+'/wk';
-  document.getElementById('ce-burden-pct').textContent  = 'Total burden: '+totalPct.toFixed(2)+'% above base + PTO & benefits — every $'+hr.toFixed(2)+' base hour truly costs $'+bHr.toFixed(2);
+  document.getElementById('ce-burden-pct').textContent  = 'Total burden: '+totalPct.toFixed(2)+'% above base + PTO, benefits & overhead — every $'+hr.toFixed(2)+' base hour truly costs $'+bHr.toFixed(2);
   res.style.display = 'block';
 }
 
