@@ -522,7 +522,7 @@
         <div class="topbar-actions"><button class="btn btn-primary" onclick="openLeadModalForStage('new')">+ Add Lead</button></div>
       </div>
       <div class="content">
-        <div class="pipeline" id="pipeline-board"></div>
+        <div id="pipeline-board"></div>
       </div>
     </div>
 
@@ -7707,71 +7707,73 @@ const TAG_COLORS = {
 function renderPipeline(){
   const board = document.getElementById('pipeline-board');
   if(!board) return;
-  board.innerHTML = PIPELINE_STAGES.map(stage=>{
+  const fmtT=t=>{if(!t)return '';const[h,m]=t.split(':');const hr=parseInt(h);return(hr%12||12)+':'+m+(hr<12?'am':'pm');};
+  let html='<div style="display:flex;flex-direction:column;max-width:1120px;">';
+  PIPELINE_STAGES.forEach(stage=>{
     const leads = LEADS.filter(l=>l.stage===stage.id);
-    const cards = leads.length
-      ? leads.map((l,i)=>{
-          const realIdx = LEADS.indexOf(l);
-          const tagClass = getTagClass(l.jobType);
-          const custClass = l.custType==='Commercial'?'commercial':'residential';
-          const visit = getLeadVisit(l.name);
-          const bookBtnLabel = visit ? '📅 Edit Visit' : '📅 Book Estimate';
-          const wonBtn = stage.id!=='won'
-            ? `<button onclick="bookLeadVisit(${realIdx})" class="btn ${visit?'btn-ghost':'btn-primary'}" style="width:100%;margin-top:10px;font-size:12px;padding:6px 10px;${visit?'color:var(--blue);border-color:var(--blue);':''}">${bookBtnLabel}</button>
-               <div style="display:flex;gap:5px;margin-top:6px;flex-wrap:wrap;">
-                ${stage.id!=='new'?`<button onclick="moveLead(${realIdx},'${prevStage(stage.id)}')" class="btn btn-ghost" style="font-size:10px;padding:3px 7px;">← Back</button>`:''}
-                <button onclick="editLead(${realIdx})" class="btn btn-ghost" style="font-size:10px;padding:3px 7px;">✏️ Edit</button>
-                <button onclick="deleteLead(${realIdx})" class="btn btn-ghost" style="font-size:10px;padding:3px 7px;color:var(--red);">✕</button>
-                <button onclick="moveLead(${realIdx},'${nextStage(stage.id)}')" class="btn btn-ghost" style="font-size:10px;padding:3px 7px;margin-left:auto;">${nextLabel(stage.id)} →</button>
-               </div>`
-            : `<div style="display:flex;gap:5px;margin-top:8px;">
-                <button onclick="editLead(${realIdx})" class="btn btn-ghost" style="font-size:10px;padding:3px 7px;">✏️ Edit</button>
-                <button onclick="deleteLead(${realIdx})" class="btn btn-ghost" style="font-size:10px;padding:3px 7px;color:var(--red);">✕</button>
-                <button onclick="markAsWon(${realIdx})" class="btn btn-green" style="font-size:11px;padding:5px 10px;margin-left:auto;">✓ Won — Add to Jobs</button>
-               </div>`;
-          const visitBadge = visit ? (()=>{
-            const d=new Date(visit.date+'T00:00:00');
-            const dateLabel=d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
-            const fmt=t=>{if(!t)return '';const[h,m]=t.split(':');const hr=parseInt(h);return(hr%12||12)+':'+m+(hr<12?'am':'pm');};
-            return `<div style="margin-top:6px;background:var(--blue-dim);border:1px solid var(--blue)44;border-radius:4px;padding:4px 8px;font-size:10.5px;color:var(--blue);">
-              📅 ${visit.type} — ${dateLabel}${visit.time?' at '+fmt(visit.time):''}
-            </div>`;
-          })() : '';
-          return `<div class="lead-card ${custClass}">
-            <div class="lead-name">${l.name}</div>
-            <div class="lead-detail">${l.detail||''}</div>
-            ${(l.phone||l.phone2)?`<div class="lead-detail" style="color:var(--text2);">📞 ${l.phone||''}${l.phone2?' · '+l.phone2:''}</div>`:''}
-            <div class="lead-tags">
-              <span class="tag ${tagClass}">${l.jobType}</span>
-              <span class="tag ${l.custType==='Commercial'?'tag-com':'tag-res'}">${l.custType}</span>
-            </div>
-            ${l.value?`<div class="lead-value">${parseFloat(l.value).toLocaleString('en-US',{style:'currency',currency:'USD'})}</div>`:''}
-            <div class="lead-date">${l.date||''}</div>
-            ${stage.id==='quoted'?(()=>{
-              const key=String(l.db_id||l.name);
-              const qd=LEAD_QUOTED_DATES[key];
-              if(!qd) return '';
-              const days=Math.floor((Date.now()-new Date(qd).getTime())/(24*60*60*1000));
-              const remaining=7-days;
-              const color=remaining<=1?'var(--red)':remaining<=3?'var(--orange)':'var(--text3)';
-              return `<div style="font-size:10.5px;color:${color};margin-top:4px;">${days===0?'Sent today':days===1?'Sent yesterday':`Sent ${days} days ago`}${remaining>0?` · auto follow-up in ${remaining}d`:' · moving to Follow-Up…'}</div>`;
-            })():''}
-            ${visitBadge}
-            ${wonBtn}
-          </div>`;
-        }).join('')
-      : `<div class="sch-empty" style="padding:16px;">${stage.emptyText}</div>`;
-
-    const addBtn = `<div class="quick-add-strip" onclick="openLeadModalForStage('${stage.id}')">+ Add lead</div>`;
-
-    return `<div class="pipeline-col" style="border-top:3px solid ${stage.color};">
-      <div class="pipeline-header">
-        <span class="pipeline-stage" style="color:${stage.color};">${stage.label}</span>
-        <span class="pipeline-count">${leads.length}</span>
-      </div>
-      <div class="pipeline-cards">${cards}${addBtn}</div>
+    // Section header (stage name + count + add-to-stage)
+    html+=`<div style="display:flex;align-items:center;gap:10px;padding:14px 2px 6px;">
+      <span style="font-size:10px;font-family:'DM Mono',monospace;color:${stage.color};text-transform:uppercase;letter-spacing:.7px;font-weight:700;">${stage.label} &nbsp;·&nbsp; ${leads.length}</span>
+      <button onclick="openLeadModalForStage('${stage.id}')" style="background:none;border:none;cursor:pointer;color:var(--text3);font-size:11px;font-family:'DM Mono',monospace;padding:2px 4px;" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text3)'">+ Add lead</button>
     </div>`;
-  }).join('');
+    if(!leads.length){
+      html+=`<div style="padding:13px 16px;color:var(--text3);font-size:12px;border:1px dashed var(--border2);border-radius:var(--radius-sm);margin-bottom:5px;">${stage.emptyText}</div>`;
+      return;
+    }
+    leads.forEach(l=>{
+      const realIdx = LEADS.indexOf(l);
+      const tagClass = getTagClass(l.jobType);
+      const custPill = l.custType==='Commercial'?'tag-com':'tag-res';
+      const visit = getLeadVisit(l.name);
+      const valStr = l.value?parseFloat(l.value).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}):'';
+      // Booked visit → show it; else in Estimate Sent → show the auto-follow-up timer
+      let note='';
+      if(visit){
+        const d=new Date(visit.date+'T00:00:00');
+        const dl=d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+        note=`<span style="color:var(--blue);">📅 ${visit.type} — ${dl}${visit.time?' at '+fmtT(visit.time):''}</span>`;
+      } else if(stage.id==='quoted'){
+        const key=String(l.db_id||l.name);
+        const qd=LEAD_QUOTED_DATES[key];
+        if(qd){
+          const days=Math.floor((Date.now()-new Date(qd).getTime())/(24*60*60*1000));
+          const remaining=7-days;
+          const color=remaining<=1?'var(--red)':remaining<=3?'var(--orange)':'var(--text3)';
+          note=`<span style="color:${color};">${days===0?'Sent today':days===1?'Sent yesterday':'Sent '+days+' days ago'}${remaining>0?' · auto follow-up in '+remaining+'d':' · moving to Follow-Up…'}</span>`;
+        }
+      }
+      // Action buttons (preserve all stage actions from the kanban)
+      let actions='';
+      if(stage.id==='won'){
+        actions+=`<button class="btn btn-green" style="font-size:11px;padding:4px 10px;" onclick="markAsWon(${realIdx})">✓ Add to Jobs</button>`;
+      } else {
+        actions+=`<button class="btn ${visit?'btn-ghost':'btn-primary'}" style="font-size:11px;padding:4px 10px;white-space:nowrap;${visit?'color:var(--blue);border-color:var(--blue);':''}" onclick="bookLeadVisit(${realIdx})">${visit?'📅 Edit Visit':'📅 Book Estimate'}</button>`;
+        if(stage.id!=='new') actions+=`<button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;" title="Move back" onclick="moveLead(${realIdx},'${prevStage(stage.id)}')">←</button>`;
+        actions+=`<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;white-space:nowrap;" onclick="moveLead(${realIdx},'${nextStage(stage.id)}')">${nextLabel(stage.id)} →</button>`;
+      }
+      actions+=`<button style="background:none;border:none;cursor:pointer;color:var(--text3);padding:4px 7px;font-size:13px;line-height:1;" title="Edit" onclick="editLead(${realIdx})" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">✏</button>`;
+      actions+=`<button style="background:none;border:none;cursor:pointer;color:var(--text3);padding:4px 7px;font-size:13px;line-height:1;" title="Delete" onclick="deleteLead(${realIdx})" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text3)'">✕</button>`;
+
+      const phoneStr = l.phone?((l.detail?' &nbsp;·&nbsp; ':'')+'📞 '+l.phone+(l.phone2?' / '+l.phone2:'')):'';
+      html+=`<div style="display:flex;align-items:center;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius-sm);margin-bottom:5px;overflow:hidden;min-height:54px;">
+        <div style="width:4px;align-self:stretch;background:${stage.color};flex-shrink:0;"></div>
+        <div style="flex:1;padding:9px 14px;min-width:0;overflow:hidden;cursor:pointer;" onclick="editLead(${realIdx})" title="Click to edit lead">
+          <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
+            <span style="font-size:13.5px;font-weight:600;color:var(--text);">${l.name}</span>
+            ${l.jobType?`<span class="tag ${tagClass}" style="font-size:9.5px;padding:1px 7px;">${l.jobType}</span>`:''}
+            ${l.custType?`<span class="tag ${custPill}" style="font-size:9.5px;padding:1px 7px;">${l.custType}</span>`:''}
+          </div>
+          ${(l.detail||phoneStr)?`<div style="font-size:11px;color:var(--text2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${l.detail||''}${phoneStr}</div>`:''}
+          ${note?`<div style="font-size:10.5px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${note}</div>`:''}
+        </div>
+        ${valStr?`<div style="font-family:'DM Mono',monospace;font-size:13px;font-weight:700;color:var(--accent);padding:0 14px;flex-shrink:0;white-space:nowrap;">${valStr}</div>`:''}
+        ${l.date?`<div style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text3);padding:0 10px;flex-shrink:0;white-space:nowrap;">${l.date}</div>`:''}
+        <div style="display:flex;align-items:center;gap:4px;padding:8px 10px 8px 0;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;max-width:330px;">${actions}</div>
+      </div>`;
+    });
+  });
+  html+='</div>';
+  board.innerHTML=html;
 }
 
 function prevStage(id){ const ids=PIPELINE_STAGES.map(s=>s.id); const i=ids.indexOf(id); return i>0?ids[i-1]:id; }
