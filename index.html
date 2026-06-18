@@ -7921,7 +7921,7 @@ function _fmtApprovedDate(d){ if(!d) return ''; const dt=new Date(d+'T12:00:00')
 function renderJobsListView(){
   const container = document.getElementById('jobs-list-view');
   if(!container || _jobsViewMode !== 'list') return;
-  const statusOrder  = ['inprogress','approved','scheduled','complete'];
+  const statusOrder  = ['approved','scheduled','inprogress','complete'];
   const statusLabels = {approved:'Approved',scheduled:'Scheduled',inprogress:'In Progress',complete:'Complete'};
   const statusColors = {approved:'var(--accent)',scheduled:'var(--blue)',inprogress:'var(--green)',complete:'var(--text3)'};
   const nextStages   = {approved:'scheduled',scheduled:'inprogress',inprogress:'complete'};
