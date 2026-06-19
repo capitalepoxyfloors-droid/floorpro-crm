@@ -7545,7 +7545,7 @@ function openLeadModalForStage(stage){
 }
 
 function stageLabelFull(id){
-  const map={new:'New',scheduled:'Scheduled',quoted:'Estimate Sent',followup:'Follow-Up',won:'Won'};
+  const map={new:'New',scheduled:'Scheduled',quoted:'Estimate Sent',followup:'Follow-Up',won:'Won',lost:'Archived'};
   return map[id]||id;
 }
 
@@ -7814,14 +7814,40 @@ const TAG_COLORS = {
   'Epoxy Flake':          'tag-epoxy', 'Surface Prep':'tag-res',
 };
 
+let _pipeShowArchived=false;
 function renderPipeline(){
   const board = document.getElementById('pipeline-board');
   if(!board) return;
   const fmtT=t=>{if(!t)return '';const[h,m]=t.split(':');const hr=parseInt(h);return(hr%12||12)+':'+m+(hr<12?'am':'pm');};
+
+  // Shared row renderer — used by both active stage sections and the Archived section
+  function rowHtml(l, realIdx, barColor, note, actions){
+    const tagClass = getTagClass(l.jobType);
+    const custPill = l.custType==='Commercial'?'tag-com':'tag-res';
+    const valStr = l.value?parseFloat(l.value).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}):'';
+    const phoneStr = l.phone?((l.detail?' &nbsp;·&nbsp; ':'')+'📞 '+l.phone+(l.phone2?' / '+l.phone2:'')):'';
+    return `<div style="display:flex;align-items:center;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius-sm);margin-bottom:5px;overflow:hidden;min-height:54px;">
+      <div style="width:4px;align-self:stretch;background:${barColor};flex-shrink:0;"></div>
+      <div style="flex:1;padding:9px 14px;min-width:0;overflow:hidden;cursor:pointer;" onclick="editLead(${realIdx})" title="Click to edit lead">
+        <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
+          <span style="font-size:13.5px;font-weight:600;color:var(--text);">${l.name}</span>
+          ${l.jobType?`<span class="tag ${tagClass}" style="font-size:9.5px;padding:1px 7px;">${l.jobType}</span>`:''}
+          ${l.custType?`<span class="tag ${custPill}" style="font-size:9.5px;padding:1px 7px;">${l.custType}</span>`:''}
+        </div>
+        ${(l.detail||phoneStr)?`<div style="font-size:11px;color:var(--text2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${l.detail||''}${phoneStr}</div>`:''}
+        ${note?`<div style="font-size:10.5px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${note}</div>`:''}
+      </div>
+      ${valStr?`<div style="font-family:'DM Mono',monospace;font-size:13px;font-weight:700;color:var(--accent);padding:0 14px;flex-shrink:0;white-space:nowrap;">${valStr}</div>`:''}
+      ${l.date?`<div style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text3);padding:0 10px;flex-shrink:0;white-space:nowrap;">${l.date}</div>`:''}
+      <div style="display:flex;align-items:center;gap:4px;padding:8px 10px 8px 0;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;max-width:340px;">${actions}</div>
+    </div>`;
+  }
+  const editBtn=ri=>`<button style="background:none;border:none;cursor:pointer;color:var(--text3);padding:4px 7px;font-size:13px;line-height:1;" title="Edit" onclick="editLead(${ri})" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">✏</button>`;
+  const delBtn=ri=>`<button style="background:none;border:none;cursor:pointer;color:var(--text3);padding:4px 7px;font-size:13px;line-height:1;" title="Delete permanently" onclick="deleteLead(${ri})" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text3)'">✕</button>`;
+
   let html='<div style="display:flex;flex-direction:column;max-width:1120px;">';
   PIPELINE_STAGES.forEach(stage=>{
     const leads = LEADS.filter(l=>l.stage===stage.id);
-    // Section header (stage name + count + add-to-stage)
     html+=`<div style="display:flex;align-items:center;gap:10px;padding:14px 2px 6px;">
       <span style="font-size:10px;font-family:'DM Mono',monospace;color:${stage.color};text-transform:uppercase;letter-spacing:.7px;font-weight:700;">${stage.label} &nbsp;·&nbsp; ${leads.length}</span>
       <button onclick="openLeadModalForStage('${stage.id}')" style="background:none;border:none;cursor:pointer;color:var(--text3);font-size:11px;font-family:'DM Mono',monospace;padding:2px 4px;" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text3)'">+ Add lead</button>
@@ -7832,10 +7858,7 @@ function renderPipeline(){
     }
     leads.forEach(l=>{
       const realIdx = LEADS.indexOf(l);
-      const tagClass = getTagClass(l.jobType);
-      const custPill = l.custType==='Commercial'?'tag-com':'tag-res';
       const visit = getLeadVisit(l.name);
-      const valStr = l.value?parseFloat(l.value).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}):'';
       // Booked visit → show it; else in Estimate Sent → show the auto-follow-up timer
       let note='';
       if(visit){
@@ -7852,7 +7875,7 @@ function renderPipeline(){
           note=`<span style="color:${color};">${days===0?'Sent today':days===1?'Sent yesterday':'Sent '+days+' days ago'}${remaining>0?' · auto follow-up in '+remaining+'d':' · moving to Follow-Up…'}</span>`;
         }
       }
-      // Action buttons (preserve all stage actions from the kanban)
+      // Action buttons (preserve all stage actions; add Archive for non-won leads)
       let actions='';
       if(stage.id==='won'){
         actions+=`<button class="btn btn-green" style="font-size:11px;padding:4px 10px;" onclick="markAsWon(${realIdx})">✓ Add to Jobs</button>`;
@@ -7860,30 +7883,48 @@ function renderPipeline(){
         actions+=`<button class="btn ${visit?'btn-ghost':'btn-primary'}" style="font-size:11px;padding:4px 10px;white-space:nowrap;${visit?'color:var(--blue);border-color:var(--blue);':''}" onclick="bookLeadVisit(${realIdx})">${visit?'📅 Edit Visit':'📅 Book Estimate'}</button>`;
         if(stage.id!=='new') actions+=`<button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;" title="Move back" onclick="moveLead(${realIdx},'${prevStage(stage.id)}')">←</button>`;
         actions+=`<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;white-space:nowrap;" onclick="moveLead(${realIdx},'${nextStage(stage.id)}')">${nextLabel(stage.id)} →</button>`;
+        actions+=`<button style="background:none;border:none;cursor:pointer;color:var(--text3);padding:4px 7px;font-size:14px;line-height:1;" title="Archive — lead died" onclick="archiveLead(${realIdx})" onmouseover="this.style.color='var(--orange)'" onmouseout="this.style.color='var(--text3)'">🗄</button>`;
       }
-      actions+=`<button style="background:none;border:none;cursor:pointer;color:var(--text3);padding:4px 7px;font-size:13px;line-height:1;" title="Edit" onclick="editLead(${realIdx})" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">✏</button>`;
-      actions+=`<button style="background:none;border:none;cursor:pointer;color:var(--text3);padding:4px 7px;font-size:13px;line-height:1;" title="Delete" onclick="deleteLead(${realIdx})" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text3)'">✕</button>`;
-
-      const phoneStr = l.phone?((l.detail?' &nbsp;·&nbsp; ':'')+'📞 '+l.phone+(l.phone2?' / '+l.phone2:'')):'';
-      html+=`<div style="display:flex;align-items:center;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius-sm);margin-bottom:5px;overflow:hidden;min-height:54px;">
-        <div style="width:4px;align-self:stretch;background:${stage.color};flex-shrink:0;"></div>
-        <div style="flex:1;padding:9px 14px;min-width:0;overflow:hidden;cursor:pointer;" onclick="editLead(${realIdx})" title="Click to edit lead">
-          <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
-            <span style="font-size:13.5px;font-weight:600;color:var(--text);">${l.name}</span>
-            ${l.jobType?`<span class="tag ${tagClass}" style="font-size:9.5px;padding:1px 7px;">${l.jobType}</span>`:''}
-            ${l.custType?`<span class="tag ${custPill}" style="font-size:9.5px;padding:1px 7px;">${l.custType}</span>`:''}
-          </div>
-          ${(l.detail||phoneStr)?`<div style="font-size:11px;color:var(--text2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${l.detail||''}${phoneStr}</div>`:''}
-          ${note?`<div style="font-size:10.5px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${note}</div>`:''}
-        </div>
-        ${valStr?`<div style="font-family:'DM Mono',monospace;font-size:13px;font-weight:700;color:var(--accent);padding:0 14px;flex-shrink:0;white-space:nowrap;">${valStr}</div>`:''}
-        ${l.date?`<div style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text3);padding:0 10px;flex-shrink:0;white-space:nowrap;">${l.date}</div>`:''}
-        <div style="display:flex;align-items:center;gap:4px;padding:8px 10px 8px 0;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;max-width:330px;">${actions}</div>
-      </div>`;
+      actions+=editBtn(realIdx)+delBtn(realIdx);
+      html+=rowHtml(l, realIdx, stage.color, note, actions);
     });
   });
+
+  // Archived (dead) leads — collapsible, only appears once at least one lead is archived
+  const archived = LEADS.filter(l=>l.stage==='lost');
+  if(archived.length){
+    html+=`<div onclick="togglePipeArchived()" style="display:flex;align-items:center;gap:8px;padding:18px 2px 6px;cursor:pointer;border-top:1px solid var(--border2);margin-top:12px;">
+      <span style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.7px;font-weight:700;">🗄 Archived &nbsp;·&nbsp; ${archived.length}</span>
+      <span style="font-size:11px;color:var(--text3);">${_pipeShowArchived?'▲ Hide':'▼ Show'}</span>
+    </div>`;
+    if(_pipeShowArchived){
+      archived.forEach(l=>{
+        const realIdx=LEADS.indexOf(l);
+        const actions=`<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;" title="Move back into the pipeline" onclick="restoreLead(${realIdx})">↩ Restore</button>`+editBtn(realIdx)+delBtn(realIdx);
+        html+=rowHtml(l, realIdx, 'var(--text3)', '', actions);
+      });
+    }
+  }
+
   html+='</div>';
   board.innerHTML=html;
+}
+function togglePipeArchived(){ _pipeShowArchived=!_pipeShowArchived; renderPipeline(); }
+function archiveLead(idx){
+  const l=LEADS[idx]; if(!l) return;
+  l.stage='lost';
+  const key=String(l.db_id||l.name);
+  if(LEAD_QUOTED_DATES[key]){ delete LEAD_QUOTED_DATES[key]; saveLeadQuotedDates(); }
+  dbSaveLead(l);
+  renderPipeline();
+  showToast('🗄 Lead archived — see the Archived section.');
+}
+function restoreLead(idx){
+  const l=LEADS[idx]; if(!l) return;
+  l.stage='new';
+  dbSaveLead(l);
+  renderPipeline();
+  showToast('↩ Lead restored to New.');
 }
 
 function prevStage(id){ const ids=PIPELINE_STAGES.map(s=>s.id); const i=ids.indexOf(id); return i>0?ids[i-1]:id; }
