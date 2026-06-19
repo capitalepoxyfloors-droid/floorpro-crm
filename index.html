@@ -274,6 +274,12 @@
     .crew-picker{grid-template-columns:1fr;}
     .form-row{grid-template-columns:1fr;}
   }
+  @media(max-width:760px){
+    #jobs-view-toggle{display:none!important;}   /* beats the inline display:flex; 4-col board can't fit a phone */
+    .jlist-row{flex-wrap:wrap;}
+    .jlist-row .jlist-date{display:none!important;}
+    .jlist-row .jlist-actions{width:100%!important;justify-content:flex-start!important;flex-wrap:wrap;padding:2px 12px 10px 20px!important;}
+  }
   /* ── CREW VIEW ─────────────────────────────────────────────────────────────── */
   .cv-topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:5;}
   .cv-month-label{font-size:17px;font-weight:700;letter-spacing:-.4px;}
@@ -586,7 +592,7 @@
             + Add Wave Job
           </button>
           <button class="btn btn-primary" onclick="openModal('schedulejob')">+ Schedule Job</button>
-          <div style="display:flex;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);overflow:hidden;flex-shrink:0;">
+          <div id="jobs-view-toggle" style="display:flex;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);overflow:hidden;flex-shrink:0;">
             <button id="jobs-view-board" onclick="setJobsView('board')" title="Board view" style="padding:6px 10px;border:none;cursor:pointer;background:var(--accent);color:#fff;line-height:1;transition:all .15s;">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
             </button>
@@ -8012,15 +8018,24 @@ function updateJobCounts(){
 // ── Jobs List View ────────────────────────────────────────────────────────────
 let _jobsViewMode = localStorage.getItem('jobs_view_mode') || 'board';
 
+// Phones can't fit the 4-column board (its inline grid-template overrides the responsive CSS),
+// so below this width the readable list view is forced regardless of the saved preference.
+function _jobsForceList(){ try{ return window.matchMedia('(max-width:760px)').matches; }catch(e){ return false; } }
+function _jobsListActive(){ return _jobsForceList() || _jobsViewMode==='list'; }
+
 function setJobsView(mode){
   _jobsViewMode = mode;
-  localStorage.setItem('jobs_view_mode', mode);
+  try{ localStorage.setItem('jobs_view_mode', mode); }catch(e){}
+  applyJobsView();
+}
+function applyJobsView(){
   const board    = document.getElementById('jobs-board');
   const listView = document.getElementById('jobs-list-view');
   const btnBoard = document.getElementById('jobs-view-board');
   const btnList  = document.getElementById('jobs-view-list');
   if(!board || !listView) return;
-  if(mode === 'list'){
+  const effective = _jobsForceList() ? 'list' : _jobsViewMode;
+  if(effective === 'list'){
     board.style.display    = 'none';
     listView.style.display = 'block';
     renderJobsListView();
@@ -8033,6 +8048,12 @@ function setJobsView(mode){
     if(btnList){  btnList.style.background='transparent';    btnList.style.color='var(--text2)'; }
   }
 }
+// Re-apply when crossing the phone breakpoint (rotate / resize) while the Jobs page is open.
+try{
+  window.matchMedia('(max-width:760px)').addEventListener('change', ()=>{
+    if(document.getElementById('page-jobs')?.classList.contains('active')) applyJobsView();
+  });
+}catch(e){}
 
 // Force a Wave sync on demand. The web app can't run the local Wave script directly, so it
 // flags a request; the background watcher on this PC (every ~2 min) runs the sync, then we
@@ -8058,7 +8079,7 @@ async function requestWaveSync(){
     if(st && st!==prevStatus && finishedTs>=ts){
       clearInterval(iv);
       const added=parseInt(st.split('|')[1]||'0')||0;
-      try{ await loadJobs(); if(typeof _jobsViewMode!=='undefined' && _jobsViewMode==='list') renderJobsListView(); }catch(e){}
+      try{ await loadJobs(); if(_jobsListActive()) renderJobsListView(); }catch(e){}
       finish(added>0?('Wave sync done — added '+added+' approved job'+(added!==1?'s':'')+'.'):'Wave sync done — no new accepted estimates.', added>0?('Synced — '+added+' new'):'Up to date');
     } else if(tries>=18){ clearInterval(iv); finish('Sync is still working — give it a moment, then refresh the Jobs page.'); }
   }, 12000);
@@ -8071,7 +8092,7 @@ function _fmtApprovedDate(d){ if(!d) return ''; const dt=new Date(d+'T12:00:00')
 
 function renderJobsListView(){
   const container = document.getElementById('jobs-list-view');
-  if(!container || _jobsViewMode !== 'list') return;
+  if(!container || !_jobsListActive()) return;
   const statusOrder  = ['approved','scheduled','inprogress','complete'];
   const statusLabels = {approved:'Approved',scheduled:'Scheduled',inprogress:'In Progress',complete:'Complete'};
   const statusColors = {approved:'var(--accent)',scheduled:'var(--blue)',inprogress:'var(--green)',complete:'var(--text3)'};
@@ -8120,7 +8141,7 @@ function renderJobsListView(){
       const sc=job.customer.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
       const _lwn=(job.notes||'').match(/Wave #(\d+)/);
       const _lwt=_lwn?` <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--text3);font-weight:400;">#${_lwn[1]}</span>`:'';
-      html+=`<div style="display:flex;align-items:center;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius-sm);margin-bottom:5px;overflow:hidden;cursor:pointer;transition:background .12s;min-height:54px;"
+      html+=`<div class="jlist-row" style="display:flex;align-items:center;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius-sm);margin-bottom:5px;overflow:hidden;cursor:pointer;transition:background .12s;min-height:54px;"
            onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background='var(--surface)'"
            onclick="listJobOpen('${sid}','${sc}')">
         <div style="width:4px;align-self:stretch;background:${color};flex-shrink:0;"></div>
@@ -8128,9 +8149,9 @@ function renderJobsListView(){
           <div style="font-size:13.5px;font-weight:600;color:var(--text);line-height:1.2;">${job.customer}${_lwt}</div>
           ${(job.jobLabel||job.detail)?`<div style="font-size:11px;color:var(--text2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${[job.jobLabel,job.detail].filter(Boolean).join(' &nbsp;·&nbsp; ')}</div>`:''}
         </div>
-        ${job.approvedDate?`<div style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text3);padding:0 8px;flex-shrink:0;white-space:nowrap;text-align:right;" title="Date approved">${_fmtApprovedDate(job.approvedDate)}</div>`:''}
+        ${job.approvedDate?`<div class="jlist-date" style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text3);padding:0 8px;flex-shrink:0;white-space:nowrap;text-align:right;" title="Date approved">${_fmtApprovedDate(job.approvedDate)}</div>`:''}
         <div style="font-family:'DM Mono',monospace;font-size:13px;font-weight:700;color:var(--accent);padding:0 16px;flex-shrink:0;white-space:nowrap;">${job.displayVal}</div>
-        <div style="display:flex;align-items:center;gap:4px;padding:0 10px 0 0;flex-shrink:0;" onclick="event.stopPropagation()">
+        <div class="jlist-actions" style="display:flex;align-items:center;gap:4px;padding:0 10px 0 0;flex-shrink:0;" onclick="event.stopPropagation()">
           ${status==='approved'?`<button class="btn btn-primary" style="font-size:11px;padding:4px 10px;" onclick="listJobSchedule('${sid}')">📅 Schedule</button>`:''}
           ${next?`<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;" onclick="listJobAdvance('${sid}')">${nextLbl}</button>`:''}
           ${status==='complete'?`<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;color:var(--blue);border-color:var(--blue-dim);" onclick="listJobInvoice('${sid}')">📄 Invoice</button>`:''}
@@ -8242,7 +8263,7 @@ function addJobCard(customer, jobLabel, value, displayVal, detail, status, exist
   `;
   col.appendChild(card);
   updateJobCounts();
-  if(typeof _jobsViewMode!=='undefined'&&_jobsViewMode==='list') setTimeout(renderJobsListView,0);
+  if(_jobsListActive()) setTimeout(renderJobsListView,0);
 }
 
 function advanceJobCard(btn, nextStatus){
@@ -8340,7 +8361,7 @@ function deleteJobCard(btn){
   card.remove();
   updateJobCounts();
   showToast('Job deleted.');
-  if(typeof _jobsViewMode!=='undefined'&&_jobsViewMode==='list') setTimeout(renderJobsListView,50);
+  if(_jobsListActive()) setTimeout(renderJobsListView,50);
 }
 
 // ── Invoice workflow ──────────────────────────────────────────────────────────
