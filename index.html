@@ -7832,7 +7832,7 @@ function renderPipeline(){
     const custPill = l.custType==='Commercial'?'tag-com':'tag-res';
     const valStr = l.value?parseFloat(l.value).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}):'';
     const phoneStr = l.phone?((l.detail?' &nbsp;·&nbsp; ':'')+'📞 '+l.phone+(l.phone2?' / '+l.phone2:'')):'';
-    return `<div style="display:flex;align-items:center;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius-sm);margin-bottom:5px;overflow:hidden;min-height:54px;">
+    return `<div class="jlist-row" style="display:flex;align-items:center;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius-sm);margin-bottom:5px;overflow:hidden;min-height:54px;">
       <div style="width:4px;align-self:stretch;background:${barColor};flex-shrink:0;"></div>
       <div style="flex:1;padding:9px 14px;min-width:0;overflow:hidden;cursor:pointer;" onclick="editLead(${realIdx})" title="Click to edit lead">
         <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
@@ -7844,8 +7844,8 @@ function renderPipeline(){
         ${note?`<div style="font-size:10.5px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${note}</div>`:''}
       </div>
       ${valStr?`<div style="font-family:'DM Mono',monospace;font-size:13px;font-weight:700;color:var(--accent);padding:0 14px;flex-shrink:0;white-space:nowrap;">${valStr}</div>`:''}
-      ${l.date?`<div style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text3);padding:0 10px;flex-shrink:0;white-space:nowrap;">${l.date}</div>`:''}
-      <div style="display:flex;align-items:center;gap:4px;padding:8px 10px 8px 0;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;max-width:340px;">${actions}</div>
+      ${l.date?`<div class="jlist-date" style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text3);padding:0 10px;flex-shrink:0;white-space:nowrap;">${l.date}</div>`:''}
+      <div class="jlist-actions" style="display:flex;align-items:center;gap:4px;padding:8px 10px 8px 0;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;max-width:340px;">${actions}</div>
     </div>`;
   }
   const editBtn=ri=>`<button style="background:none;border:none;cursor:pointer;color:var(--text3);padding:4px 7px;font-size:13px;line-height:1;" title="Edit" onclick="editLead(${ri})" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">✏</button>`;
