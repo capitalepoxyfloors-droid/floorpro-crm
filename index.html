@@ -65,6 +65,7 @@
   .stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px;}
   .stat-card{background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);padding:18px 20px;}
   .stat-label{font-size:11px;color:var(--text2);font-family:'DM Mono',monospace;letter-spacing:.5px;text-transform:uppercase;margin-bottom:10px;font-weight:600;}
+  .mgrid4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
   .stat-value{font-size:30px;font-weight:700;letter-spacing:-1px;}
   .stat-sub{font-size:12px;color:var(--text3);margin-top:6px;}
   .stat-sub .up{color:var(--green);}
@@ -273,12 +274,36 @@
     .job-installer,.job-value{display:none;}
     .crew-picker{grid-template-columns:1fr;}
     .form-row{grid-template-columns:1fr;}
+    /* Materials price list → 2-column card */
+    #page-materials .mat-head{display:none!important;}
+    #materials-list .job-row{grid-template-columns:1fr auto!important;gap:3px 10px!important;padding:11px 14px!important;align-items:start!important;}
+    #materials-list .job-row>div:nth-child(1){grid-column:1;grid-row:1;}
+    #materials-list .job-row>div:nth-child(6){grid-column:2;grid-row:1;justify-self:end;}
+    #materials-list .job-row>div:nth-child(4){grid-column:1;grid-row:2;}
+    #materials-list .job-row>div:nth-child(2){grid-column:2;grid-row:2;justify-self:end;align-self:center;}
+    #materials-list .job-row>div:nth-child(3){grid-column:1;grid-row:3;}
+    #materials-list .job-row>div:nth-child(5){grid-column:2;grid-row:3;justify-self:end;align-self:center;}
+    /* Overhead line items → 2-column card */
+    .ovh-head{display:none!important;}
+    .ovh-row{grid-template-columns:1fr auto!important;gap:6px 10px!important;}
+    .ovh-row>*:nth-child(1){grid-column:1/-1;}
+    .ovh-row>*:nth-child(2){grid-column:1;}
+    .ovh-row>*:nth-child(3){grid-column:2;}
+    .ovh-row>*:nth-child(4){grid-column:1;align-self:center;}
+    .ovh-row>*:nth-child(5){grid-column:2;justify-self:end;align-self:center;}
   }
   @media(max-width:760px){
     #jobs-view-toggle{display:none!important;}   /* beats the inline display:flex; 4-col board can't fit a phone */
     .jlist-row{flex-wrap:wrap;}
     .jlist-row .jlist-date{display:none!important;}
     .jlist-row .jlist-actions{width:100%!important;justify-content:flex-start!important;flex-wrap:wrap;padding:2px 12px 10px 20px!important;}
+    .mgrid4{grid-template-columns:repeat(2,1fr);}
+    .ovh-summary{grid-template-columns:1fr!important;}
+    #sched-container{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+    #calc-content{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+    .jc-cost-table{overflow-x:auto!important;-webkit-overflow-scrolling:touch;}
+    .jc-cost-table>div{min-width:520px;}
+    .stat-value{font-size:22px;}
   }
   /* ── CREW VIEW ─────────────────────────────────────────────────────────────── */
   .cv-topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:5;}
@@ -755,7 +780,7 @@
         <div class="info-box" style="margin-bottom:20px;">
           📖 Your private knowledge base — document tricky situations, what worked, and how you solved it so nothing gets forgotten.
         </div>
-        <div id="ref-stats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;"></div>
+        <div id="ref-stats" class="mgrid4" style="margin-bottom:20px;"></div>
         <div id="ref-list"></div>
       </div>
     </div>
@@ -772,7 +797,7 @@
       </div>
       <div class="content">
         <!-- Column headers -->
-        <div style="display:grid;grid-template-columns:2fr 1.2fr 1fr 1fr 1fr 90px;padding:0 16px 8px;gap:12px;align-items:center;">
+        <div class="mat-head" style="display:grid;grid-template-columns:2fr 1.2fr 1fr 1fr 1fr 90px;padding:0 16px 8px;gap:12px;align-items:center;">
           <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;">Product / Manufacturer</div>
           <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;">Category</div>
           <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;">Unit</div>
@@ -1827,7 +1852,7 @@ const DASH_WIDGETS = {
   stats: {
     title: null, // no header, just renders inline
     render: ()=>`
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding:16px;">
+      <div class="mgrid4" style="padding:16px;">
         <div class="stat-card" style="border:none;background:var(--surface2);"><div class="stat-label">Open Leads</div><div class="stat-value" style="color:var(--blue);font-size:24px;">0</div><div class="stat-sub">Add your first lead</div></div>
         <div class="stat-card" style="border:none;background:var(--surface2);"><div class="stat-label">Pipeline Value</div><div class="stat-value" style="color:var(--accent);font-size:24px;">$0</div><div class="stat-sub">No active leads yet</div></div>
         <div class="stat-card" style="border:none;background:var(--surface2);"><div class="stat-label">Jobs This Month</div><div class="stat-value" style="color:var(--green);font-size:24px;">0</div><div class="stat-sub">No jobs scheduled</div></div>
@@ -5090,13 +5115,13 @@ function renderJobCostingPage(){
   const profitPerDay=totWorkDays>0?Math.round(totProfit/totWorkDays*100)/100:null;
 
   let html=`
-  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px;">
+  <div class="mgrid4" style="margin-bottom:24px;">
     <div class="stat-card"><div class="stat-label">Total Revenue</div><div class="stat-value">${fmt(totRev)}</div></div>
     <div class="stat-card"><div class="stat-label">Avg Margin (Weighted)</div><div class="stat-value" style="color:${totMargin===null?'var(--text3)':totMargin>=0?'var(--green)':'var(--red)'};">${totMargin!==null?totMargin+'%':'—'}<span style="font-size:13px;font-weight:400;color:var(--text3);margin-left:6px;">${rows.length} job${rows.length!==1?'s':''}</span></div></div>
     <div class="stat-card"><div class="stat-label">Profit Per Day</div><div class="stat-value" style="color:${profitPerDay===null?'var(--text3)':profitPerDay>=0?'var(--green)':'var(--red)'};">${profitPerDay!==null?fmt(profitPerDay):'—'}${totWorkDays>0?`<span style="font-size:13px;font-weight:500;color:var(--text3);margin-left:8px;">${totWorkDays}d</span>`:''}</div></div>
     <div class="stat-card"><div class="stat-label">Gross Profit</div><div class="stat-value" style="color:${totProfit>=0?'var(--green)':'var(--red)'};">${fmt(totProfit)}</div></div>
   </div>
-  <div style="background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);overflow:hidden;">
+  <div class="jc-cost-table" style="background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);overflow:hidden;">
     <div style="display:grid;grid-template-columns:1.8fr 1fr 1fr 1fr 1fr 1fr 1fr;gap:0;padding:10px 16px;background:var(--surface2);border-bottom:1px solid var(--border2);font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;">
       <div>Job</div><div style="text-align:right;">Revenue</div><div style="text-align:right;">Labor</div><div style="text-align:right;">Materials</div><div style="text-align:right;">Profit</div><div style="text-align:right;">Margin</div><div style="text-align:right;">Profit/Day</div>
     </div>`;
@@ -9058,7 +9083,7 @@ function renderOverhead(){
 
   // Summary card
   html+=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;margin-bottom:18px;">
-    <div style="display:grid;grid-template-columns:1fr 1fr 1.1fr;gap:14px;text-align:center;align-items:center;">
+    <div class="ovh-summary" style="display:grid;grid-template-columns:1fr 1fr 1.1fr;gap:14px;text-align:center;align-items:center;">
       <div><div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Total Annual Overhead</div><div id="ovh-total" style="font-size:22px;font-weight:700;font-family:'DM Mono',monospace;">${overheadFmt(overheadAnnualTotal())}</div></div>
       <div><div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Annual Labor Hours</div><div id="ovh-hours" style="font-size:22px;font-weight:700;font-family:'DM Mono',monospace;">${overheadAnnualLaborHours().toLocaleString()}</div><div style="font-size:10.5px;color:var(--text3);">${crewWithWage.length} crew × hrs/wk × 52</div></div>
       <div style="background:var(--accent-dim);border-radius:var(--radius-sm);padding:8px 6px;"><div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--accent);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Added to Labor</div><div id="ovh-perhour" style="font-size:23px;font-weight:800;font-family:'DM Mono',monospace;color:var(--accent);">$${overheadPerHour().toFixed(2)}/hr</div><div style="font-size:10.5px;color:var(--text3);">on every installer's burden</div></div>
@@ -9076,13 +9101,13 @@ function renderOverhead(){
   if(!items.length){
     html+=`<div style="padding:30px;text-align:center;color:var(--text3);font-size:13px;border:1px dashed var(--border2);border-radius:var(--radius);">No overhead expenses yet.<br><span style="font-size:12px;">Use the quick-add buttons above or “+ Add Expense” to list your yearly business costs.</span></div>`;
   } else {
-    html+=`<div style="display:grid;grid-template-columns:1fr 130px 110px 80px 40px;gap:10px;padding:0 12px 6px;font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;">
+    html+=`<div class="ovh-head" style="display:grid;grid-template-columns:1fr 130px 110px 80px 40px;gap:10px;padding:0 12px 6px;font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;">
       <div>Expense</div><div style="text-align:right;">Amount</div><div>Per</div><div style="text-align:right;">$/yr</div><div></div></div>`;
     html+=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;">`;
     html+=items.map(it=>{
       const ann=(parseFloat(it.amount)||0)*(it.period==='mo'?12:1);
       const nm=(it.name||'').replace(/"/g,'&quot;');
-      return `<div style="display:grid;grid-template-columns:1fr 130px 110px 80px 40px;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border);">
+      return `<div class="ovh-row" style="display:grid;grid-template-columns:1fr 130px 110px 80px 40px;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border);">
         <input class="form-input" id="ovh-name-${it.id}" value="${nm}" placeholder="Expense name" oninput="overheadSetField('${it.id}','name',this.value)" onblur="overheadCommit()" style="font-size:13px;padding:6px 10px;"/>
         <div style="position:relative;"><span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--text3);font-size:12px;">$</span><input class="form-input" id="ovh-amt-${it.id}" type="number" min="0" step="0.01" value="${it.amount||''}" placeholder="0.00" oninput="overheadSetField('${it.id}','amount',this.value)" onblur="overheadCommit()" style="font-size:13px;padding:6px 10px 6px 20px;text-align:right;font-family:'DM Mono',monospace;"/></div>
         <select class="form-select" onchange="overheadSetField('${it.id}','period',this.value);overheadCommit()" style="font-size:12.5px;padding:6px 8px;"><option value="yr"${it.period!=='mo'?' selected':''}>per year</option><option value="mo"${it.period==='mo'?' selected':''}>per month</option></select>
