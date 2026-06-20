@@ -8485,6 +8485,14 @@ function advanceJobCard(btn, nextStatus){
   card.remove();
   updateJobCounts();
   addJobCard(customer, jobLabel, numericValue, displayVal, detail, nextStatus, dbId||undefined, extraData);
+  // Keep the install-schedule record in lockstep (reverse of syncBoardCardStatus). Only an
+  // EXISTING record is updated — no record is created here (the Schedule wizard owns that, since
+  // a record needs dates/crew). Records have no 'invoiced' state, so that move is left to the board.
+  const rec=JOB_RECORDS.find(j=>_jobMatchKey(j.customer)===_jobMatchKey(customer));
+  if(rec){
+    const rs={scheduled:'scheduled', inprogress:'in_progress', complete:'complete'}[nextStatus];
+    if(rs && rec.status!==rs){ rec.status=rs; saveJobRecords(); }
+  }
 }
 
 // ── Job Edit / Delete ─────────────────────────────────────────────────────────
