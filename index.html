@@ -2110,7 +2110,9 @@ async function dbSaveJob(jobObj){
 }
 async function dbDeleteJob(db_id){if(db_id)await sb.delete('jobs',db_id);}
 async function loadJobs(){
-  const rows=await sb.get('jobs');
+  // Newest-added jobs first (created_at ≈ when a Wave estimate was accepted/imported),
+  // so just-approved jobs land at the top of each column instead of in arbitrary id order.
+  const rows=await sb.get('jobs','order=created_at.desc');
   Object.keys({approved:1,scheduled:1,inprogress:1,complete:1}).forEach(s=>{
     const col=document.getElementById('jobs-col-'+s);
     if(col)col.querySelectorAll('.lead-card').forEach(c=>c.remove());
