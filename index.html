@@ -10843,9 +10843,13 @@ function buildWeekGrid(wOff,mon,dNames){
       // Gradient connection: normal bar ending exactly where an extension of same job begins
       const fadeToNext=!isExtra&&!isDone&&nxt&&nxt.x&&nxt.l===label&&nxt.s===endExcl;
       const fadeFromPrev=isExtra&&!isDone&&prv&&!prv.x&&prv.l===label&&prv.e===startDay;
+      // Completed jobs don't fade-merge (the fade uses the type color), but their primary+extension
+      // should still join into one seamless flat-grey bar instead of two separate "done" pills.
+      const doneJoinToNext=isDone&&!isExtra&&nxt&&nxt.x&&nxt.l===label&&nxt.s===endExcl;
+      const doneJoinFromPrev=isDone&&isExtra&&prv&&!prv.x&&prv.l===label&&prv.e===startDay;
       // PTO+job adjacency: flush the border-radius on sides that touch a PTO+job bar
-      const connectsRightToPTO=!fadeToNext&&ptoPlusLabelMap.get(endExcl)===label;
-      const connectsLeftToPTO=!fadeFromPrev&&ptoPlusLabelMap.get(startDay-1)===label;
+      const connectsRightToPTO=!fadeToNext&&!doneJoinToNext&&ptoPlusLabelMap.get(endExcl)===label;
+      const connectsLeftToPTO=!fadeFromPrev&&!doneJoinFromPrev&&ptoPlusLabelMap.get(startDay-1)===label;
       const bar=document.createElement('div');
       let cls='sch-span-bar ';
       if(isDone)cls+='done';
@@ -10856,7 +10860,7 @@ function buildWeekGrid(wOff,mon,dNames){
       // Suppress the label when this run directly continues the same job across a PTO-day
       // gap (a half-day time-off block breaks the run; without this the name prints twice).
       const _prevPtoSameJob=startDay>0&&days[startDay-1].pto&&days[startDay-1].slotRaw?.l===label;
-      bar.textContent=_prevPtoSameJob?'':((isDone?'✓ ':'')+label);
+      bar.textContent=(_prevPtoSameJob||doneJoinFromPrev)?'':((isDone?'✓ ':'')+label);
       bar.title='Click to open';
       const leftFr=COL_FR.slice(0,startDay).reduce((a,b)=>a+b,0);
       const widthFr=COL_FR.slice(startDay,startDay+span).reduce((a,b)=>a+b,0);
@@ -10868,8 +10872,18 @@ function buildWeekGrid(wOff,mon,dNames){
         const rgb=_TYP_RGBA[type||'epoxy']||'26,115,232';
         st=`left:calc(${lp}% + 2px);width:calc(${wp}% - 1px);border-radius:11px 0 0 11px;`
           +`background:linear-gradient(to right,rgba(${rgb},1) 0%,rgba(${rgb},1) 70%,rgba(${rgb},.32) 100%);`;
+      }else if(doneJoinToNext){
+        // Completed primary leading into its extension day: flush right, flat 'done' grey (no gradient)
+        st=`left:calc(${lp}% + 2px);width:calc(${wp}% - 1px);border-radius:11px 0 0 11px;`;
       }else if(fadeFromPrev){
         // Extension bar following primary: flush left; also flush right if it touches a PTO+job bar
+        if(connectsRightToPTO){
+          st=`left:calc(${lp}%);width:calc(${wp}%);border-radius:0;`;
+        }else{
+          st=`left:calc(${lp}%);width:calc(${wp}% - 4px);border-radius:0 11px 11px 0;`;
+        }
+      }else if(doneJoinFromPrev){
+        // Completed extension following its primary: flush left into one continuous grey bar
         if(connectsRightToPTO){
           st=`left:calc(${lp}%);width:calc(${wp}%);border-radius:0;`;
         }else{
