@@ -3735,6 +3735,36 @@ function jcStyleStatus(s){
 function jcSetStatus(val){
   const job=getJobRecord(_jcId); if(!job) return;
   job.status=val; jcStyleStatus(val); saveJobRecords();
+  syncBoardCardStatus(job.customer, val);   // keep the Jobs board card in lockstep with the schedule
+}
+
+// Move this job's Jobs-board card to match a status set elsewhere (the job-card status
+// dropdown / install schedule). Without this, changing a job's status on the schedule left
+// the board card stranded in its old column ("board not recognizing the change"). Matches on
+// the normalized name and never pulls an already-invoiced card backward.
+function syncBoardCardStatus(customer, recordStatus){
+  const board=document.getElementById('jobs-board'); if(!board) return;
+  const want={scheduled:'scheduled', in_progress:'inprogress', complete:'complete'}[recordStatus];
+  if(!want) return;
+  const key=_jobMatchKey(customer);
+  const cards=[...board.querySelectorAll('.lead-card')]
+    .filter(c=>_jobMatchKey(c.dataset.customer||c.querySelector('.lead-name')?.textContent||'')===key);
+  if(!cards.length) return;
+  if(cards.some(c=>c.dataset.status===want)) return;            // already in the right column
+  const card=cards.find(c=>c.dataset.status!=='invoiced');      // leave an invoiced card alone
+  if(!card) return;
+  const cust=card.dataset.customer||customer;
+  const dbId=card.dataset.dbId||null;
+  const jobLabel=card.querySelector('.lead-detail')?.textContent||'';
+  const detail=card.querySelectorAll('.lead-detail')[1]?.textContent||'';
+  const extraData={address:card.dataset.address||'', notes:card.dataset.notes||'', sqft:card.dataset.sqft||''};
+  const addrNote=[extraData.address,extraData.notes].filter(Boolean).join('\n');
+  const val=card.dataset.value||'';
+  const dispVal=card.querySelector('.lead-value')?.textContent||'—';
+  if(dbId) dbSaveJob({customer:cust, jobLabel, value:val, displayVal:dispVal, detail, status:want, notes:addrNote, db_id:dbId});
+  card.remove(); updateJobCounts();
+  addJobCard(cust, jobLabel, val, dispVal, detail, want, dbId||undefined, extraData);
+  if(_jobsListActive()) setTimeout(renderJobsListView,0);
 }
 
 // Render crew chip picker on the Info tab
