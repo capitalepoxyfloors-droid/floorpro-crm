@@ -5810,7 +5810,7 @@ function cvGetWeekSpanEvents(weekSun){
     for(const ci of crewList){
       const slot=newSlots[ci]?.[w]?.[d]||getSlot(ci,w,d); if(!slot) continue;
       const rawJobId=SLOT_JOB_MAP[jcSlotKey(ci,w,d)]||null;
-      const rawJr=rawJobId?JOB_RECORDS.find(j=>j.id===rawJobId):null;
+      const rawJr=rawJobId?getJobRecord(rawJobId):null;
       // Verify the mapped job matches the slot label — if not (stale map from double-book overwrite), fall back to label search
       const jr=(rawJr&&rawJr.customer===(slot.l||''))?rawJr:JOB_RECORDS.find(j=>j.customer===(slot.l||''));
       const jobId=jr?.id||null; // use the verified job ID so key and isExtra detection are correct
@@ -5834,7 +5834,7 @@ function cvGetWeekSpanEvents(weekSun){
       // Extra (double-booked) slots — add directly to dedupedMap, bypassing byLabel merge
       for(const ex of getExtraSlots(ci,w,d)){
         const exJobId=ex.jobId||(JOB_RECORDS.find(j=>j.customer===ex.l)?.id)||null;
-        const exJr=exJobId?JOB_RECORDS.find(j=>j.id===exJobId):JOB_RECORDS.find(j=>j.customer===(ex.l||''));
+        const exJr=exJobId?getJobRecord(exJobId):JOB_RECORDS.find(j=>j.customer===(ex.l||''));
         let exIsExtra=false;
         if(exJr?.extraDays?.includes(dtStr)){
           const eSD=new Date((exJr.startDate||'')+'T00:00:00').getDay(),eED=new Date((exJr.endDate||'')+'T00:00:00').getDay();
@@ -10738,7 +10738,7 @@ function buildWeekGrid(wOff,mon,dNames){
       if(slotRaw){  // use slotRaw so PTO-day jobs still get correct isExtra flag
         const sdStr=dd.toISOString().split('T')[0];
         const slotJobId=SLOT_JOB_MAP[jcSlotKey(i,sw,sd)];
-        const _rawJr=slotJobId?JOB_RECORDS.find(j=>j.id===slotJobId):null;
+        const _rawJr=slotJobId?getJobRecord(slotJobId):null;
         // Verify mapped job matches slot label (stale when a double-book overwrote the map entry)
         const jr=(_rawJr&&_rawJr.customer===slotRaw.l)?_rawJr:JOB_RECORDS.find(j=>j.customer===slotRaw.l);
         if(jr?.extraDays?.includes(sdStr)){
@@ -10836,7 +10836,7 @@ function buildWeekGrid(wOff,mon,dNames){
       const{s:startDay,e:endExcl,l:label,t:type,x:isExtra}=run;
       const span=endExcl-startDay;
       const jobId=SLOT_JOB_MAP[jcSlotKey(i,days[startDay].sw,days[startDay].sd)];
-      const jr=jobId?JOB_RECORDS.find(j=>j.id===jobId):JOB_RECORDS.find(j=>j.customer===label);
+      const jr=jobId?getJobRecord(jobId):JOB_RECORDS.find(j=>j.customer===label);
       const isDone=jr?.status==='complete';
       const isWkndBar=(startDay===0||startDay===6);
       const nxt=_runs[ri+1],prv=_runs[ri-1];
@@ -10902,7 +10902,7 @@ function buildWeekGrid(wOff,mon,dNames){
           const wp=(widthFr/TOTAL_FR*100).toFixed(3);
           const topPx=38+(ei*28);
           const exJobId=ex.jobId||(JOB_RECORDS.find(j=>j.customer===ex.l)?.id)||null;
-          const exJr=exJobId?JOB_RECORDS.find(j=>j.id===exJobId):JOB_RECORDS.find(j=>j.customer===ex.l);
+          const exJr=exJobId?getJobRecord(exJobId):JOB_RECORDS.find(j=>j.customer===ex.l);
           const isDone=exJr?.status==='complete';
           let cls='sch-span-bar '+(isDone?'done':(ex.t||'epoxy'));
           const bar=document.createElement('div');
@@ -10950,7 +10950,7 @@ function buildWeekGrid(wOff,mon,dNames){
         const nextHasSameJob=(d+1<TOTAL_DAYS)&&(days[d+1]?.slot?.l===slotRaw.l||(days[d+1]?.pto&&days[d+1]?.slotRaw?.l===slotRaw.l));
         // Row 1 — job bar (top:10px from CSS; same look as normal span bars)
         const pjJobId=SLOT_JOB_MAP[jcSlotKey(i,days[d].sw,days[d].sd)];
-        const pjJr=pjJobId?JOB_RECORDS.find(j=>j.id===pjJobId):JOB_RECORDS.find(j=>j.customer===slotRaw.l);
+        const pjJr=pjJobId?getJobRecord(pjJobId):JOB_RECORDS.find(j=>j.customer===slotRaw.l);
         const pjDone=pjJr?.status==='complete';
         const jobBar=document.createElement('div');
         let jcls='sch-span-bar ';
