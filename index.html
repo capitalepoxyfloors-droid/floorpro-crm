@@ -1613,6 +1613,16 @@
   <div class="modal">
     <div class="modal-header"><div class="modal-title">Add New Lead</div><button class="modal-close" onclick="closeModal('lead');editingLeadIdx=null;document.querySelector('#modal-lead .modal-title').textContent='Add New Lead';document.querySelector('#modal-lead .btn-primary').textContent='Save Lead';">×</button></div>
     <div class="modal-body">
+      <!-- ✨ Quick smart entry — paste freeform info and auto-fill the fields below -->
+      <div style="background:var(--surface2);border:1px dashed var(--border2);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:16px;">
+        <label class="form-label" style="margin-bottom:4px;">✨ Quick Entry <span style="font-weight:400;color:var(--text3);font-size:11px;text-transform:none;letter-spacing:0;">— paste name, phone, email, address, sq ft… then tap Fill</span></label>
+        <textarea class="form-textarea" id="lead-smart" placeholder="e.g.  John Smith  314-555-0100  john@email.com  1442 Satinwood Dr Jefferson City MO 65109  500 sqft  epoxy flake garage  $3,200" style="min-height:52px;font-size:13px;"></textarea>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;">
+          <button class="btn btn-primary" style="font-size:12px;padding:5px 14px;" onclick="leadSmartParse()">✨ Parse &amp; Fill</button>
+          <button class="btn btn-ghost" style="font-size:12px;padding:5px 12px;" onclick="document.getElementById('lead-smart').value='';document.getElementById('lead-smart-status').textContent='';">Clear</button>
+          <span id="lead-smart-status" style="font-size:11.5px;"></span>
+        </div>
+      </div>
       <div class="form-row"><div class="form-group"><label class="form-label">Customer Name</label><input class="form-input" id="lead-name" placeholder="Full name"/></div><div class="form-group"><label class="form-label">Primary Phone</label><input class="form-input" id="lead-phone" type="tel" placeholder="314-555-0100" oninput="fmtPhone(this)"/></div></div>
       <div class="form-row"><div class="form-group"><label class="form-label">Secondary Phone</label><input class="form-input" id="lead-phone2" type="tel" placeholder="314-555-0101 (optional)" oninput="fmtPhone(this)"/></div><div class="form-group"><label class="form-label">Email</label><input class="form-input" id="lead-email" type="email" placeholder="email@example.com"/></div></div>
       <div class="form-row">
@@ -3892,19 +3902,26 @@ let _addrTimer=null;
 const _stAbbr={Missouri:'MO',Illinois:'IL',Kansas:'KS',Arkansas:'AR',Iowa:'IA',Oklahoma:'OK',Tennessee:'TN',Kentucky:'KY',Indiana:'IN',Ohio:'OH',Nebraska:'NE',Texas:'TX',Florida:'FL',California:'CA',Colorado:'CO',Georgia:'GA','North Carolina':'NC','South Carolina':'SC','New York':'NY','New Jersey':'NJ',Pennsylvania:'PA',Michigan:'MI',Wisconsin:'WI',Minnesota:'MN'};
 
 async function _photonSearch(val){
-  const r=await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(val)}&limit=7&lang=en&lat=38.7&lon=-90.3`);
+  const r=await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(val)}&limit=10&lang=en&lat=38.7&lon=-90.3`);
   const j=await r.json();
+  // Photon often only has the street (no exact house number), especially residential —
+  // accept street-level results and prepend the house number the user typed.
+  const typedHn=((val||'').match(/^\s*(\d+)/)||[])[1]||'';
+  const seen=new Set();
   return (j.features||[])
-    .filter(f=>{const p=f.properties||{};return p.country==='United States'&&p.housenumber&&p.street;})
+    .filter(f=>{const p=f.properties||{};return (p.country==='United States'||p.countrycode==='US')&&(p.street||p.name);})
     .map(f=>{
       const p=f.properties||{};
-      const line1=[p.housenumber,p.street].filter(Boolean).join(' ');
+      const street=p.street||p.name||'';
+      const hn=p.housenumber||typedHn||'';
+      const line1=[hn,street].filter(Boolean).join(' ');
       const city=p.city||p.town||p.village||p.county||'';
       const state=_stAbbr[p.state]||p.state||'';
       const zip=p.postcode||'';
       const full=[line1,city,state,zip].filter(Boolean).join(', ');
       return {line1,city,state,zip,full};
-    });
+    })
+    .filter(a=>{ if(!a.full||seen.has(a.full))return false; seen.add(a.full); return true; });
 }
 
 function jcAddrInput(val){
@@ -7567,14 +7584,101 @@ function populateSvLeadDropdown(){
   });
 }
 
+// ── SMART LEAD ENTRY — parse pasted free-form text into fields (offline pattern matching) ──
+function parseLeadText(text){
+  const out={}; const t=(text||'').replace(/\r/g,' ').trim(); if(!t) return out;
+
+  // Email
+  const em=t.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
+  if(em) out.email=em[0];
+
+  // Phones — first two distinct US 10-digit numbers
+  const phs=[]; const pre=/(?:\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}/g; let m;
+  while((m=pre.exec(t))){ let d=m[0].replace(/\D/g,''); if(d.length===11&&d[0]==='1') d=d.slice(1); if(d.length===10&&phs.indexOf(d)<0) phs.push(d); }
+  const fmtP=d=>d.slice(0,3)+'-'+d.slice(3,6)+'-'+d.slice(6);
+  if(phs[0]) out.phone=fmtP(phs[0]);
+  if(phs[1]) out.phone2=fmtP(phs[1]);
+
+  // Sq ft
+  const sq=t.match(/([\d,]{2,})\s*(?:sq\.?\s*ft|sq\s*ft|sqft|square\s*f(?:ee|oo)t|\bsf\b)/i);
+  if(sq) out.sqft=sq[1].replace(/,/g,'');
+
+  // Value ($)
+  const dol=t.match(/\$\s*([\d,]+(?:\.\d{1,2})?)/);
+  if(dol) out.value=dol[1].replace(/,/g,'');
+
+  // Address — prefer an explicit "Address:" label; else house number + street (through a trailing ZIP)
+  const al=t.match(/\baddress\s*[:\-]\s*([^\n]+)/i);
+  if(al && /\d/.test(al[1])){
+    out.address=al[1].trim().replace(/\s*,\s*/g,', ').replace(/\s+/g,' ');
+  } else {
+    const streetRe=/\d{1,6}\s+[A-Za-z0-9'.#\- ]*?\b(?:St|Street|Rd|Road|Ave|Avenue|Dr|Drive|Ln|Lane|Blvd|Boulevard|Ct|Court|Way|Cir|Circle|Pl|Place|Ter|Terrace|Hwy|Highway|Pkwy|Parkway|Trl|Trail|Loop|Run|Pike|Crossing|Xing)\b\.?/i;
+    const sm=t.match(streetRe);
+    if(sm){
+      const after=t.slice(sm.index);
+      const zm=after.match(/\b\d{5}\b/);
+      const addr=zm?after.slice(0,zm.index+5):sm[0];
+      out.address=addr.replace(/\s*,\s*/g,', ').replace(/\s+/g,' ').trim();
+    }
+  }
+
+  // Job type / customer type keywords
+  const lt=t.toLowerCase();
+  if(/polish/.test(lt)) out.jobType='Polished Concrete';
+  else if(/metallic/.test(lt)) out.jobType='Metallic Epoxy';
+  else if(/overlay/.test(lt)) out.jobType='Concrete Overlay';
+  else if(/flake/.test(lt)) out.jobType='Epoxy Flake';
+  else if(/epoxy|coating/.test(lt)) out.jobType='Epoxy Coating';
+  if(/\bcommercial\b/i.test(t)) out.custType='Commercial';
+  else if(/\bindustrial\b/i.test(t)) out.custType='Industrial';
+  else if(/\bresidential\b/i.test(t)) out.custType='Residential';
+
+  // Name — "Name:" label first, else the leading words before the first number/email
+  const nl=t.match(/\bname\s*[:\-]\s*([A-Za-z][A-Za-z .'\-]{1,38})/i);
+  if(nl) out.name=nl[1].trim().replace(/\s+/g,' ');
+  else {
+    const firstNum=t.search(/\d/);
+    let head=(firstNum>0?t.slice(0,firstNum):t).trim();
+    if(em) head=head.replace(em[0],'').trim();
+    head=head.replace(/\b(name|lead|customer)\s*[:\-]\s*/i,'').replace(/[,.\-\s]+$/,'').trim();
+    const w=head.split(/\s+/).filter(Boolean);
+    if(w.length>=1&&w.length<=4&&/^[A-Za-z][A-Za-z.'\-]*$/.test(w[0])&&!/[@\d]/.test(head)&&head.length<=40) out.name=head;
+  }
+
+  // Notes — "Notes:" label
+  const nt=t.match(/\bnotes?\s*[:\-]\s*([\s\S]+)$/i);
+  if(nt) out.notes=nt[1].trim();
+  return out;
+}
+
+function leadSmartParse(){
+  const ta=document.getElementById('lead-smart'); if(!ta) return;
+  const p=parseLeadText(ta.value);
+  const set=(id,v)=>{ if(v!==undefined&&v!==''){ const el=document.getElementById(id); if(el){ el.value=v; return true; } } return false; };
+  const filled=[];
+  if(set('lead-name',p.name)) filled.push('name');
+  if(set('lead-phone',p.phone)) filled.push('phone');
+  if(set('lead-phone2',p.phone2)) filled.push('2nd phone');
+  if(set('lead-email',p.email)) filled.push('email');
+  if(set('lead-sqft',p.sqft)) filled.push('sq ft');
+  if(set('lead-value',p.value)) filled.push('value');
+  if(set('lead-address',p.address)) filled.push('address');
+  if(set('lead-notes',p.notes)) filled.push('notes');
+  if(p.jobType){ const sel=document.getElementById('lead-jobtype'); if(sel){ const o=[...sel.options].find(o=>o.textContent.toLowerCase().includes(p.jobType.toLowerCase())); if(o){ sel.value=o.value; filled.push('job type'); } } }
+  if(p.custType){ const sel=document.getElementById('lead-custtype'); if(sel&&[...sel.options].some(o=>o.value===p.custType)){ sel.value=p.custType; filled.push('customer type'); } }
+  const st=document.getElementById('lead-smart-status');
+  if(st){ if(filled.length){ st.textContent='✓ Filled '+filled.join(', ')+' — review below'; st.style.color='var(--green)'; } else { st.textContent='Couldn’t detect fields — please fill them in manually'; st.style.color='var(--text3)'; } }
+}
+
 let _targetStage = 'new';
 function openLeadModalForStage(stage){
   _targetStage = stage;
   editingLeadIdx = null;
   // Reset form
-  ['lead-name','lead-phone','lead-phone2','lead-email','lead-sqft','lead-value','lead-address','lead-notes'].forEach(id=>{
+  ['lead-name','lead-phone','lead-phone2','lead-email','lead-sqft','lead-value','lead-address','lead-notes','lead-smart'].forEach(id=>{
     const el=document.getElementById(id); if(el) el.value='';
   });
+  const _ss=document.getElementById('lead-smart-status'); if(_ss) _ss.textContent='';
   const lv=document.getElementById('lead-address-verified');
   if(lv) lv.style.display='none';
   document.querySelector('#modal-lead .modal-title').textContent = 'Add Lead — '+stageLabelFull(stage);
