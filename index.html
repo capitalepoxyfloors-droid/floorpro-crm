@@ -256,6 +256,9 @@
   @media(max-width:960px){
     .sidebar{width:60px;}
     .logo-mark,.logo-sub,.user-name,.user-role,.nav-item span{display:none;}
+    /* keep notification badges visible as a small dot over the icon when nav is collapsed */
+    .nav-item{position:relative;}
+    .nav-item span[id$="-badge"]{display:inline-block!important;position:absolute;top:2px;right:5px;font-size:8px;padding:0 4px;line-height:1.5;min-width:8px;text-align:center;}
     .logo{padding:10px;justify-content:center;}
     #cef-logo-img{width:36px;height:36px;}
     .nav-badge{display:none;}
@@ -449,6 +452,7 @@
       <button class="nav-item" onclick="showPage('jobs')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 12h6M9 16h4"/></svg>
         <span>Jobs</span>
+        <span id="nav-jobs-badge" style="display:none;background:var(--accent);color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:1px 6px;line-height:1.4;font-family:'DM Mono',monospace;" title="Newly approved jobs"></span>
       </button>
       <button class="nav-item" onclick="showPage('schedule')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
@@ -2166,6 +2170,27 @@ async function loadJobs(){
   });
   updateJobCounts();
   updateInvoicedBtn();
+  _updateJobsApprovedBadge(Object.values(best));
+}
+
+// ── "New approved jobs" notification badge on the Jobs nav item ──────────────────
+function _jobsSeenTs(){
+  let v=localStorage.getItem('jobs_last_seen');
+  if(!v){ v=new Date().toISOString(); try{localStorage.setItem('jobs_last_seen',v);}catch(e){} }
+  return v;
+}
+function _updateJobsApprovedBadge(jobRows){
+  const badge=document.getElementById('nav-jobs-badge'); if(!badge) return;
+  const pg=document.getElementById('page-jobs');
+  const onJobs=!!(pg&&pg.classList.contains('active'));   // don't badge while you're already looking
+  const seen=_jobsSeenTs();
+  const n=onJobs?0:(jobRows||[]).filter(r=>r&&r.status==='approved'&&r.created_at&&String(r.created_at)>seen).length;
+  badge.style.display=n>0?'inline-block':'none';
+  badge.textContent=n>9?'9+':String(n);
+}
+function _markJobsSeen(){
+  try{localStorage.setItem('jobs_last_seen',new Date().toISOString());}catch(e){}
+  const badge=document.getElementById('nav-jobs-badge'); if(badge){ badge.style.display='none'; badge.textContent=''; }
 }
 
 async function autoAdvanceJobsByDate(){
@@ -6749,6 +6774,7 @@ function showPage(id){
   if(id==='matreqs') renderMatRequestsPage();
   if(id==='ptoreqs') renderPtoRequestsPage();
   if(id==='pinsettings') renderCrewPins();
+  if(id==='jobs') _markJobsSeen();
   try{localStorage.setItem('fpLastPage',id);}catch(e){}
 }
 
