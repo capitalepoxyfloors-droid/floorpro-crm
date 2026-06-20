@@ -5094,8 +5094,13 @@ function renderJobCostingPage(){
     const profit=Math.round((revenue-totalCost)*100)/100;
     const margin=revenue>0?Math.round(profit/revenue*1000)/10:null;
     const dailyProfit=wDays>0&&revenue>0?Math.round(profit/wDays*100)/100:null;
-    return{job,revenue,laborCost,matCost,consCost,mileCost,totalCost,profit,margin,totalHrs:Math.round(totalHrs*10)/10,wDays,dailyProfit};
+    // Effective finish date = latest of end date, extra days, and any logged day
+    const finishDate=[...(job.endDate?[job.endDate]:[]),...(job.extraDays||[]),...Object.keys(logs)].reduce((mx,d)=>(d>mx?d:mx),'');
+    return{job,revenue,laborCost,matCost,consCost,mileCost,totalCost,profit,margin,totalHrs:Math.round(totalHrs*10)/10,wDays,dailyProfit,finishDate};
   });
+
+  // Newest-finished jobs first (was raw record order, which looked random)
+  rows.sort((a,b)=>(b.finishDate||'').localeCompare(a.finishDate||''));
 
   // Summary bar
   const totRev=rows.reduce((a,r)=>a+r.revenue,0);
