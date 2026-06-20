@@ -2193,6 +2193,14 @@ function _markJobsSeen(){
   const badge=document.getElementById('nav-jobs-badge'); if(badge){ badge.style.display='none'; badge.textContent=''; }
 }
 
+// Normalized key for matching a board card to a job record: strips "#123" estimate
+// tags, collapses whitespace, and lowercases. Without this, the Wave "#NNN" badge baked
+// into a card's .lead-name (or a "#570" baked into the customer field) breaks the match
+// and autoAdvance spawns a duplicate card instead of moving the existing one.
+function _jobMatchKey(name){
+  return (name||'').replace(/#\d+/g,'').replace(/\s+/g,' ').trim().toLowerCase();
+}
+
 async function autoAdvanceJobsByDate(){
   // Automatically move jobs based on today's date:
   //   Scheduled  → In Progress  when start date has arrived
@@ -2225,15 +2233,19 @@ async function autoAdvanceJobsByDate(){
     changed = true;
     advanced.push(job.customer + (newBoardStatus==='inprogress' ? ' → In Progress' : ' → Complete'));
 
-    // Find the matching board card by customer name and advance it
+    // Find the matching board card and advance it. Match on the CLEAN name
+    // (dataset.customer, with #-tags/case/spacing normalized) — reading .lead-name text
+    // includes the "#NNN" Wave badge and never matches, which is what spawned the
+    // duplicate cards (Natasha Weller, Bob Gerke, Vienna School Doorways).
     const board = document.getElementById('jobs-board');
     if(board){
-      const match = [...board.querySelectorAll('.lead-card')].find(c => {
-        if(c.dataset.status === newBoardStatus) return false;
-        const n = c.querySelector('.lead-name');
-        return n && n.textContent.trim() === job.customer.trim();
-      });
-      if(match){
+      const wantKey = _jobMatchKey(job.customer);
+      const sameJob = [...board.querySelectorAll('.lead-card')]
+        .filter(c => _jobMatchKey(c.dataset.customer || c.querySelector('.lead-name')?.textContent || '') === wantKey);
+      const match   = sameJob.find(c => c.dataset.status !== newBoardStatus);
+      if(sameJob.some(c => c.dataset.status === newBoardStatus)){
+        // Already represented in the destination column — don't spawn or move a duplicate.
+      } else if(match){
         const dbId      = match.dataset.dbId || null;
         const jobLabel  = match.querySelector('.lead-detail')?.textContent || '';
         const detail    = match.querySelectorAll('.lead-detail')[1]?.textContent || '';
