@@ -4101,6 +4101,8 @@ function jcRenderDayLogs(){
   days.forEach((ds,idx)=>{
     if(!job.dayLogs[ds]) job.dayLogs[ds]={crewPresent:[],task:'',materialsUsed:[],startTime:'',endTime:'',notes:''};
     const log=job.dayLogs[ds];
+    const _dayOT=(log.overtimeWage!==undefined)?!!log.overtimeWage:!!job.overtimeWage;
+    const _dayCash=(log.cashWages!==undefined)?!!log.cashWages:!!job.cashWages;
     _jcMigrateCrewPresent(log);
     _jcMigrateMats(log);
     const _crewFilled=log.crewPresent.some(c=>c.name);
@@ -4148,6 +4150,17 @@ function jcRenderDayLogs(){
             <span id="jch-${key}" style="font-size:13px;font-weight:700;color:var(--accent);">${log.fullDay?'8.0 hrs':(log.startTime&&log.endTime?jcCalcHrs(log.startTime,log.endTime):'—')}</span>
           </div>`:``}
         </div>
+        ${localStorage.getItem('fpRole')!=='crew'?`<div class="form-group" style="margin:0;">
+          <label class="form-label">Pay for this day <span style="font-weight:400;color:var(--text3);font-size:10px;">(overrides the job default)</span></label>
+          <div style="display:flex;gap:18px;flex-wrap:wrap;padding-top:2px;">
+            <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:13px;color:var(--text2);">
+              <input type="checkbox" ${_dayOT?'checked':''} onchange="jcSetDayOvertime('${ds}',this.checked)" style="width:15px;height:15px;accent-color:#3b82f6;cursor:pointer;">1.5× OT / Weekend
+            </label>
+            <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:13px;color:var(--text2);">
+              <input type="checkbox" ${_dayCash?'checked':''} onchange="jcSetDayCash('${ds}',this.checked)" style="width:15px;height:15px;accent-color:#10b981;cursor:pointer;">Cash — base hourly, no burden
+            </label>
+          </div>
+        </div>`:``}
         <div class="form-group" style="margin:0;">
           <label class="form-label">Notes</label>
           <textarea class="form-textarea" placeholder="Anything worth noting — issues, decisions, next steps..." oninput="jcLogSet('${ds}','notes',this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'" onblur="jcLogSet('${ds}','notes',this.value)" style="min-height:52px;font-size:13px;overflow-y:auto;resize:none;">${log.notes||''}</textarea>
@@ -5111,16 +5124,20 @@ function jcHours(key,ds){
 }
 
 // Returns the best available burdened rate for a daily-log crew entry.
+// Overtime (1.5×) and cash-wages can be set PER DAY (log.overtimeWage / log.cashWages);
+// when a day hasn't overridden them it falls back to the job-level default.
 // Tries: prevailing wage override → cash wages (base hourly, no burden) → stored burdenedRate → live CREW_DATA calculation → base hourly → 0
-function jcGetBurdenedRate(c, job){
-  const mult=(job&&job.overtimeWage)?1.5:1;
+function jcGetBurdenedRate(c, job, log){
+  const ot   = (log&&log.overtimeWage!==undefined) ? !!log.overtimeWage : !!(job&&job.overtimeWage);
+  const cashWages = (log&&log.cashWages!==undefined) ? !!log.cashWages : !!(job&&job.cashWages);
+  const mult = ot?1.5:1;
   // Prevailing wage override — same flat rate for every crew member on this job
   if(job && job.prevailingWage){
     const pw=parseFloat(job.prevailingWageRate);
     if(pw>0) return pw*mult;
   }
   // Cash wages — base hourly only, no taxes/insurance/burden
-  if(job && job.cashWages){
+  if(cashWages){
     if(c.crewIdx>=0&&CREW_DATA[c.crewIdx]){
       const base=parseFloat(CREW_DATA[c.crewIdx].hourly);
       if(base>0) return base*mult;
@@ -5162,6 +5179,19 @@ async function jcSetCashWages(checked){
   await saveJobRecords();
   renderJobCosting();
 }
+// Per-day pay overrides (set on the day log, override the job-level default for that one day).
+async function jcSetDayOvertime(ds, checked){
+  const job=getJobRecord(_jcId); if(!job||!job.dayLogs||!job.dayLogs[ds]) return;
+  job.dayLogs[ds].overtimeWage=!!checked;
+  await saveJobRecords();
+  if(typeof renderJobCosting==='function') renderJobCosting();
+}
+async function jcSetDayCash(ds, checked){
+  const job=getJobRecord(_jcId); if(!job||!job.dayLogs||!job.dayLogs[ds]) return;
+  job.dayLogs[ds].cashWages=!!checked;
+  await saveJobRecords();
+  if(typeof renderJobCosting==='function') renderJobCosting();
+}
 
 // ── JOB COSTING PAGE ──────────────────────────────────────────────────────────
 function renderJobCostingPage(){
@@ -5197,7 +5227,7 @@ function renderJobCostingPage(){
           const hrs=jcGetCrewMemberHrs(c,log);
           if(hrs>0){
             totalHrs+=hrs;
-            const rate=jcGetBurdenedRate(c,job);
+            const rate=jcGetBurdenedRate(c,job,log);
             laborCost+=hrs*rate;
           }
         });
@@ -5316,7 +5346,7 @@ function renderJobCosting(){
       // Use per-crew-member times when set; fall back to day-level times
       const hrs=jcGetCrewMemberHrs(c,log);
       if(hrs<=0) return;
-      const rate=jcGetBurdenedRate(c,job);
+      const rate=jcGetBurdenedRate(c,job,log);
       const cost=Math.round(hrs*rate*100)/100;
       totalLaborCost+=cost;
       totalHours+=hrs;
@@ -5409,7 +5439,7 @@ function renderJobCosting(){
       <span style="font-size:13px;font-weight:600;color:var(--text);">1.5× Overtime / Weekend Wages</span>
       ${owActive?`<span style="font-size:10px;font-family:'DM Mono',monospace;color:#3b82f6;background:rgba(59,130,246,.18);padding:1px 8px;border-radius:20px;letter-spacing:.4px;">ACTIVE</span>`:''}
     </label>
-    <div style="font-size:11px;color:var(--text3);margin-top:5px;padding-left:26px;">${owActive?'All crew rates multiplied by 1.5×.':'Check to apply a 1.5× multiplier to all crew wages for overtime or weekend work.'}</div>
+    <div style="font-size:11px;color:var(--text3);margin-top:5px;padding-left:26px;">${owActive?'1.5× applied to every day by default — override a single day in the Daily Log.':'Default every day to 1.5× (overtime/weekend). You can override individual days in the Daily Log.'}</div>
   </div>`;
 
   // Cash Wages Override
@@ -5420,7 +5450,7 @@ function renderJobCosting(){
       <span style="font-size:13px;font-weight:600;color:var(--text);">Cash Wages</span>
       ${cwActive?`<span style="font-size:10px;font-family:'DM Mono',monospace;color:#10b981;background:rgba(16,185,129,.18);padding:1px 8px;border-radius:20px;letter-spacing:.4px;">ACTIVE</span>`:''}
     </label>
-    <div style="font-size:11px;color:var(--text3);margin-top:5px;padding-left:26px;">${cwActive?'Using base hourly only — no taxes, insurance, or burden included.':'Check when paying crew in cash. Uses base hourly rate with no payroll burden.'}</div>
+    <div style="font-size:11px;color:var(--text3);margin-top:5px;padding-left:26px;">${cwActive?'Base hourly only (no burden) on every day by default — override a single day in the Daily Log.':'Default every day to cash (base hourly, no burden). You can override individual days in the Daily Log.'}</div>
   </div>`;
 
   // Revenue
