@@ -8036,7 +8036,6 @@ const PIPELINE_STAGES = [
   {id:'scheduled', label:'Scheduled',      color:'var(--purple)', emptyText:'No estimates scheduled'},
   {id:'quoted',    label:'Estimate Sent',  color:'var(--orange)', emptyText:'No estimates sent yet'},
   {id:'followup',  label:'Follow-Up',      color:'var(--accent)', emptyText:'None pending'},
-  {id:'won',       label:'Won ✓',          color:'var(--green)',  emptyText:'None yet'},
 ];
 
 const TAG_COLORS = {
@@ -8107,16 +8106,17 @@ function renderPipeline(){
           note=`<span style="color:${color};">${days===0?'Sent today':days===1?'Sent yesterday':'Sent '+days+' days ago'}${remaining>0?' · auto follow-up in '+remaining+'d':' · moving to Follow-Up…'}</span>`;
         }
       }
-      // Action buttons (preserve all stage actions; add Archive for non-won leads)
+      // Action buttons. Follow-Up is the final stage: winning a deal turns it straight into an
+      // Approved job on the Jobs board (markAsWon) — there's no separate "Won" column anymore.
       let actions='';
-      if(stage.id==='won'){
-        actions+=`<button class="btn btn-green" style="font-size:11px;padding:4px 10px;" onclick="markAsWon(${realIdx})">✓ Add to Jobs</button>`;
+      actions+=`<button class="btn ${visit?'btn-ghost':'btn-primary'}" style="font-size:11px;padding:4px 10px;white-space:nowrap;${visit?'color:var(--blue);border-color:var(--blue);':''}" onclick="bookLeadVisit(${realIdx})">${visit?'📅 Edit Visit':'📅 Book Estimate'}</button>`;
+      if(stage.id!=='new') actions+=`<button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;" title="Move back" onclick="moveLead(${realIdx},'${prevStage(stage.id)}')">←</button>`;
+      if(stage.id==='followup'){
+        actions+=`<button class="btn btn-green" style="font-size:11px;padding:4px 10px;white-space:nowrap;" title="Won — add to Approved Jobs" onclick="markAsWon(${realIdx})">✓ Add to Jobs</button>`;
       } else {
-        actions+=`<button class="btn ${visit?'btn-ghost':'btn-primary'}" style="font-size:11px;padding:4px 10px;white-space:nowrap;${visit?'color:var(--blue);border-color:var(--blue);':''}" onclick="bookLeadVisit(${realIdx})">${visit?'📅 Edit Visit':'📅 Book Estimate'}</button>`;
-        if(stage.id!=='new') actions+=`<button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;" title="Move back" onclick="moveLead(${realIdx},'${prevStage(stage.id)}')">←</button>`;
         actions+=`<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;white-space:nowrap;" onclick="moveLead(${realIdx},'${nextStage(stage.id)}')">${nextLabel(stage.id)} →</button>`;
-        actions+=`<button style="background:none;border:none;cursor:pointer;color:var(--text3);padding:4px 7px;font-size:14px;line-height:1;" title="Archive — lead died" onclick="archiveLead(${realIdx})" onmouseover="this.style.color='var(--orange)'" onmouseout="this.style.color='var(--text3)'">🗄</button>`;
       }
+      actions+=`<button style="background:none;border:none;cursor:pointer;color:var(--text3);padding:4px 7px;font-size:14px;line-height:1;" title="Archive — lead died" onclick="archiveLead(${realIdx})" onmouseover="this.style.color='var(--orange)'" onmouseout="this.style.color='var(--text3)'">🗄</button>`;
       actions+=editBtn(realIdx)+delBtn(realIdx);
       html+=rowHtml(l, realIdx, stage.color, note, actions);
     });
@@ -8161,7 +8161,7 @@ function restoreLead(idx){
 
 function prevStage(id){ const ids=PIPELINE_STAGES.map(s=>s.id); const i=ids.indexOf(id); return i>0?ids[i-1]:id; }
 function nextStage(id){ const ids=PIPELINE_STAGES.map(s=>s.id); const i=ids.indexOf(id); return i<ids.length-1?ids[i+1]:id; }
-function nextLabel(id){ const map={new:'Scheduled',scheduled:'Estimate Sent',quoted:'Follow-Up',followup:'Won'}; return map[id]||'Next'; }
+function nextLabel(id){ const map={new:'Scheduled',scheduled:'Estimate Sent',quoted:'Follow-Up'}; return map[id]||'Next'; }
 
 function moveLead(idx, stage){
   // If moving to Scheduled, require a sales visit to be booked first
@@ -8690,7 +8690,11 @@ function markAsWon(idx){
 
   addJobCard(l.name, jobType, l.value||'', displayVal, detail, 'approved');
 
-  // Remove from pipeline
+  // Won leads live on as Approved jobs on the Jobs board — remove the lead entirely (DB too)
+  // and clear its follow-up timer so it doesn't reappear on reload or linger in the pipeline.
+  const key=String(l.db_id||l.name);
+  if(LEAD_QUOTED_DATES[key]){ delete LEAD_QUOTED_DATES[key]; saveLeadQuotedDates(); }
+  dbDeleteLead(l);
   LEADS.splice(idx,1);
   renderPipeline();
   showToast(`✓ ${l.name} won! Added to Approved Jobs — ready to schedule.`);
