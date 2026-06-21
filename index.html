@@ -1911,23 +1911,18 @@ const DASH_WIDGETS = {
     title: 'Active Jobs',
     action: `<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;" onclick="showPage('jobs')">All jobs →</button>`,
     render: ()=>{
-      // Active = in-progress + scheduled jobs from the install schedule (JOB_RECORDS is loaded
-      // before the dashboard renders; the kanban board DOM isn't yet on first load). In-progress
-      // first, then scheduled by start date.
+      // Active = jobs currently being worked (in-progress) per the install schedule. Scheduled
+      // (future) jobs are NOT active. JOB_RECORDS is loaded before the dashboard renders (the
+      // kanban board DOM isn't yet on first load). Sorted by start date.
       const recs=(typeof JOB_RECORDS!=='undefined'?JOB_RECORDS:[]);
-      const rank={in_progress:0, scheduled:1};
-      const active=recs.filter(j=>j.status==='in_progress'||j.status==='scheduled')
-        .slice().sort((a,b)=>{ const r=rank[a.status]-rank[b.status]; if(r) return r; return String(a.startDate||'').localeCompare(String(b.startDate||'')); });
+      const active=recs.filter(j=>j.status==='in_progress')
+        .slice().sort((a,b)=>String(a.startDate||'').localeCompare(String(b.startDate||'')));
       if(!active.length) return `
         <div style="padding:24px;text-align:center;color:var(--text3);font-size:13px;">
           No active jobs right now.<br>
-          <span style="font-size:12px;">Scheduled and in-progress jobs show up here.</span>
+          <span style="font-size:12px;">Jobs you're currently working on show up here.</span>
         </div>`;
       return '<div style="display:flex;flex-direction:column;padding:4px 0;">'+active.map((j,idx)=>{
-        const inProg=j.status==='in_progress';
-        const color=inProg?'var(--green)':'var(--blue)';
-        const dimBg=inProg?'var(--green-dim)':'var(--blue-dim)';
-        const statusLabel=inProg?'In Progress':'Scheduled';
         const valStr=j.value?parseFloat(j.value).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}):'';
         const dateStr=j.startDate?((j.endDate&&j.endDate!==j.startDate)?jcFmtDate(j.startDate)+' – '+jcFmtDate(j.endDate):jcFmtDate(j.startDate)):'';
         const sub=[j.crewNames, dateStr].filter(Boolean).join(' &nbsp;·&nbsp; ');
@@ -1935,12 +1930,11 @@ const DASH_WIDGETS = {
         return `<div onclick="openJobCard('${j.id}')" title="Click to open job"
             style="display:flex;align-items:center;gap:10px;padding:9px 16px;cursor:pointer;${brd}transition:background .12s;"
             onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background='transparent'">
-            <div style="width:7px;height:7px;border-radius:50%;background:${color};flex-shrink:0;"></div>
+            <div style="width:7px;height:7px;border-radius:50%;background:var(--green);flex-shrink:0;"></div>
             <div style="flex:1;min-width:0;">
               <div style="font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${j.customer||'Unnamed job'}</div>
               ${sub?`<div style="font-size:11px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px;">${sub}</div>`:''}
             </div>
-            <span style="font-size:9.5px;font-family:'DM Mono',monospace;color:${color};background:${dimBg};padding:2px 7px;border-radius:10px;flex-shrink:0;white-space:nowrap;">${statusLabel}</span>
             ${valStr?`<div style="font-family:'DM Mono',monospace;font-size:12px;font-weight:700;color:var(--accent);flex-shrink:0;">${valStr}</div>`:''}
           </div>`;
       }).join('')+'</div>';
