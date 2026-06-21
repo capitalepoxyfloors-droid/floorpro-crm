@@ -1875,10 +1875,32 @@ const DASH_WIDGETS = {
   },
   followups: {
     title: '⚡ Follow-Ups Needed',
-    render: ()=>`
-      <div style="padding:24px;text-align:center;color:var(--text3);font-size:13px;">
-        No follow-ups due — you're all caught up! 🙌
-      </div>`
+    action: `<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;" onclick="showPage('pipeline')">Pipeline →</button>`,
+    render: ()=>{
+      const leads=(typeof LEADS!=='undefined'?LEADS:[]);
+      // Leads in the Follow-Up stage (an estimate was sent 7+ days ago and auto-moved here,
+      // or moved manually). These are the ones that need a call/touch.
+      const due=leads.map((l,i)=>({l,i})).filter(x=>x.l.stage==='followup');
+      if(!due.length) return `
+        <div style="padding:24px;text-align:center;color:var(--text3);font-size:13px;">
+          No follow-ups due — you're all caught up! 🙌
+        </div>`;
+      return '<div style="display:flex;flex-direction:column;padding:4px 0;">'+due.map(({l,i},idx)=>{
+        const valStr=l.value?parseFloat(l.value).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}):'';
+        const sub=[l.jobType,l.phone?('📞 '+l.phone):''].filter(Boolean).join(' &nbsp;·&nbsp; ');
+        const brd=idx<due.length-1?'border-bottom:1px solid var(--border2);':'';
+        return `<div onclick="editLead(${i})" title="Click to open lead"
+            style="display:flex;align-items:center;gap:10px;padding:9px 16px;cursor:pointer;${brd}transition:background .12s;"
+            onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background='transparent'">
+            <div style="width:7px;height:7px;border-radius:50%;background:var(--accent);flex-shrink:0;"></div>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${l.name||'Unnamed lead'}</div>
+              ${sub?`<div style="font-size:11px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px;">${sub}</div>`:''}
+            </div>
+            ${valStr?`<div style="font-family:'DM Mono',monospace;font-size:12px;font-weight:700;color:var(--accent);flex-shrink:0;">${valStr}</div>`:''}
+          </div>`;
+      }).join('')+'</div>';
+    }
   },
   schedule: {
     title: new Date().getDay()===0 ? 'Next Week — Schedule' : 'This Week — Schedule',
@@ -2543,9 +2565,9 @@ async function loadAllFromSupabase(){
     for(const job of JOB_RECORDS){ if((job.extraDays||[]).length>0) await jcSyncCrewSlots(job); }
     HOLIDAYS=buildHolidayLookup();
     populateJobTypeDropdowns();
+    await autoMoveStaleQuotedLeads(); // move stale 'Estimate Sent' leads to Follow-Up BEFORE the dashboard renders
     renderDashboard();
     renderTodos(); // must be after renderDashboard so todo-list element exists
-    await autoMoveStaleQuotedLeads();
     renderPipeline();
     renderSchedule();
     renderCrewCards();
