@@ -2169,10 +2169,15 @@ async function dbSaveJob(jobObj){
   return true;
 }
 async function dbDeleteJob(db_id){if(db_id)await sb.delete('jobs',db_id);}
+// Most recent jobs-table rows, cached by loadJobs so autoAdvanceJobsByDate can reconcile board
+// status against the actual DATA, not the DOM (which can be transiently empty and was spawning
+// duplicate no-Wave rows — e.g. Bob Gerke appearing twice in Complete).
+let _lastJobRows=[];
 async function loadJobs(){
   // Newest-added jobs first (created_at ≈ when a Wave estimate was accepted/imported),
   // so just-approved jobs land at the top of each column instead of in arbitrary id order.
   const rows=await sb.get('jobs','order=created_at.desc');
+  _lastJobRows=rows||[];
   Object.keys({approved:1,scheduled:1,inprogress:1,complete:1}).forEach(s=>{
     const col=document.getElementById('jobs-col-'+s);
     if(col)col.querySelectorAll('.lead-card').forEach(c=>c.remove());
@@ -2254,6 +2259,7 @@ async function autoAdvanceJobsByDate(){
   const today = new Date(); today.setHours(0,0,0,0);
   let changed = false;
   let advanced = [];
+  let boardChanged = false;
 
   for(const job of JOB_RECORDS){
     if(!job.startDate) continue;
@@ -2279,33 +2285,23 @@ async function autoAdvanceJobsByDate(){
     changed = true;
     advanced.push(job.customer + (newBoardStatus==='inprogress' ? ' → In Progress' : ' → Complete'));
 
-    // Find the matching board card and advance it. Match on the CLEAN name
-    // (dataset.customer, with #-tags/case/spacing normalized) — reading .lead-name text
-    // includes the "#NNN" Wave badge and never matches, which is what spawned the
-    // duplicate cards (Natasha Weller, Bob Gerke, Vienna School Doorways).
-    const board = document.getElementById('jobs-board');
-    if(board){
-      const wantKey = _jobMatchKey(job.customer);
-      const sameJob = [...board.querySelectorAll('.lead-card')]
-        .filter(c => _jobMatchKey(c.dataset.customer || c.querySelector('.lead-name')?.textContent || '') === wantKey);
-      const match   = sameJob.find(c => c.dataset.status !== newBoardStatus);
-      if(sameJob.some(c => c.dataset.status === newBoardStatus)){
-        // Already represented in the destination column — don't spawn or move a duplicate.
-      } else if(match){
-        const dbId      = match.dataset.dbId || null;
-        const jobLabel  = match.querySelector('.lead-detail')?.textContent || '';
-        const detail    = match.querySelectorAll('.lead-detail')[1]?.textContent || '';
-        const extraData = {address: match.dataset.address||'', notes: match.dataset.notes||'', sqft: match.dataset.sqft||''};
-        const addrNote  = [extraData.address, extraData.notes].filter(Boolean).join('\n');
-        // Use job record value (authoritative) — card dataset or DB may store '' or stale display
-        const _advRaw   = job.value || match.dataset.value || '';
-        const _advNum   = Math.round((parseFloat(_advRaw)||0)*100)/100;
-        const dispVal   = _advNum>0?'$'+_advNum.toLocaleString('en-US',{minimumFractionDigits:_advNum%1?2:0,maximumFractionDigits:2}):(match.querySelector('.lead-value')?.textContent||'—');
-        if(dbId) dbSaveJob({customer: job.customer, jobLabel, value:_advRaw, displayVal: dispVal, detail, status: newBoardStatus, notes: addrNote, db_id: dbId});
-        match.remove(); updateJobCounts();
-        addJobCard(job.customer, jobLabel, _advRaw, dispVal, detail, newBoardStatus, dbId||undefined, extraData);
+    // Reconcile the BOARD by updating the existing jobs-table row, matched on the normalized
+    // customer name against the LOADED rows (_lastJobRows) — NOT the DOM. The DOM can be
+    // transiently empty, which made the old code spawn duplicate no-Wave rows (Bob Gerke ×2).
+    // We update the row that already exists and never create a second row for the same job.
+    const wantKey = _jobMatchKey(job.customer);
+    const rowsForJob = _lastJobRows.filter(r => r && r.status!=='invoiced' && _jobMatchKey(r.customer||'') === wantKey);
+    if(rowsForJob.some(r => r.status === newBoardStatus)){
+      // A row already sits at the destination status — nothing to do.
+    } else {
+      const row = rowsForJob.find(r => r.status !== newBoardStatus);
+      if(row){
+        await sb.update('jobs', row.id, {status: newBoardStatus});
+        row.status = newBoardStatus;   // keep the cache coherent for the rest of this pass
+        boardChanged = true;
       } else {
-        // No board card found — create one directly from the job record
+        // No jobs-table row exists for this record at all — create one (a job that only ever
+        // lived on the install schedule). Carries no Wave # by design.
         const jobLabel = job.jobTypeLabel || job.jobType || '';
         const _dv1=Math.round((parseFloat(job.value)||0)*100)/100;
         const dispVal  = job.value ? '$'+_dv1.toLocaleString('en-US',{minimumFractionDigits:_dv1%1?2:0,maximumFractionDigits:2}) : '—';
@@ -2314,7 +2310,8 @@ async function autoAdvanceJobsByDate(){
         if(job.startDate) parts.push(job.endDate && job.endDate !== job.startDate
           ? jcFmtDate(job.startDate)+' – '+jcFmtDate(job.endDate)
           : jcFmtDate(job.startDate));
-        addJobCard(job.customer, jobLabel, job.value||'', dispVal, parts.join(' · '), newBoardStatus);
+        await dbSaveJob({customer: job.customer, jobLabel, value: job.value||'', displayVal: dispVal, detail: parts.join(' · '), status: newBoardStatus, notes:'', db_id:null});
+        boardChanged = true;
       }
     }
   }
@@ -2323,6 +2320,8 @@ async function autoAdvanceJobsByDate(){
     saveJobRecords();
     showToast('📅 Auto-advanced: '+advanced.join(', '));
   }
+  // Board rows were changed in the DB — re-render the board/list from the fresh data.
+  if(boardChanged){ try{ await loadJobs(); if(_jobsListActive()) renderJobsListView(); }catch(e){} }
 }
 
 async function dbSaveMaterial(mat,idx){
