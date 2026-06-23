@@ -4793,7 +4793,7 @@ async function jcCalcMileage(){
     }
 
     job.mileageOneWay=miles;
-    if(job.mileageRate===undefined) job.mileageRate=0.70;
+    if(job.mileageRate===undefined) job.mileageRate=0.725;
     await saveJobRecords();
     renderJobCosting();
   } catch(e){
@@ -5191,6 +5191,25 @@ async function jcSetDayCash(ds, checked){
   await saveJobRecords();
   if(typeof renderJobCosting==='function') renderJobCosting();
 }
+// Time & Material job: invoice = labor cost +labor-markup% and materials +material-markup%.
+async function jcSetTM(checked){
+  const job=getJobRecord(_jcId); if(!job) return;
+  job.tmJob=!!checked;
+  await saveJobRecords();
+  renderJobCosting();
+}
+async function jcSetTMLaborMarkup(val){
+  const job=getJobRecord(_jcId); if(!job) return;
+  job.tmLaborMarkup=Math.max(0,parseFloat(val)||0);
+  await saveJobRecords();
+  renderJobCosting();
+}
+async function jcSetTMMaterialMarkup(val){
+  const job=getJobRecord(_jcId); if(!job) return;
+  job.tmMaterialMarkup=Math.max(0,parseFloat(val)||0);
+  await saveJobRecords();
+  renderJobCosting();
+}
 
 // ── JOB COSTING PAGE ──────────────────────────────────────────────────────────
 function renderJobCostingPage(){
@@ -5248,16 +5267,20 @@ function renderJobCostingPage(){
     const consPct=parseFloat(job.consumablesPct===undefined?10:job.consumablesPct)||0;
     const consCost=Math.round(matCost*consPct/100*100)/100;
     const mileOneWay=parseFloat(job.mileageOneWay)||0;
-    const mileRate=parseFloat(job.mileageRate!==undefined?job.mileageRate:0.70);
+    const mileRate=parseFloat(job.mileageRate!==undefined?job.mileageRate:0.725);
     const wDays=allDates.filter(ds=>{const l=logs[ds];if(!l)return false;if(jcGetLogHrs(l)>0)return true;return(Array.isArray(l.crewPresent)?l.crewPresent:[]).some(c=>jcGetCrewMemberHrs(c,l)>0);}).length;
     const mileCost=Math.round(mileOneWay*2*wDays*mileRate*100)/100;
     const totalCost=Math.round((laborCost+matCost+consCost+mileCost)*100)/100;
-    const profit=Math.round((revenue-totalCost)*100)/100;
-    const margin=revenue>0?Math.round(profit/revenue*1000)/10:null;
-    const dailyProfit=wDays>0&&revenue>0?Math.round(profit/wDays*100)/100:null;
+    // Time & Material: bill = labor +labor-markup% and materials +material-markup% (separate %s).
+    const effRev = job.tmJob
+      ? Math.round((laborCost*(1+(parseFloat(job.tmLaborMarkup)||0)/100) + matCost*(1+(parseFloat(job.tmMaterialMarkup)||0)/100))*100)/100
+      : revenue;
+    const profit=Math.round((effRev-totalCost)*100)/100;
+    const margin=effRev>0?Math.round(profit/effRev*1000)/10:null;
+    const dailyProfit=wDays>0&&effRev>0?Math.round(profit/wDays*100)/100:null;
     // Effective finish date = latest of end date, extra days, and any logged day
     const finishDate=[...(job.endDate?[job.endDate]:[]),...(job.extraDays||[]),...Object.keys(logs)].reduce((mx,d)=>(d>mx?d:mx),'');
-    return{job,revenue,laborCost,matCost,consCost,mileCost,totalCost,profit,margin,totalHrs:Math.round(totalHrs*10)/10,wDays,dailyProfit,finishDate};
+    return{job,revenue:effRev,laborCost,matCost,consCost,mileCost,totalCost,profit,margin,totalHrs:Math.round(totalHrs*10)/10,wDays,dailyProfit,finishDate,isTM:!!job.tmJob};
   });
 
   // Newest-finished jobs first (was raw record order, which looked random)
@@ -5395,14 +5418,22 @@ function renderJobCosting(){
   // ── MILEAGE ──
   const workDays=allDates.filter(ds=>{ const l=logs[ds]; if(!l) return false; if(jcGetLogHrs(l)>0) return true; return (Array.isArray(l.crewPresent)?l.crewPresent:[]).some(c=>jcGetCrewMemberHrs(c,l)>0); }).length;
   const mileageOneWay=parseFloat(job.mileageOneWay)||0;
-  const irsRate=parseFloat(job.mileageRate!==undefined?job.mileageRate:0.70);
+  const irsRate=parseFloat(job.mileageRate!==undefined?job.mileageRate:0.725);
   const totalMiles=Math.round(mileageOneWay*2*workDays*10)/10;
   const mileageCost=Math.round(totalMiles*irsRate*100)/100;
 
   // ── SUMMARY ──
   const totalCost=Math.round((totalLaborCost+totalMatCost+consCost+mileageCost)*100)/100;
-  const grossProfit=Math.round((revenue-totalCost)*100)/100;
-  const margin=revenue>0?Math.round(grossProfit/revenue*1000)/10:0;
+  // Time & Material: invoice = labor cost + labor-markup%, plus materials + material-markup%.
+  const tmJob=!!job.tmJob;
+  const tmLM=parseFloat(job.tmLaborMarkup)||0;
+  const tmMM=parseFloat(job.tmMaterialMarkup)||0;
+  const tmLaborBilled=Math.round(totalLaborCost*(1+tmLM/100)*100)/100;
+  const tmMatBilled=Math.round(totalMatCost*(1+tmMM/100)*100)/100;
+  const tmBilled=Math.round((tmLaborBilled+tmMatBilled)*100)/100;
+  const effRevenue=tmJob?tmBilled:revenue;
+  const grossProfit=Math.round((effRevenue-totalCost)*100)/100;
+  const margin=effRevenue>0?Math.round(grossProfit/effRevenue*1000)/10:0;
   const profitColor=grossProfit>=0?'var(--green)':'var(--red)';
   const fmt=n=>'$'+Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
   const fmtQ=n=>Math.round(n*100)/100;
@@ -5452,12 +5483,35 @@ function renderJobCosting(){
     <div style="font-size:11px;color:var(--text3);margin-top:5px;padding-left:26px;">${cwActive?'Base hourly only (no burden) on every day by default — override a single day in the Daily Log.':'Default every day to cash (base hourly, no burden). You can override individual days in the Daily Log.'}</div>
   </div>`;
 
+  // Time & Material Override
+  const tmActive=tmJob;
+  html+=`<div style="background:${tmActive?'rgba(168,85,247,.07)':'var(--surface2)'};border:1px solid ${tmActive?'rgba(168,85,247,.35)':'var(--border2)'};border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:12px;">
+    <label style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;">
+      <input type="checkbox" ${tmActive?'checked':''} onchange="jcSetTM(this.checked)" style="width:16px;height:16px;accent-color:#a855f7;cursor:pointer;flex-shrink:0;">
+      <span style="font-size:13px;font-weight:600;color:var(--text);">Time &amp; Material Job</span>
+      ${tmActive?`<span style="font-size:10px;font-family:'DM Mono',monospace;color:#a855f7;background:rgba(168,85,247,.18);padding:1px 8px;border-radius:20px;letter-spacing:.4px;">ACTIVE</span>`:''}
+    </label>
+    ${tmActive?`<div style="display:flex;flex-direction:column;gap:8px;margin-top:9px;padding-left:26px;">
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+        <span style="font-size:12px;color:var(--text2);min-width:104px;">Labor markup:</span>
+        <input type="number" min="0" step="1" value="${tmLM||''}" placeholder="0" onchange="jcSetTMLaborMarkup(this.value)" style="width:64px;font-size:13px;text-align:center;border:1px solid rgba(168,85,247,.4);border-radius:4px;padding:3px 6px;background:var(--surface);color:var(--text);font-family:'DM Mono',monospace;">
+        <span style="font-size:12px;color:var(--text3);">% on labor cost</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+        <span style="font-size:12px;color:var(--text2);min-width:104px;">Material markup:</span>
+        <input type="number" min="0" step="1" value="${tmMM||''}" placeholder="0" onchange="jcSetTMMaterialMarkup(this.value)" style="width:64px;font-size:13px;text-align:center;border:1px solid rgba(168,85,247,.4);border-radius:4px;padding:3px 6px;background:var(--surface);color:var(--text);font-family:'DM Mono',monospace;">
+        <span style="font-size:12px;color:var(--text3);">% on material cost</span>
+      </div>
+    </div>`:`<div style="font-size:11px;color:var(--text3);margin-top:5px;padding-left:26px;">Bill by actual time &amp; materials instead of a fixed contract value — marks up labor and materials each by a %.</div>`}
+  </div>`;
+
   // Revenue
   html+=sec('Revenue');
   html+=`<div style="display:flex;justify-content:space-between;align-items:center;">
-    <span style="font-size:14px;color:var(--text2);">Contract Value</span>
-    <span style="font-size:18px;font-weight:700;font-family:'DM Mono',monospace;color:var(--accent);">${revenue>0?fmt(revenue):'Not set'}</span>
+    <span style="font-size:14px;color:var(--text2);">${tmJob?'Billed — Time &amp; Material':'Contract Value'}</span>
+    <span style="font-size:18px;font-weight:700;font-family:'DM Mono',monospace;color:var(--accent);">${effRevenue>0?fmt(effRevenue):(tmJob?fmt(0):'Not set')}</span>
   </div>`;
+  if(tmJob) html+=`<div style="font-size:11px;color:var(--text3);margin-top:5px;">Labor ${fmt(totalLaborCost)}${tmLM?' + '+tmLM+'% → '+fmt(tmLaborBilled):''} &nbsp;·&nbsp; Materials ${fmt(totalMatCost)}${tmMM?' + '+tmMM+'% → '+fmt(tmMatBilled):''}</div>`;
 
   // Labor
   html+=sec('Labor Cost');
@@ -5534,7 +5588,7 @@ function renderJobCosting(){
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
       <span style="font-size:12px;color:var(--text2);">IRS rate:</span>
       <span style="font-size:11px;color:var(--text3);">$</span>
-      <input type="number" min="0" step="0.01" value="${irsRate.toFixed(2)}" onchange="jcSetMileageRate(this.value)" style="width:56px;font-size:12px;text-align:center;border:1px solid var(--border2);border-radius:4px;padding:2px 6px;background:var(--surface);color:var(--text);font-family:'DM Mono',monospace;">
+      <input type="number" min="0" step="0.005" value="${irsRate}" onchange="jcSetMileageRate(this.value)" style="width:62px;font-size:12px;text-align:center;border:1px solid var(--border2);border-radius:4px;padding:2px 6px;background:var(--surface);color:var(--text);font-family:'DM Mono',monospace;">
       <span style="font-size:12px;color:var(--text3);">/mile &nbsp;·&nbsp; ${workDays} day${workDays!==1?'s':''} × ${mileageOneWay>0?(mileageOneWay*2).toFixed(1)+' mi round trip':'—'}</span>
     </div>
     ${mileageOneWay>0?`<div style="display:flex;justify-content:space-between;padding-top:6px;border-top:1px solid var(--border2);font-weight:600;">
@@ -5546,21 +5600,21 @@ function renderJobCosting(){
   // Summary
   html+=sec('Summary');
   html+=`<div style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:14px 16px;">
-    <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text2);margin-bottom:6px;"><span>Contract Value</span><span style="font-family:'DM Mono',monospace;">${revenue>0?fmt(revenue):'—'}</span></div>
+    <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text2);margin-bottom:6px;"><span>${tmJob?'Billed (T&amp;M)':'Contract Value'}</span><span style="font-family:'DM Mono',monospace;">${effRevenue>0?fmt(effRevenue):'—'}</span></div>
     <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text2);margin-bottom:6px;"><span>Labor Cost</span><span style="font-family:'DM Mono',monospace;color:var(--red);">-${fmt(totalLaborCost)}</span></div>
     <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text2);margin-bottom:6px;"><span>Material Cost</span><span style="font-family:'DM Mono',monospace;color:var(--red);">-${fmt(totalMatCost)}</span></div>
     ${consCost>0?`<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text2);margin-bottom:6px;"><span>Consumables (${consPct}%)</span><span style="font-family:'DM Mono',monospace;color:var(--red);">-${fmt(consCost)}</span></div>`:''}
     ${mileageCost>0?`<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text2);margin-bottom:6px;"><span>Mileage (${totalMiles} mi)</span><span style="font-family:'DM Mono',monospace;color:var(--red);">-${fmt(mileageCost)}</span></div>`:''}
     <div style="border-top:2px solid var(--border2);padding-top:10px;margin-top:6px;display:flex;justify-content:space-between;align-items:center;">
       <span style="font-size:14px;font-weight:700;">Gross Profit</span>
-      <span style="font-size:20px;font-weight:700;font-family:'DM Mono',monospace;color:${profitColor};">${revenue>0?fmt(grossProfit):'—'}</span>
+      <span style="font-size:20px;font-weight:700;font-family:'DM Mono',monospace;color:${profitColor};">${effRevenue>0?fmt(grossProfit):'—'}</span>
     </div>
-    ${revenue>0?`<div style="display:flex;justify-content:space-between;margin-top:4px;">
+    ${effRevenue>0?`<div style="display:flex;justify-content:space-between;margin-top:4px;">
       <span style="font-size:12px;color:var(--text3);">Margin</span>
       <span style="font-size:14px;font-weight:700;font-family:'DM Mono',monospace;color:${profitColor};">${margin}%</span>
     </div>`:''}
   </div>
-  ${revenue===0?`<div style="font-size:12px;color:var(--text3);margin-top:10px;">💡 Set a Job Value on the Job Info tab to see profit and margin.</div>`:''}`;
+  ${(!tmJob&&revenue===0)?`<div style="font-size:12px;color:var(--text3);margin-top:10px;">💡 Set a Job Value on the Job Info tab to see profit and margin.</div>`:''}`;
 
   el.innerHTML=html;
 }
