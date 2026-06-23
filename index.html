@@ -5125,7 +5125,8 @@ function jcHours(key,ds){
 // Returns the best available burdened rate for a daily-log crew entry.
 // Overtime (1.5×) and cash-wages can be set PER DAY (log.overtimeWage / log.cashWages);
 // when a day hasn't overridden them it falls back to the job-level default.
-// Tries: prevailing wage override → cash wages (base hourly, no burden) → stored burdenedRate → live CREW_DATA calculation → base hourly → 0
+// Tries: prevailing wage override → cash wages (base hourly, no burden) → LIVE CREW_DATA calc for
+// known crew → stored burdenedRate (typed/custom crew only) → base hourly → 0
 function jcGetBurdenedRate(c, job, log){
   const ot   = (log&&log.overtimeWage!==undefined) ? !!log.overtimeWage : !!(job&&job.overtimeWage);
   const cashWages = (log&&log.cashWages!==undefined) ? !!log.cashWages : !!(job&&job.cashWages);
@@ -5143,14 +5144,18 @@ function jcGetBurdenedRate(c, job, log){
     }
     return 0;
   }
-  const stored=parseFloat(c.burdenedRate);
-  if(stored>0) return stored*mult;
+  // Known crew member → use the CURRENT installer rate (live calc) so editing a rate on the Crew
+  // tab flows through to every job's costing. The stored c.burdenedRate is a snapshot from when
+  // they were added and would otherwise freeze the old rate. Stored rate is the fallback for
+  // typed/custom names not linked to a CREW_DATA entry.
   if(c.crewIdx>=0&&CREW_DATA[c.crewIdx]){
     const live=parseFloat(calcBurdenForCrew(CREW_DATA[c.crewIdx]));
     if(live>0) return live*mult;
     const base=parseFloat(CREW_DATA[c.crewIdx].hourly);
     if(base>0) return base*mult;
   }
+  const stored=parseFloat(c.burdenedRate);
+  if(stored>0) return stored*mult;
   return 0;
 }
 
