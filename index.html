@@ -5279,7 +5279,7 @@ function renderJobCostingPage(){
     const totalCost=Math.round((laborCost+matCost+consCost+mileCost)*100)/100;
     // Time & Material: bill = labor +labor-markup% and materials +material-markup% (separate %s).
     const effRev = job.tmJob
-      ? Math.round((laborCost*(1+(parseFloat(job.tmLaborMarkup)||0)/100) + matCost*(1+(parseFloat(job.tmMaterialMarkup)||0)/100))*100)/100
+      ? Math.round((laborCost*(1+(parseFloat(job.tmLaborMarkup)||0)/100) + matCost*(1+(parseFloat(job.tmMaterialMarkup)||0)/100) + consCost + mileCost)*100)/100
       : revenue;
     const profit=Math.round((effRev-totalCost)*100)/100;
     const margin=effRev>0?Math.round(profit/effRev*1000)/10:null;
@@ -5436,7 +5436,8 @@ function renderJobCosting(){
   const tmMM=parseFloat(job.tmMaterialMarkup)||0;
   const tmLaborBilled=Math.round(totalLaborCost*(1+tmLM/100)*100)/100;
   const tmMatBilled=Math.round(totalMatCost*(1+tmMM/100)*100)/100;
-  const tmBilled=Math.round((tmLaborBilled+tmMatBilled)*100)/100;
+  // Mileage + consumables are billed through at cost (T&M reimbursement); labor/material markups are the profit.
+  const tmBilled=Math.round((tmLaborBilled+tmMatBilled+consCost+mileageCost)*100)/100;
   const effRevenue=tmJob?tmBilled:revenue;
   const grossProfit=Math.round((effRevenue-totalCost)*100)/100;
   const margin=effRevenue>0?Math.round(grossProfit/effRevenue*1000)/10:0;
@@ -5517,7 +5518,7 @@ function renderJobCosting(){
     <span style="font-size:14px;color:var(--text2);">${tmJob?'Billed — Time &amp; Material':'Contract Value'}</span>
     <span style="font-size:18px;font-weight:700;font-family:'DM Mono',monospace;color:var(--accent);">${effRevenue>0?fmt(effRevenue):(tmJob?fmt(0):'Not set')}</span>
   </div>`;
-  if(tmJob) html+=`<div style="font-size:11px;color:var(--text3);margin-top:5px;">Labor ${fmt(totalLaborCost)}${tmLM?' + '+tmLM+'% → '+fmt(tmLaborBilled):''} &nbsp;·&nbsp; Materials ${fmt(totalMatCost)}${tmMM?' + '+tmMM+'% → '+fmt(tmMatBilled):''}</div>`;
+  if(tmJob) html+=`<div style="font-size:11px;color:var(--text3);margin-top:5px;">Labor ${fmt(totalLaborCost)}${tmLM?' +'+tmLM+'% → '+fmt(tmLaborBilled):''} &nbsp;·&nbsp; Materials ${fmt(totalMatCost)}${tmMM?' +'+tmMM+'% → '+fmt(tmMatBilled):''}${(mileageCost>0||consCost>0)?' &nbsp;·&nbsp; '+[mileageCost>0?'mileage '+fmt(mileageCost):'',consCost>0?'consumables '+fmt(consCost):''].filter(Boolean).join(' + ')+' at cost':''}</div>`;
 
   // Labor
   html+=sec('Labor Cost');
