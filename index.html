@@ -2575,7 +2575,7 @@ async function deduplicateSlotsByJobRecord(){
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
   try{
-    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadNavOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs()]);
+    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadLeadDupAcks(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadNavOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs()]);
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
@@ -2598,6 +2598,7 @@ async function loadAllFromSupabase(){
     await loadJobs();
     await autoAdvanceJobsByDate();
     setJobsView(_jobsViewMode);
+    crossCheckLeadsVsJobs();   // flag any pipeline lead that's already an approved job
     initSalesNotifications();
     showSyncStatus('✓ Ready','var(--green)');
   }catch(e){
@@ -8112,6 +8113,79 @@ async function saveLeadQuotedDates(){
   LEAD_QUOTED_DATES = await _saveKVMerged('lead_quoted_dates', LEAD_QUOTED_DATES);
 }
 
+// ── Cross-check: a pipeline lead whose customer already has a Job (estimate approved) ──────────
+// When an active lead's customer name matches a job on the board (approved/scheduled/in-progress/
+// complete), the estimate was probably approved and the lead is a leftover. We can't always
+// auto-remove it (a same-name lead might be a separate estimate — e.g. George Belchik has several),
+// so we ASK on load. "Keep — separate" is remembered in KV lead_dup_acks so it won't re-ask.
+let LEAD_DUP_ACKS = {};   // {leadKey: true} — matches the user marked as separate
+let _leadDupMatches = [];
+async function loadLeadDupAcks(){
+  const data=await sb.getKV('lead_dup_acks');
+  LEAD_DUP_ACKS=data||{};
+}
+async function saveLeadDupAcks(){
+  LEAD_DUP_ACKS = await _saveKVMerged('lead_dup_acks', LEAD_DUP_ACKS);
+}
+function crossCheckLeadsVsJobs(){
+  if(!Array.isArray(LEADS) || !Array.isArray(_lastJobRows)) return;
+  const jobLabels={approved:'Approved',scheduled:'Scheduled',inprogress:'In Progress',complete:'Complete'};
+  const jobByKey={};
+  _lastJobRows.forEach(r=>{
+    if(!r || !jobLabels[r.status]) return;   // active/won jobs only (skip invoiced/archived)
+    const k=_jobMatchKey(r.customer||'');
+    if(k && !jobByKey[k]) jobByKey[k]=r;
+  });
+  const stageLabels={new:'New',scheduled:'Scheduled',quoted:'Estimate Sent',followup:'Follow-Up'};
+  _leadDupMatches=[];
+  LEADS.forEach(l=>{
+    if(!l || l.stage==='lost') return;
+    const leadKey=String(l.db_id||l.name);
+    if(LEAD_DUP_ACKS[leadKey]) return;
+    const job=jobByKey[_jobMatchKey(l.name||'')];
+    if(!job) return;
+    const _v=parseFloat(job.value)||0;
+    _leadDupMatches.push({ leadKey, name:l.name||'(unnamed)', stageLabel:(stageLabels[l.stage]||l.stage),
+      jobLabel:jobLabels[job.status], jobVal:_v>0?'$'+_v.toLocaleString('en-US',{maximumFractionDigits:0}):'' });
+  });
+  if(_leadDupMatches.length){ renderLeadDupModal(); openModal('leaddup'); }
+}
+function renderLeadDupModal(){
+  const list=document.getElementById('leaddup-list'); if(!list) return;
+  if(!_leadDupMatches.length){ closeModal('leaddup'); return; }
+  list.innerHTML=_leadDupMatches.map(m=>{
+    const key=String(m.leadKey).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+    return `<div style="border:1px solid var(--border2);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:10px;background:var(--surface2);">
+      <div style="font-size:14px;font-weight:600;color:var(--text);">${m.name}</div>
+      <div style="font-size:12px;color:var(--text3);margin:3px 0 11px;">Pipeline: <b style="color:var(--text2);">${m.stageLabel}</b> &nbsp;·&nbsp; Jobs board: <b style="color:var(--accent);">${m.jobLabel}${m.jobVal?' — '+m.jobVal:''}</b></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-primary" style="font-size:12px;padding:6px 12px;" onclick="leadDupRemove('${key}')">✓ Approved — remove the lead</button>
+        <button class="btn btn-ghost" style="font-size:12px;padding:6px 12px;" onclick="leadDupKeep('${key}')">Keep — separate estimate</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+function _leadDupFindByKey(key){ return LEADS.find(l=>String(l.db_id||l.name)===String(key)); }
+function leadDupRemove(key){
+  const l=_leadDupFindByKey(key);
+  _leadDupMatches=_leadDupMatches.filter(m=>String(m.leadKey)!==String(key));
+  if(l){
+    const idx=LEADS.indexOf(l), tkey=String(l.db_id||l.name);
+    if(LEAD_QUOTED_DATES[tkey]){ delete LEAD_QUOTED_DATES[tkey]; saveLeadQuotedDates(); }
+    dbDeleteLead(l);
+    if(idx>=0) LEADS.splice(idx,1);
+    renderPipeline();
+    showToast('🗑 '+(l.name||'Lead')+' removed from the pipeline — it’s an approved job.');
+  }
+  renderLeadDupModal();
+}
+function leadDupKeep(key){
+  _leadDupMatches=_leadDupMatches.filter(m=>String(m.leadKey)!==String(key));
+  LEAD_DUP_ACKS[String(key)]=true;
+  saveLeadDupAcks();
+  renderLeadDupModal();
+}
+
 async function autoMoveStaleQuotedLeads(){
   const now=Date.now();
   const SEVEN_DAYS=7*24*60*60*1000;
@@ -11804,6 +11878,21 @@ async function deleteMaintEntry(id){
 
 </script>
 <!-- ADD WAVE JOB MODAL — Manual Entry -->
+<div class="modal-overlay" id="modal-leaddup">
+  <div class="modal" style="max-width:540px;">
+    <div class="modal-header">
+      <div class="modal-title">⚠️ Lead may already be a job</div>
+      <button class="modal-close" onclick="closeModal('leaddup')">×</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.55;">
+        These leads are still in your pipeline, but a matching job is already on the Jobs board — so the estimate was likely approved. Remove the leftover pipeline lead, or keep it if it’s a separate estimate.
+      </div>
+      <div id="leaddup-list"></div>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-wavepdf">
   <div class="modal" style="max-width:580px;">
     <div class="modal-header">
