@@ -1168,6 +1168,10 @@
         <label class="form-label">Name (if not in pipeline)</label>
         <input class="form-input" id="sv-name" placeholder="e.g. Tony Ferraro"/>
       </div>
+      <div class="form-group">
+        <label class="form-label">Phone</label>
+        <input class="form-input" id="sv-phone" type="tel" inputmode="tel" placeholder="e.g. 573-555-1234"/>
+      </div>
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Visit Type</label>
@@ -7752,13 +7756,14 @@ function renderSalesVisitList(mon, fri){
     return `<div class="job-row" style="grid-template-columns:1fr auto;">
       <div>
         <div class="job-row-name">${v.name}</div>
-        <div class="job-row-detail">${dateLabel}${v.time?' · '+fmt(v.time):''}${v.duration?' · '+v.duration:''}${v.address?' · '+v.address.split(',')[0]:''}</div>
+        <div class="job-row-detail">${dateLabel}${v.time?' · '+fmt(v.time):''}${v.duration?' · '+v.duration:''}${v.address?' · '+v.address.split(',')[0]:''}${v.phone?' · 📞 '+v.phone:''}</div>
         ${v.notes?`<div style="font-size:11px;color:var(--text3);margin-top:3px;">${v.notes}</div>`:''}
       </div>
       <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;justify-content:flex-end;">
         <span class="status-pill" style="background:${pill.bg};color:${pill.c};">${pill.t}</span>
         ${isBid?`<button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;${submitted?'color:var(--green);':'color:var(--text3);'}" onclick="toggleBidSubmitted(${realIdx})">${submitted?'✓ Submitted':'Mark Submitted'}</button>`:''}
         ${isBid?`<button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;" onclick="openBidDetails(${realIdx})">📊 Details</button>`:''}
+        ${v.phone?`<a class="btn btn-ghost" style="font-size:11px;padding:4px 8px;color:var(--green);text-decoration:none;" href="tel:${v.phone.replace(/[^0-9+]/g,'')}" title="Call ${v.phone}">📞 Call</a>`:''}
         ${v.address?`<button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;" onclick="svOpenMap(${realIdx})" title="Open in Google Maps">📍 Map</button>`:''}
         <button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;" onclick="editSalesVisit(${realIdx})">Edit</button>
         <button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;color:var(--red);" onclick="deleteSalesVisit(${realIdx})">✕</button>
@@ -7774,6 +7779,7 @@ function svLeadSelected(val){
   const l = LEADS[idx];
   if(!l) return;
   document.getElementById('sv-name').value = l.name;
+  if(l.phone) document.getElementById('sv-phone').value = l.phone;
   if(l.address) document.getElementById('sv-address').value = l.address;
 }
 
@@ -7932,6 +7938,7 @@ function openSalesVisitModal(){
   document.getElementById('sv-time').value='09:00';
   document.getElementById('sv-duration').value='1 hour';
   document.getElementById('sv-reminder').value='none';
+  document.getElementById('sv-phone').value='';
   document.getElementById('sv-address').value='';
   document.getElementById('sv-notes').value='';
   populateSvLeadDropdown();
@@ -7950,6 +7957,7 @@ function openBidDueModal(){
   document.getElementById('sv-time').value='17:00';
   document.getElementById('sv-duration').value='';
   document.getElementById('sv-reminder').value='60';
+  document.getElementById('sv-phone').value='';
   document.getElementById('sv-address').value='';
   document.getElementById('sv-notes').value='';
   populateSvLeadDropdown();
@@ -7985,6 +7993,7 @@ function saveSalesVisit(){
     time:document.getElementById('sv-time').value,
     duration:document.getElementById('sv-duration').value,
     reminder:document.getElementById('sv-reminder').value||'none',
+    phone:document.getElementById('sv-phone').value.trim(),
     address:document.getElementById('sv-address').value.trim(),
     notes:document.getElementById('sv-notes').value.trim(),
     lead_idx: selVal!==''?parseInt(selVal):null,
@@ -8033,6 +8042,7 @@ function editSalesVisit(idx){
   editingSvIdx=idx;
   const v=SALES_VISITS[idx];
   document.getElementById('sv-name').value=v.name||'';
+  document.getElementById('sv-phone').value=v.phone||'';
   document.getElementById('sv-type').value=v.type||'Estimate / Measure';
   document.getElementById('sv-date').value=v.date||'';
   document.getElementById('sv-time').value=v.time||'09:00';
@@ -9302,7 +9312,7 @@ function openModal(id){
     document.getElementById('sv-title').textContent='Add Sales Visit';
     document.getElementById('sv-date').value=new Date().toISOString().split('T')[0];
     document.getElementById('sv-time').value='09:00';
-    ['sv-name','sv-address','sv-notes'].forEach(f=>{const el=document.getElementById(f);if(el)el.value='';});
+    ['sv-name','sv-phone','sv-address','sv-notes'].forEach(f=>{const el=document.getElementById(f);if(el)el.value='';});
     document.getElementById('sv-type').value='Estimate / Measure';
     document.getElementById('sv-duration').value='1 hour';
     document.getElementById('sv-reminder').value='30';
