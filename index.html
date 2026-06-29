@@ -11121,6 +11121,10 @@ function buildWeekGrid(wOff,mon,dNames){
     // Pre-compute PTO+job days so Pass 2 can flush border-radius on connecting edges
     const ptoPlusLabelMap=new Map(); // day index -> job label
     days.forEach(({pto,slotRaw},d)=>{ if(pto&&slotRaw) ptoPlusLabelMap.set(d,slotRaw.l); });
+    // Same for holiday+job days, so a job spanning a holiday stays one continuous bar
+    // across the holPlusDays↔Pass-2 boundary (e.g. Fri holiday + Sat weekend-work).
+    const holPlusLabelMap=new Map(); // day index -> job label
+    days.forEach(({hol,pto,slotRaw},d)=>{ if(hol&&slotRaw&&!pto) holPlusLabelMap.set(d,slotRaw.l); });
 
     // Pass 2: render bars with adjacency-aware gradient styling
     _runs.forEach((run,ri)=>{
@@ -11139,9 +11143,10 @@ function buildWeekGrid(wOff,mon,dNames){
       // should still join into one seamless flat-grey bar instead of two separate "done" pills.
       const doneJoinToNext=isDone&&!isExtra&&nxt&&nxt.x&&nxt.l===label&&nxt.s===endExcl;
       const doneJoinFromPrev=isDone&&isExtra&&prv&&!prv.x&&prv.l===label&&prv.e===startDay;
-      // PTO+job adjacency: flush the border-radius on sides that touch a PTO+job bar
-      const connectsRightToPTO=!fadeToNext&&!doneJoinToNext&&ptoPlusLabelMap.get(endExcl)===label;
-      const connectsLeftToPTO=!fadeFromPrev&&!doneJoinFromPrev&&ptoPlusLabelMap.get(startDay-1)===label;
+      // PTO/holiday + job adjacency: flush the border-radius on sides that touch a
+      // PTO+job or holiday+job bar (rendered in the row-2 blocks) so the job is continuous.
+      const connectsRightToPTO=!fadeToNext&&!doneJoinToNext&&(ptoPlusLabelMap.get(endExcl)===label||holPlusLabelMap.get(endExcl)===label);
+      const connectsLeftToPTO=!fadeFromPrev&&!doneJoinFromPrev&&(ptoPlusLabelMap.get(startDay-1)===label||holPlusLabelMap.get(startDay-1)===label);
       const bar=document.createElement('div');
       let cls='sch-span-bar ';
       if(isDone)cls+='done';
