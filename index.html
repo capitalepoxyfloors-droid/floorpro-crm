@@ -11154,9 +11154,10 @@ function buildWeekGrid(wOff,mon,dNames){
       else cls+=(type||'epoxy');
       if(isExtra&&!isDone)cls+=' extension';
       bar.className=cls;
-      // Suppress the label when this run directly continues the same job across a PTO-day
-      // gap (a half-day time-off block breaks the run; without this the name prints twice).
-      const _prevPtoSameJob=startDay>0&&days[startDay-1].pto&&days[startDay-1].slotRaw?.l===label;
+      // Suppress the label when this run directly continues the same job across a PTO- or
+      // holiday-day gap (those days break the run + render in their own row-2 block; without
+      // this the name prints twice — once on that bar and again on this continuation).
+      const _prevPtoSameJob=startDay>0&&(days[startDay-1].pto||days[startDay-1].hol)&&days[startDay-1].slotRaw?.l===label;
       bar.textContent=(_prevPtoSameJob||doneJoinFromPrev)?'':((isDone?'✓ ':'')+label);
       bar.title='Click to open';
       const leftFr=COL_FR.slice(0,startDay).reduce((a,b)=>a+b,0);
