@@ -140,6 +140,7 @@
   .sch-span-bar.newjob{background:#188038;color:#fff;border:none;}
   .sch-span-bar.done{background:#bdc1c6;color:#fff;border:none;opacity:.85;}
   .sch-span-bar.pto{background:#d93025;color:#fff;border:none;}
+  .sch-span-bar.holiday{background:var(--orange-dim);color:var(--orange);border:1px solid #f6c26b;font-style:italic;}
   .sch-span-bar.extension{opacity:.32;}
   .cv-event-bar.extension{opacity:.32;}
   .sch-header.weekend{color:var(--orange);opacity:.85;}
@@ -11018,7 +11019,7 @@ function buildWeekGrid(wOff,mon,dNames){
       const isWknd=(d===0||d===6);
       const pto=ptoSlots[i]?.[sw]?.[sd];
       const hol=(!isWknd)?getHolidayForCell(sw,sd):null;
-      const slotRaw=(!hol)?(getSlot(i,sw,sd)||getNew(i,sw,sd)):null; // always fetch — PTO days too
+      const slotRaw=(getSlot(i,sw,sd)||getNew(i,sw,sd)); // always fetch — PTO & holiday days too
       const slot=(!pto&&!hol)?slotRaw:null; // for cell display only — suppressed by PTO/holiday
       const dd=colDate(d);
       // Detect extension days (in job.extraDays but outside original date range)
@@ -11044,7 +11045,10 @@ function buildWeekGrid(wOff,mon,dNames){
 
     days.forEach(({pto,hol,slot,slotRaw,isWknd,isToday,sw,sd},dIdx)=>{
       const cell=mk('div','sch-cell'+(isWknd?' wknd':'')+(isToday?' sch-today':''));
-      if(hol){
+      if(hol && slotRaw){
+        // Holiday + job coexist: leave cell empty — job renders as span bar (top:10px),
+        // holiday renders as second-row absolute bar (top:38px) added after the spans block below
+      } else if(hol){
         cell.appendChild(mk('div','sch-job holiday',hol));
       } else if(pto && slotRaw){
         // PTO + job coexist: leave cell empty — job renders as span bar (top:10px),
@@ -11286,6 +11290,57 @@ function buildWeekGrid(wOff,mon,dNames){
         ptoBar.style.cssText=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);top:38px;`;
         (function(ci,wo,di){ ptoBar.onclick=()=>openPtoDayEdit(ci,wo,di); })(i,days[d].sw,days[d].sd);
         body.appendChild(ptoBar);
+      });
+    }
+
+    // Holiday days that also have a job — render a standalone job bar at row-1 (top from CSS)
+    // and a holiday marker bar at row-2 (top:38px).  Mirrors the PTO+job coexistence above:
+    // Pass 1 uses `slot` (null on holiday) so the job bar must be drawn here.  Guarded with
+    // !pto so a rare PTO+holiday+job day defers to the PTO block (no double job bar).
+    const holPlusDays=[];
+    days.forEach(({hol,pto,slotRaw,isExtra},d)=>{ if(hol&&slotRaw&&!pto) holPlusDays.push({hol,slotRaw,isExtra,d}); });
+    if(holPlusDays.length){
+      body.style.minHeight='82px';
+      holPlusDays.forEach(({hol,slotRaw,isExtra,d})=>{
+        const leftFr=COL_FR.slice(0,d).reduce((a,b)=>a+b,0);
+        const widthFr=COL_FR[d];
+        const lp=(leftFr/TOTAL_FR*100).toFixed(3);
+        const wp=(widthFr/TOTAL_FR*100).toFixed(3);
+        // Detect adjacent days with the same job so the job bar connects flush
+        const prevHasSameJob=(d>0)&&(days[d-1].slot?.l===slotRaw.l||((days[d-1].pto||days[d-1].hol)&&days[d-1].slotRaw?.l===slotRaw.l));
+        const nextHasSameJob=(d+1<TOTAL_DAYS)&&(days[d+1]?.slot?.l===slotRaw.l||((days[d+1]?.pto||days[d+1]?.hol)&&days[d+1]?.slotRaw?.l===slotRaw.l));
+        // Row 1 — job bar (top:10px from CSS; same look as normal span bars)
+        const pjJobId=SLOT_JOB_MAP[jcSlotKey(i,days[d].sw,days[d].sd)];
+        const pjJr=pjJobId?getJobRecord(pjJobId):JOB_RECORDS.find(j=>j.customer===slotRaw.l);
+        const pjDone=pjJr?.status==='complete';
+        const jobBar=document.createElement('div');
+        let jcls='sch-span-bar ';
+        if(pjDone) jcls+='done';
+        else jcls+=(slotRaw.t||'epoxy');
+        if(isExtra&&!pjDone) jcls+=' extension';
+        jobBar.className=jcls.trim();
+        jobBar.textContent=prevHasSameJob?'':((pjDone?'✓ ':'')+slotRaw.l);
+        jobBar.title='Click to open';
+        let jst;
+        if(prevHasSameJob&&nextHasSameJob){
+          jst=`left:calc(${lp}%);width:calc(${wp}%);border-radius:0;`;
+        }else if(prevHasSameJob){
+          jst=`left:calc(${lp}%);width:calc(${wp}% - 4px);border-radius:0 11px 11px 0;`;
+        }else if(nextHasSameJob){
+          jst=`left:calc(${lp}% + 2px);width:calc(${wp}% - 2px);border-radius:11px 0 0 11px;`;
+        }else{
+          jst=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);`;
+        }
+        jobBar.style.cssText=jst;
+        jobBar.onclick=()=>openSlotEdit(i,days[d].sw,days[d].sd);
+        body.appendChild(jobBar);
+        // Row 2 — holiday marker bar
+        const holBar=document.createElement('div');
+        holBar.className='sch-span-bar holiday';
+        holBar.textContent=hol;
+        holBar.title=hol;
+        holBar.style.cssText=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);top:38px;`;
+        body.appendChild(holBar);
       });
     }
 
