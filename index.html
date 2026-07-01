@@ -140,7 +140,7 @@
   .sch-span-bar.newjob{background:#188038;color:#fff;border:none;}
   .sch-span-bar.done{background:#bdc1c6;color:#fff;border:none;opacity:.85;}
   .sch-span-bar.pto{background:#d93025;color:#fff;border:none;}
-  .sch-span-bar.holiday{background:var(--orange-dim);color:var(--orange);border:1px solid #f6c26b;font-style:italic;}
+  .sch-span-bar.holiday{background:var(--orange-dim);color:var(--orange);border:1px solid #f6c26b;font-style:italic;justify-content:center;text-align:center;white-space:normal;height:auto;min-height:24px;line-height:1.2;}
   .sch-span-bar.extension{opacity:.32;}
   .cv-event-bar.extension{opacity:.32;}
   .sch-header.weekend{color:var(--orange);opacity:.85;}
@@ -11389,7 +11389,10 @@ function buildWeekGrid(wOff,mon,dNames){
         holBar.className='sch-span-bar holiday';
         holBar.textContent=hol;
         holBar.title=hol;
-        holBar.style.cssText=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);top:38px;`;
+        // Match the inner box of a cell's .sch-job pill (cell border-left 1px + padding 5px =
+        // 6px inset left; 5px padding right → -11px width) so the marker lines up + centers
+        // exactly like the holiday pills in the other (job-free) rows.
+        holBar.style.cssText=`left:calc(${lp}% + 6px);width:calc(${wp}% - 11px);top:38px;`;
         body.appendChild(holBar);
       });
     }
