@@ -1421,9 +1421,10 @@
       </div>
       <div id="matdocs-list"></div>
       <div style="margin-top:18px;border-top:1px solid var(--border);padding-top:14px;">
-        <label class="form-label">📝 Field Notes / Tips <span style="color:var(--text3);font-weight:400;">— application tips shown to the crew</span></label>
-        <textarea class="form-textarea" id="matdocs-notes" placeholder="e.g. Thin 10% with xylene when spraying in cold temps. Broadcast flake heavier than the TDS says for full hide. Pot life is short in summer — mix small batches." style="min-height:72px;"></textarea>
-        <div style="display:flex;justify-content:flex-end;margin-top:8px;"><button id="matdocs-notes-btn" class="btn btn-primary" style="font-size:12px;" onclick="saveMatNotes()">💾 Save Notes</button></div>
+        <label class="form-label">📝 Field Notes / Tips <span style="color:var(--text3);font-weight:400;">— shown to the crew; they can add their own too</span></label>
+        <div id="matdocs-notes-list"></div>
+        <textarea class="form-textarea" id="matdocs-note-input" placeholder="Add a tip, e.g. Thin 10% with xylene in cold temps." style="min-height:56px;margin-top:8px;"></textarea>
+        <div style="display:flex;justify-content:flex-end;margin-top:8px;"><button class="btn btn-primary" style="font-size:12px;" onclick="matAddNoteOwner()">＋ Add Note</button></div>
       </div>
       <div style="font-size:11px;color:var(--text3);margin-top:10px;line-height:1.5;">Docs &amp; notes show up for the crew under <b>📄 Product Docs</b> in Crew View.</div>
     </div>
@@ -1442,7 +1443,7 @@
     </div>
     <div class="modal-body">
       <input id="proddocs-search" class="form-input" type="text" placeholder="Search product or manufacturer…" oninput="renderProdDocs()" autocomplete="off" style="margin-bottom:6px;"/>
-      <div style="font-size:12px;color:var(--text3);margin-bottom:8px;line-height:1.5;">Find the product you're using on site — read its field notes and open its Technical Data Sheet.</div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:8px;line-height:1.5;">Find the product you're using — read its field notes (add your own tips too) and open its Technical Data Sheet.</div>
       <div id="proddocs-list"></div>
     </div>
     <div class="modal-footer">
@@ -9239,7 +9240,7 @@ function renderMaterials(){
   list.innerHTML = filtered.map((m,i)=>{
     const realIdx = MATERIALS.indexOf(m);
     const docCount = (MATERIAL_DOCS[m.db_id]||[]).length;
-    const hasNote = !!(MATERIAL_NOTES[m.db_id]||'').trim();
+    const hasNote = _matNotesArr(m.db_id).length>0;
     const cpSqft = costPerSqft(m);
     const cpStr = cpSqft ? '$'+cpSqft.toFixed(3)+'/sqft' : '—';
     const color = CAT_COLORS[m.cat] || 'var(--text3)';
@@ -11888,8 +11889,79 @@ async function saveMaterialDocs(){ MATERIAL_DOCS = await _saveKVMerged('material
 async function loadMaterialNotes(){
   const v=await sb.getKV('material_notes');
   if(v){ try{ MATERIAL_NOTES=JSON.parse(v)||{}; }catch(e){ console.error('loadMaterialNotes parse error:',e); } }
+  // Migrate legacy single-string notes → attributed list [{id,text,author,role,date}]
+  Object.keys(MATERIAL_NOTES).forEach(k=>{
+    const val=MATERIAL_NOTES[k];
+    if(typeof val==='string'){ MATERIAL_NOTES[k]= val.trim()?[{id:_matNoteId(),text:val.trim(),author:'Office',role:'office',date:new Date().toISOString().split('T')[0]}]:[]; }
+  });
 }
 async function saveMaterialNotes(){ MATERIAL_NOTES = await _saveKVMerged('material_notes', MATERIAL_NOTES); }
+
+// Field-note helpers. Notes are a per-material LIST so crews on separate phones can each add
+// without clobbering (the KV merge unions array items by id). Attribution = who added it.
+function _matNoteId(){ return (crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)); }
+function _matNotesArr(matId){
+  const v=MATERIAL_NOTES[matId];
+  if(!v) return [];
+  if(typeof v==='string') return v.trim()?[{id:'legacy',text:v.trim(),author:'Office',role:'office',date:''}]:[];
+  return Array.isArray(v)?v:[];
+}
+function _matNoteAuthor(){
+  // Crew device (locked/personal-PIN) → their name; anyone else (owner) → "Office".
+  const isCrew = localStorage.getItem('fpRole')==='crew';
+  const idx = (typeof _tcCrewIdentity==='function')?_tcCrewIdentity():-1;
+  const nm = (idx>=0 && CREW_DATA[idx]) ? CREW_DATA[idx].name : null;
+  return isCrew ? {author: nm||'Crew', role:'crew'} : {author:'Office', role:'office'};
+}
+function _matFmtNoteDate(d){ return d?new Date(d+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}):''; }
+
+async function _matAddNote(matId, text){
+  text=(text||'').trim(); if(!text){ showToast('Type a note first.'); return false; }
+  const {author,role}=_matNoteAuthor();
+  const arr=_matNotesArr(matId);
+  arr.push({id:_matNoteId(), text, author, role, date:new Date().toISOString().split('T')[0]});
+  MATERIAL_NOTES[matId]=arr;
+  await saveMaterialNotes();
+  renderMaterials();
+  return true;
+}
+async function matAddNoteOwner(){
+  const ta=document.getElementById('matdocs-note-input'); if(!ta) return;
+  if(await _matAddNote(_matDocsActiveId, ta.value)){ ta.value=''; renderMatNotesList(); showToast('✓ Note added.'); }
+}
+async function matAddNoteCrew(matId){
+  const ta=document.getElementById('pdnote-input-'+matId); if(!ta) return;
+  if(await _matAddNote(matId, ta.value)){ ta.value=''; renderProdDocs(); showToast('✓ Tip added — thanks!'); }
+}
+async function matDeleteNote(matId, noteId, ctx){
+  const arr=_matNotesArr(matId); const n=arr.find(x=>x.id===noteId); if(!n) return;
+  const {author,role}=_matNoteAuthor();
+  // Owner can remove any note; a crew member can remove only their own.
+  if(role==='crew' && !(n.role==='crew' && n.author===author)){ showToast('You can only remove tips you added.'); return; }
+  if(!confirm('Remove this note?')) return;
+  const next=arr.filter(x=>x.id!==noteId);
+  if(next.length) MATERIAL_NOTES[matId]=next; else delete MATERIAL_NOTES[matId];
+  await saveMaterialNotes();
+  renderMaterials();
+  if(ctx==='owner') renderMatNotesList(); else renderProdDocs();
+  showToast('Note removed.');
+}
+function renderMatNotesList(){
+  const wrap=document.getElementById('matdocs-notes-list'); if(!wrap) return;
+  const arr=_matNotesArr(_matDocsActiveId).slice().sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+  if(!arr.length){ wrap.innerHTML='<div style="font-size:12px;color:var(--text3);padding:2px 0 4px;">No notes yet — add the first tip below.</div>'; return; }
+  wrap.innerHTML=arr.map(n=>{
+    const who=(n.role==='crew'?n.author:(n.author||'Office'))||'';
+    const badge=n.role==='crew'?'var(--green)':'var(--accent)';
+    return `<div style="display:flex;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);">
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13px;line-height:1.5;white-space:pre-wrap;">${n.text.replace(/</g,'&lt;')}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px;"><span style="color:${badge};font-weight:600;">${who.replace(/</g,'&lt;')}</span>${n.date?' · '+_matFmtNoteDate(n.date):''}</div>
+      </div>
+      <button class="btn btn-ghost" style="font-size:11px;padding:2px 7px;color:var(--red);flex-shrink:0;align-self:flex-start;" onclick="matDeleteNote('${_matDocsActiveId}','${n.id}','owner')">✕</button>
+    </div>`;
+  }).join('');
+}
 
 // ---- Owner: manage one material's docs + field notes (opened from the Materials page) ----
 let _matDocsActiveId=null;
@@ -11899,20 +11971,9 @@ function openMatDocs(idx){
   if(!m.db_id){ showToast('Save the material first — it needs an ID before you can attach a TDS.'); return; }
   _matDocsActiveId=m.db_id;
   document.getElementById('matdocs-title').textContent='Docs & Notes — '+m.name;
-  const ta=document.getElementById('matdocs-notes'); if(ta) ta.value=MATERIAL_NOTES[m.db_id]||'';
+  renderMatNotesList();
   renderMatDocsList();
   openModal('matdocs');
-}
-async function saveMatNotes(){
-  const id=_matDocsActiveId; if(!id) return;
-  const ta=document.getElementById('matdocs-notes'); if(!ta) return;
-  const val=ta.value.trim();
-  if(val) MATERIAL_NOTES[id]=val; else delete MATERIAL_NOTES[id];
-  const btn=document.getElementById('matdocs-notes-btn'); if(btn){ btn.textContent='Saving…'; btn.disabled=true; }
-  await saveMaterialNotes();
-  if(btn){ btn.textContent='💾 Save Notes'; btn.disabled=false; }
-  renderMaterials();
-  showToast('✓ Notes saved.');
 }
 function renderMatDocsList(){
   const id=_matDocsActiveId;
@@ -11990,7 +12051,7 @@ function openProdDocs(){
 function renderProdDocs(){
   const wrap=document.getElementById('proddocs-list'); if(!wrap) return;
   const q=(document.getElementById('proddocs-search')?.value||'').trim().toLowerCase();
-  let mats=MATERIALS.filter(m=>m.db_id&&((MATERIAL_DOCS[m.db_id]||[]).length>0||(MATERIAL_NOTES[m.db_id]||'').trim()));
+  let mats=MATERIALS.filter(m=>m.db_id&&((MATERIAL_DOCS[m.db_id]||[]).length>0||_matNotesArr(m.db_id).length>0));
   if(q) mats=mats.filter(m=>[m.name,m.mfr,m.cat].filter(Boolean).join(' ').toLowerCase().includes(q));
   mats.sort((a,b)=>(a.name||'').localeCompare(b.name||''));
   if(!mats.length){
@@ -11999,9 +12060,29 @@ function renderProdDocs(){
   }
   wrap.innerHTML=mats.map(m=>{
     const color=CAT_COLORS[m.cat]||'var(--text3)';
-    const note=(MATERIAL_NOTES[m.db_id]||'').trim();
+    const _me=_matNoteAuthor();
+    const notes=_matNotesArr(m.db_id).slice().sort((a,b)=>(a.date||'').localeCompare(b.date||''));
     const docs=(MATERIAL_DOCS[m.db_id]||[]).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
-    const noteHtml = note ? `<div style="background:var(--accent-dim);border:1px solid var(--border2);border-left:3px solid var(--accent);border-radius:6px;padding:9px 12px;margin-bottom:9px;font-size:12.5px;line-height:1.5;color:var(--text);white-space:pre-wrap;"><span style="font-weight:700;color:var(--accent);">📝 Field Notes</span><br>${note.replace(/</g,'&lt;')}</div>` : '';
+    const notesRows=notes.map(n=>{
+      const who=((n.role==='crew'?n.author:(n.author||'Office'))||'').replace(/</g,'&lt;');
+      const canDel = _me.role!=='crew' || (n.role==='crew'&&n.author===_me.author);
+      return `<div style="display:flex;gap:8px;padding:3px 0;">
+          <div style="flex:1;min-width:0;font-size:12.5px;line-height:1.5;white-space:pre-wrap;color:var(--text);">${n.text.replace(/</g,'&lt;')}<span style="color:var(--text3);"> — ${who}${n.date?', '+_matFmtNoteDate(n.date):''}</span></div>
+          ${canDel?`<button class="btn btn-ghost" style="font-size:11px;padding:1px 6px;color:var(--red);flex-shrink:0;align-self:flex-start;" onclick="matDeleteNote('${m.db_id}','${n.id}','crew')">✕</button>`:''}
+        </div>`;
+    }).join('');
+    const noteHtml = `<div style="background:var(--accent-dim);border-left:3px solid var(--accent);border-radius:6px;padding:9px 12px;margin-bottom:9px;">
+        <div style="font-weight:700;color:var(--accent);font-size:12px;${notes.length?'margin-bottom:4px;':''}">📝 Field Notes</div>
+        ${notesRows}
+        <div id="pdnote-add-${m.db_id}" style="display:none;margin-top:7px;">
+          <textarea id="pdnote-input-${m.db_id}" class="form-textarea" placeholder="Share a tip for this product…" style="min-height:46px;font-size:12.5px;"></textarea>
+          <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:5px;">
+            <button class="btn btn-ghost" style="font-size:11px;padding:3px 9px;" onclick="document.getElementById('pdnote-add-${m.db_id}').style.display='none'">Cancel</button>
+            <button class="btn btn-primary" style="font-size:11px;padding:3px 9px;" onclick="matAddNoteCrew('${m.db_id}')">Add Tip</button>
+          </div>
+        </div>
+        <button class="btn btn-ghost" style="font-size:11px;padding:3px 0 0;color:var(--accent);font-weight:600;" onclick="document.getElementById('pdnote-add-${m.db_id}').style.display='block';this.style.display='none';">＋ Add a tip</button>
+      </div>`;
     const links=docs.map(d=>`<a href="${d.url}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);text-decoration:none;color:var(--text);font-size:13px;font-weight:500;">
         <span style="font-size:17px;flex-shrink:0;">${_vehDocIcon(d.name||'')}</span>
         <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(d.name||'').replace(/</g,'&lt;')}</span>
