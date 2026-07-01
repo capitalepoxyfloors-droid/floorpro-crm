@@ -802,7 +802,7 @@
       </div>
       <div class="content">
         <!-- Column headers -->
-        <div class="mat-head" style="display:grid;grid-template-columns:2fr 1.2fr 1fr 1fr 1fr 128px;padding:0 16px 8px;gap:12px;align-items:center;">
+        <div class="mat-head" style="display:grid;grid-template-columns:2fr 1.2fr 1fr 1fr 1fr 150px;padding:0 16px 8px;gap:12px;align-items:center;">
           <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;">Product / Manufacturer</div>
           <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;">Category</div>
           <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;">Unit</div>
@@ -1420,7 +1420,12 @@
         <span style="font-size:11px;color:var(--text3);">PDF or image · up to 25 MB. TDS, SDS, spec sheets…</span>
       </div>
       <div id="matdocs-list"></div>
-      <div style="font-size:11px;color:var(--text3);margin-top:12px;line-height:1.5;">These show up for the crew under <b>📄 Product Docs</b> in Crew View.</div>
+      <div style="margin-top:18px;border-top:1px solid var(--border);padding-top:14px;">
+        <label class="form-label">📝 Field Notes / Tips <span style="color:var(--text3);font-weight:400;">— application tips shown to the crew</span></label>
+        <textarea class="form-textarea" id="matdocs-notes" placeholder="e.g. Thin 10% with xylene when spraying in cold temps. Broadcast flake heavier than the TDS says for full hide. Pot life is short in summer — mix small batches." style="min-height:72px;"></textarea>
+        <div style="display:flex;justify-content:flex-end;margin-top:8px;"><button id="matdocs-notes-btn" class="btn btn-primary" style="font-size:12px;" onclick="saveMatNotes()">💾 Save Notes</button></div>
+      </div>
+      <div style="font-size:11px;color:var(--text3);margin-top:10px;line-height:1.5;">Docs &amp; notes show up for the crew under <b>📄 Product Docs</b> in Crew View.</div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('matdocs')">Done</button>
@@ -1437,7 +1442,7 @@
     </div>
     <div class="modal-body">
       <input id="proddocs-search" class="form-input" type="text" placeholder="Search product or manufacturer…" oninput="renderProdDocs()" autocomplete="off" style="margin-bottom:6px;"/>
-      <div style="font-size:12px;color:var(--text3);margin-bottom:8px;line-height:1.5;">Find the product you're using on site and tap to open its Technical Data Sheet.</div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:8px;line-height:1.5;">Find the product you're using on site — read its field notes and open its Technical Data Sheet.</div>
       <div id="proddocs-list"></div>
     </div>
     <div class="modal-footer">
@@ -2641,7 +2646,7 @@ async function deduplicateSlotsByJobRecord(){
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
   try{
-    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadLeadDupAcks(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadNavOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs(),loadMaterialDocs()]);
+    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadLeadDupAcks(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadNavOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs(),loadMaterialDocs(),loadMaterialNotes()]);
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
@@ -3601,6 +3606,7 @@ function _kvSnapshotBaselines(){
   _kvBaselines['pto_requests']=_jrClone(PTO_REQUESTS);
   _kvBaselines['vehicle_docs']=_jrClone(VEHICLE_DOCS);
   _kvBaselines['material_docs']=_jrClone(MATERIAL_DOCS);
+  _kvBaselines['material_notes']=_jrClone(MATERIAL_NOTES);
   _kvBaselines['crew_history']=_jrClone(CREW_HISTORY);
   _kvBaselines['crew_attachments']=_jrClone(CREW_ATTACHMENTS);
   _kvBaselines['lead_quoted_dates']=_jrClone(LEAD_QUOTED_DATES);
@@ -9233,13 +9239,14 @@ function renderMaterials(){
   list.innerHTML = filtered.map((m,i)=>{
     const realIdx = MATERIALS.indexOf(m);
     const docCount = (MATERIAL_DOCS[m.db_id]||[]).length;
+    const hasNote = !!(MATERIAL_NOTES[m.db_id]||'').trim();
     const cpSqft = costPerSqft(m);
     const cpStr = cpSqft ? '$'+cpSqft.toFixed(3)+'/sqft' : '—';
     const color = CAT_COLORS[m.cat] || 'var(--text3)';
     const dateStr = m.date ? new Date(m.date+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—';
     // Flag if price is older than 90 days
     const isOld = m.date && ((new Date()-new Date(m.date+'T00:00:00'))/(1000*60*60*24)) > 90;
-    return `<div class="job-row" style="grid-template-columns:2fr 1.2fr 1fr 1fr 1fr 128px;" data-cat="${m.cat}">
+    return `<div class="job-row" style="grid-template-columns:2fr 1.2fr 1fr 1fr 1fr 150px;" data-cat="${m.cat}">
       <div>
         <div class="job-row-name">${m.name}</div>
         <div class="job-row-detail">${m.mfr}${m.supplier?' · '+m.supplier:''}${m.notes?' · '+m.notes:''}</div>
@@ -9255,7 +9262,7 @@ function renderMaterials(){
         ${isOld?'<div style="font-size:10px;color:var(--red);">Price may be outdated</div>':''}
       </div>
       <div style="display:flex;gap:6px;">
-        <button class="btn btn-ghost" style="font-size:11px;padding:4px 7px;${docCount?'color:var(--accent);font-weight:700;':''}" title="Technical data sheets &amp; docs" onclick="openMatDocs(${realIdx})">📄${docCount?' '+docCount:''}</button>
+        <button class="btn btn-ghost" style="font-size:11px;padding:4px 7px;${(docCount||hasNote)?'color:var(--accent);font-weight:700;':''}" title="TDS / docs &amp; field notes" onclick="openMatDocs(${realIdx})">📄${docCount?' '+docCount:''}${hasNote?' 📝':''}</button>
         <button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;" onclick="editMaterial(${realIdx})">Edit</button>
         <button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;color:var(--red);" onclick="deleteMaterial(${realIdx})">✕</button>
       </div>
@@ -11738,6 +11745,7 @@ let VEHICLE_MAINT = [];
 let VEHICLE_DOCS = {};   // { vehicleId: [{id,date,category,name,path,url,size}] }
 const VEH_DOCS_BUCKET = 'vehicle-docs';
 let MATERIAL_DOCS = {};  // { materialDbId: [{id,date,name,path,url,size}] } — product TDS/spec sheets
+let MATERIAL_NOTES = {}; // { materialDbId: "field notes / tips text" } — crew-facing application tips
 const MAT_DOCS_PREFIX = 'materials'; // path prefix inside VEH_DOCS_BUCKET (reused — no new bucket setup)
 let _editingVehicleId = null;
 let _editingMaintId = null;
@@ -11877,17 +11885,34 @@ async function loadMaterialDocs(){
   if(v){ try{ MATERIAL_DOCS=JSON.parse(v)||{}; }catch(e){ console.error('loadMaterialDocs parse error:',e); } }
 }
 async function saveMaterialDocs(){ MATERIAL_DOCS = await _saveKVMerged('material_docs', MATERIAL_DOCS); }
+async function loadMaterialNotes(){
+  const v=await sb.getKV('material_notes');
+  if(v){ try{ MATERIAL_NOTES=JSON.parse(v)||{}; }catch(e){ console.error('loadMaterialNotes parse error:',e); } }
+}
+async function saveMaterialNotes(){ MATERIAL_NOTES = await _saveKVMerged('material_notes', MATERIAL_NOTES); }
 
-// ---- Owner: manage one material's docs (opened from the Materials page) ----
+// ---- Owner: manage one material's docs + field notes (opened from the Materials page) ----
 let _matDocsActiveId=null;
 function openMatDocs(idx){
   const m=MATERIALS[idx];
   if(!m) return;
   if(!m.db_id){ showToast('Save the material first — it needs an ID before you can attach a TDS.'); return; }
   _matDocsActiveId=m.db_id;
-  document.getElementById('matdocs-title').textContent='TDS / Docs — '+m.name;
+  document.getElementById('matdocs-title').textContent='Docs & Notes — '+m.name;
+  const ta=document.getElementById('matdocs-notes'); if(ta) ta.value=MATERIAL_NOTES[m.db_id]||'';
   renderMatDocsList();
   openModal('matdocs');
+}
+async function saveMatNotes(){
+  const id=_matDocsActiveId; if(!id) return;
+  const ta=document.getElementById('matdocs-notes'); if(!ta) return;
+  const val=ta.value.trim();
+  if(val) MATERIAL_NOTES[id]=val; else delete MATERIAL_NOTES[id];
+  const btn=document.getElementById('matdocs-notes-btn'); if(btn){ btn.textContent='Saving…'; btn.disabled=true; }
+  await saveMaterialNotes();
+  if(btn){ btn.textContent='💾 Save Notes'; btn.disabled=false; }
+  renderMaterials();
+  showToast('✓ Notes saved.');
 }
 function renderMatDocsList(){
   const id=_matDocsActiveId;
@@ -11965,16 +11990,18 @@ function openProdDocs(){
 function renderProdDocs(){
   const wrap=document.getElementById('proddocs-list'); if(!wrap) return;
   const q=(document.getElementById('proddocs-search')?.value||'').trim().toLowerCase();
-  let mats=MATERIALS.filter(m=>m.db_id&&(MATERIAL_DOCS[m.db_id]||[]).length>0);
+  let mats=MATERIALS.filter(m=>m.db_id&&((MATERIAL_DOCS[m.db_id]||[]).length>0||(MATERIAL_NOTES[m.db_id]||'').trim()));
   if(q) mats=mats.filter(m=>[m.name,m.mfr,m.cat].filter(Boolean).join(' ').toLowerCase().includes(q));
   mats.sort((a,b)=>(a.name||'').localeCompare(b.name||''));
   if(!mats.length){
-    wrap.innerHTML=`<div style="padding:30px;text-align:center;color:var(--text3);font-size:13px;">${q?'No products match your search.':'No product documents yet. Ask Will to add a material’s TDS on the Materials page.'}</div>`;
+    wrap.innerHTML=`<div style="padding:30px;text-align:center;color:var(--text3);font-size:13px;">${q?'No products match your search.':'No product docs or notes yet. Ask Will to add a material’s TDS or tips on the Materials page.'}</div>`;
     return;
   }
   wrap.innerHTML=mats.map(m=>{
     const color=CAT_COLORS[m.cat]||'var(--text3)';
+    const note=(MATERIAL_NOTES[m.db_id]||'').trim();
     const docs=(MATERIAL_DOCS[m.db_id]||[]).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    const noteHtml = note ? `<div style="background:var(--accent-dim);border:1px solid var(--border2);border-left:3px solid var(--accent);border-radius:6px;padding:9px 12px;margin-bottom:9px;font-size:12.5px;line-height:1.5;color:var(--text);white-space:pre-wrap;"><span style="font-weight:700;color:var(--accent);">📝 Field Notes</span><br>${note.replace(/</g,'&lt;')}</div>` : '';
     const links=docs.map(d=>`<a href="${d.url}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);text-decoration:none;color:var(--text);font-size:13px;font-weight:500;">
         <span style="font-size:17px;flex-shrink:0;">${_vehDocIcon(d.name||'')}</span>
         <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(d.name||'').replace(/</g,'&lt;')}</span>
@@ -11986,6 +12013,7 @@ function renderProdDocs(){
           <span class="status-pill" style="background:${color}22;color:${color};border:1px solid ${color}44;">${m.cat||''}</span>
         </div>
         ${m.mfr?`<div style="font-size:12px;color:var(--text3);margin-bottom:9px;">${(m.mfr||'').replace(/</g,'&lt;')}</div>`:''}
+        ${noteHtml}
         <div style="display:flex;flex-direction:column;gap:7px;">${links}</div>
       </div>`;
   }).join('');
