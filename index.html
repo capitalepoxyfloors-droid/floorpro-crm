@@ -10767,8 +10767,12 @@ function showToast(msg){
   t.style.cssText='position:fixed;bottom:24px;right:24px;background:#1a73e8;color:#fff;padding:11px 20px;border-radius:8px;font-size:13px;font-weight:500;z-index:9999;font-family:DM Sans,sans-serif;max-width:320px;box-shadow:0 4px 20px rgba(0,0,0,.18);';
   t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),3200);
 }
-document.querySelectorAll('.modal-overlay').forEach(o=>{
-  o.addEventListener('click',e=>{if(e.target===o){o.classList.remove('open');if(o.id==='modal-schedulejob')sjReset();}});
+document.addEventListener('click',e=>{
+  const o=e.target;
+  if(o.classList&&o.classList.contains('modal-overlay')&&o.classList.contains('open')){
+    o.classList.remove('open');
+    if(o.id==='modal-schedulejob')sjReset();
+  }
 });
 
 // ── MERGED FROM SECOND SCRIPT BLOCK ──────────────────────────────────────────
