@@ -11916,11 +11916,18 @@ async function loadJobPhotos(){
 async function saveJobPhotos(){ JOB_PHOTOS = await _saveKVMerged('job_photos', JOB_PHOTOS); }
 
 async function jcUploadPhotos(ds){
-  const job=getJobRecord(_jcId); if(!job) return;
   const key=ds.replace(/-/g,'');
   const fileInput=document.getElementById('jcphoto-file-'+key);
   const files=fileInput&&fileInput.files?Array.from(fileInput.files):[];
-  if(!files.length) return;
+  await jcUploadPhotoFiles(ds,files);
+  if(fileInput) fileInput.value='';
+}
+
+// Shared upload core — called by the file-input (click-to-browse) and the drag & drop zone
+async function jcUploadPhotoFiles(ds,files){
+  const job=getJobRecord(_jcId); if(!job) return;
+  files=(files||[]).filter(f=>/^image\//.test(f.type));
+  if(!files.length){ showToast('Drop image files only.'); return; }
   const {author,role}=_matNoteAuthor();
   let ok=0,fail=0;
   for(const file of files){
@@ -11944,11 +11951,27 @@ async function jcUploadPhotos(ds){
     }catch(e){ console.error('job photo upload failed:',e); fail++; }
   }
   if(ok) await saveJobPhotos();
-  if(fileInput) fileInput.value='';
   jcRenderDayLogs();
   if(ok&&!fail) showToast(`✓ ${ok} photo${ok!==1?'s':''} added.`);
   else if(ok&&fail) showToast(`${ok} added, ${fail} failed.`);
   else showToast('Upload failed — the storage bucket may not be set up yet.');
+}
+
+function jcPhotoDragOver(e){
+  e.preventDefault();
+  e.currentTarget.style.borderColor='var(--accent)';
+  e.currentTarget.style.background='var(--accent)15';
+}
+function jcPhotoDragLeave(e){
+  e.currentTarget.style.borderColor='transparent';
+  e.currentTarget.style.background='';
+}
+async function jcPhotoDrop(e,ds){
+  e.preventDefault();
+  jcPhotoDragLeave(e);
+  const files=Array.from(e.dataTransfer?.files||[]);
+  if(!files.length) return;
+  await jcUploadPhotoFiles(ds,files);
 }
 
 async function jcDeletePhoto(ds,photoId){
@@ -11980,14 +12003,14 @@ function jcDayPhotosHtml(ds){
       <button onclick="jcDeletePhoto('${ds}','${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
     </div>`).join('');
   return `
-    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+    <div ondragover="jcPhotoDragOver(event)" ondragleave="jcPhotoDragLeave(event)" ondrop="jcPhotoDrop(event,'${ds}')" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:6px;margin:-6px;border-radius:10px;border:1.5px dashed transparent;transition:border-color .15s,background .15s;">
       ${thumbs}
       <label style="width:74px;height:74px;flex-shrink:0;border:1.5px dashed var(--border2);border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text3);font-size:22px;">
         +
         <input type="file" id="jcphoto-file-${key}" accept="image/*" capture="environment" multiple style="display:none;" onchange="jcUploadPhotos('${ds}')"/>
       </label>
     </div>
-    ${photos.length===0?'<div style="font-size:11px;color:var(--text3);margin-top:4px;">No photos yet — tap + to add one from your camera or gallery.</div>':''}`;
+    ${photos.length===0?'<div style="font-size:11px;color:var(--text3);margin-top:4px;">No photos yet — tap + or drag & drop images here.</div>':''}`;
 }
 
 // Field-note helpers. Notes are a per-material LIST so crews on separate phones can each add
