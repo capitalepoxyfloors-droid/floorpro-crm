@@ -2647,7 +2647,7 @@ async function deduplicateSlotsByJobRecord(){
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
   try{
-    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadLeadDupAcks(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadNavOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs(),loadMaterialDocs(),loadMaterialNotes()]);
+    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadLeadDupAcks(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadNavOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs(),loadMaterialDocs(),loadMaterialNotes(),loadJobPhotos()]);
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
@@ -4206,6 +4206,10 @@ function jcRenderDayLogs(){
         <div class="form-group" style="margin:0;">
           <label class="form-label">Materials Actually Used</label>
           ${jcDayMatsHtml(ds,log)}
+        </div>
+        <div class="form-group" style="margin:0;">
+          <label class="form-label">📷 Photos</label>
+          ${jcDayPhotosHtml(ds)}
         </div>
         <div id="jctr-${key}" class="form-row" style="margin:0;${log.fullDay?'opacity:0.35;':''}">
           <div class="form-group" style="margin:0;">
@@ -11751,6 +11755,7 @@ let VEHICLE_DOCS = {};   // { vehicleId: [{id,date,category,name,path,url,size}]
 const VEH_DOCS_BUCKET = 'vehicle-docs';
 let MATERIAL_DOCS = {};  // { materialDbId: [{id,date,name,path,url,size}] } — product TDS/spec sheets
 let MATERIAL_NOTES = {}; // { materialDbId: "field notes / tips text" } — crew-facing application tips
+let JOB_PHOTOS = {};     // { jobId: { 'YYYY-MM-DD': [{id,name,path,url,size,author,role,ts}] } } — per day-log photos
 const MAT_DOCS_PREFIX = 'materials'; // path prefix inside VEH_DOCS_BUCKET (reused — no new bucket setup)
 let _editingVehicleId = null;
 let _editingMaintId = null;
@@ -11900,6 +11905,90 @@ async function loadMaterialNotes(){
   });
 }
 async function saveMaterialNotes(){ MATERIAL_NOTES = await _saveKVMerged('material_notes', MATERIAL_NOTES); }
+
+// ── JOB PHOTOS ───────────────────────────────────────────────────────────────
+// Crew or office attach photos to a specific Daily Log day (progress/before-after/issues).
+// Reuses the existing vehicle-docs Storage bucket under a `jobs/` path prefix (no new bucket/SQL setup).
+async function loadJobPhotos(){
+  const v=await sb.getKV('job_photos');
+  if(v){ try{ JOB_PHOTOS=JSON.parse(v)||{}; }catch(e){ console.error('loadJobPhotos parse error:',e); } }
+}
+async function saveJobPhotos(){ JOB_PHOTOS = await _saveKVMerged('job_photos', JOB_PHOTOS); }
+
+async function jcUploadPhotos(ds){
+  const job=getJobRecord(_jcId); if(!job) return;
+  const key=ds.replace(/-/g,'');
+  const fileInput=document.getElementById('jcphoto-file-'+key);
+  const files=fileInput&&fileInput.files?Array.from(fileInput.files):[];
+  if(!files.length) return;
+  const {author,role}=_matNoteAuthor();
+  let ok=0,fail=0;
+  for(const file of files){
+    if(file.size>25*1024*1024){ showToast(`"${file.name}" is over 25 MB — skipped.`); fail++; continue; }
+    const safe=(file.name||'photo').replace(/[^\w.\-]+/g,'_');
+    const path=`jobs/${job.id}/${ds}/${Date.now()}_${safe}`;
+    try{
+      const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
+        method:'POST',
+        headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
+        body:file
+      });
+      if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
+      if(!JOB_PHOTOS[job.id]) JOB_PHOTOS[job.id]={};
+      if(!JOB_PHOTOS[job.id][ds]) JOB_PHOTOS[job.id][ds]=[];
+      JOB_PHOTOS[job.id][ds].push({
+        id:(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)),
+        name:file.name, path, url:_vehDocPublicUrl(path), size:file.size, author, role, ts:new Date().toISOString()
+      });
+      ok++;
+    }catch(e){ console.error('job photo upload failed:',e); fail++; }
+  }
+  if(ok) await saveJobPhotos();
+  if(fileInput) fileInput.value='';
+  jcRenderDayLogs();
+  if(ok&&!fail) showToast(`✓ ${ok} photo${ok!==1?'s':''} added.`);
+  else if(ok&&fail) showToast(`${ok} added, ${fail} failed.`);
+  else showToast('Upload failed — the storage bucket may not be set up yet.');
+}
+
+async function jcDeletePhoto(ds,photoId){
+  const job=getJobRecord(_jcId); if(!job) return;
+  const list=(JOB_PHOTOS[job.id]&&JOB_PHOTOS[job.id][ds])||[];
+  const photo=list.find(p=>p.id===photoId); if(!photo) return;
+  if(!confirm('Delete this photo?')) return;
+  try{
+    await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(photo.path)}`,{
+      method:'DELETE', headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY }
+    });
+  }catch(e){ console.error('job photo storage delete failed',e); }
+  JOB_PHOTOS[job.id][ds]=list.filter(p=>p.id!==photoId);
+  await saveJobPhotos();
+  jcRenderDayLogs();
+  showToast('Photo removed.');
+}
+
+// Thumbnail grid + add button for one Daily Log day's photos
+function jcDayPhotosHtml(ds){
+  const job=getJobRecord(_jcId); if(!job) return '';
+  const key=ds.replace(/-/g,'');
+  const photos=((JOB_PHOTOS[job.id]||{})[ds]||[]).slice().sort((a,b)=>(a.ts||'').localeCompare(b.ts||''));
+  const thumbs=photos.map(p=>`
+    <div style="position:relative;width:74px;height:74px;flex-shrink:0;">
+      <a href="${p.url}" target="_blank" rel="noopener">
+        <img src="${p.url}" loading="lazy" style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;"/>
+      </a>
+      <button onclick="jcDeletePhoto('${ds}','${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
+    </div>`).join('');
+  return `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+      ${thumbs}
+      <label style="width:74px;height:74px;flex-shrink:0;border:1.5px dashed var(--border2);border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text3);font-size:22px;">
+        +
+        <input type="file" id="jcphoto-file-${key}" accept="image/*" capture="environment" multiple style="display:none;" onchange="jcUploadPhotos('${ds}')"/>
+      </label>
+    </div>
+    ${photos.length===0?'<div style="font-size:11px;color:var(--text3);margin-top:4px;">No photos yet — tap + to add one from your camera or gallery.</div>':''}`;
+}
 
 // Field-note helpers. Notes are a per-material LIST so crews on separate phones can each add
 // without clobbering (the KV merge unions array items by id). Attribution = who added it.
