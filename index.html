@@ -5604,15 +5604,11 @@ function renderPayroll(){
         <div style="text-align:right;font-family:'DM Mono',monospace;font-weight:600;${color?`color:${color};`:''}">${fmt(pay)}</div>`;
     rows.forEach(r=>{
       const totalHrs=r.regHrs+r.otHrs+r.cashHrs+r.pwHrs+r.ptoHrs+r.holHrs;
-      const regCheckPay=r.regPay+r.otPay+r.ptoPay;
-      const regCheckHrs=r.regHrs+r.otHrs+r.ptoHrs;
+      const totalPay=r.regPay+r.otPay+r.cashPay+r.pwPay+r.ptoPay+r.holPay;
       const pwJobs=Object.entries(r.pwByJob||{});
       html+=`
       <div class="jobs-block" style="padding:16px 18px;margin-bottom:14px;">
-        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
-          <div style="font-size:15px;font-weight:700;">${r.label}</div>
-          <div style="font-size:12.5px;color:var(--text3);">${fmtH(totalHrs)} total</div>
-        </div>
+        <div style="font-size:15px;font-weight:700;margin-bottom:10px;">${r.label}</div>
         <div style="display:grid;grid-template-columns:1fr auto auto;gap:6px 16px;font-size:13px;align-items:center;">
           ${line('Regular',r.regHrs,r.regPay)}
           ${line('Overtime (1.5×)',r.otHrs,r.otPay)}
@@ -5620,12 +5616,9 @@ function renderPayroll(){
           ${line('Holiday Pay',r.holHrs,r.holPay,'var(--orange)')}
           ${line('Cash',r.cashHrs,r.cashPay,'var(--green)')}
           ${pwJobs.map(([jobLabel,pj])=>line('Prevailing Wage — '+jobLabel,pj.hrs,pj.pay,'var(--purple,#a855f7)')).join('')}
-        </div>
-        <div style="border-top:1px solid var(--border2);margin-top:12px;padding-top:10px;display:flex;flex-direction:column;gap:5px;font-size:13px;">
-          <div style="display:flex;justify-content:space-between;font-weight:700;"><span>Regular Paycheck</span><span>${fmt(regCheckPay)} <span style="font-weight:400;color:var(--text3);font-size:11.5px;">(${fmtH(regCheckHrs)})</span></span></div>
-          ${r.holHrs>0?`<div style="display:flex;justify-content:space-between;font-weight:700;color:var(--orange);"><span>Holiday Pay</span><span>${fmt(r.holPay)} <span style="font-weight:400;color:var(--text3);font-size:11.5px;">(${fmtH(r.holHrs)})</span></span></div>`:''}
-          ${r.cashHrs>0?`<div style="display:flex;justify-content:space-between;font-weight:700;color:var(--green);"><span>Cash</span><span>${fmt(r.cashPay)} <span style="font-weight:400;color:var(--text3);font-size:11.5px;">(${fmtH(r.cashHrs)})</span></span></div>`:''}
-          ${pwJobs.map(([jobLabel,pj])=>`<div style="display:flex;justify-content:space-between;font-weight:700;color:var(--purple,#a855f7);"><span>⚠ Prevailing Wage — ${jobLabel} — separate check</span><span>${fmt(pj.pay)} <span style="font-weight:400;color:var(--text3);font-size:11.5px;">(${fmtH(pj.hrs)})</span></span></div>`).join('')}
+          <div style="border-top:1px solid var(--border2);margin-top:4px;padding-top:7px;font-weight:700;">Total</div>
+          <div style="border-top:1px solid var(--border2);margin-top:4px;padding-top:7px;text-align:right;font-family:'DM Mono',monospace;font-weight:700;">${fmtH(totalHrs)}</div>
+          <div style="border-top:1px solid var(--border2);margin-top:4px;padding-top:7px;text-align:right;font-family:'DM Mono',monospace;font-weight:700;">${fmt(totalPay)}</div>
         </div>
       </div>`;
     });
