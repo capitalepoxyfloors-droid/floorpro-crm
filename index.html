@@ -5471,7 +5471,7 @@ function _payrollCompute(offset){
   const dateSet=new Set(dates);
   const byKey={};
   function bucket(key,label){
-    if(!byKey[key]) byKey[key]={label,regHrs:0,regPay:0,otHrs:0,otPay:0,pwHrs:0,pwPay:0,pwByJob:{},ptoHrs:0,ptoPay:0,holHrs:0,holPay:0};
+    if(!byKey[key]) byKey[key]={label,regHrs:0,regPay:0,otHrs:0,otPay:0,pwHrs:0,pwPay:0,pwByJob:{},ptoHrs:0,ptoPay:0,holHrs:0,holPay:0,days:[]};
     return byKey[key];
   }
   const ptoDates=new Set(); // `${key}|${ds}` — already has PTO that day, so skip auto Holiday pay
@@ -5497,17 +5497,20 @@ function _payrollCompute(offset){
         const key=hasCrew?('c'+c.crewIdx):('n:'+label.toLowerCase());
         const b=bucket(key,label);
         const baseRate=hasCrew?(parseFloat(CREW_DATA[c.crewIdx].hourly)||0):0;
+        const jobLabel=(job.customer||'Unnamed Job').trim();
         if(prevailing){
           const rate=(parseFloat(job.prevailingWageRate)||0)*(ot?1.5:1);
           const pay=hrs*rate;
           b.pwHrs+=hrs; b.pwPay+=pay;
-          const jobLabel=(job.customer||'Unnamed Job').trim();
           if(!b.pwByJob[jobLabel]) b.pwByJob[jobLabel]={hrs:0,pay:0};
           b.pwByJob[jobLabel].hrs+=hrs; b.pwByJob[jobLabel].pay+=pay;
+          b.days.push({date:ds,job:jobLabel,hrs,type:'Prevailing Wage'});
         } else if(ot){
           b.otHrs+=hrs; b.otPay+=hrs*baseRate*1.5;
+          b.days.push({date:ds,job:jobLabel,hrs,type:'Overtime'});
         } else {
           b.regHrs+=hrs; b.regPay+=hrs*baseRate;
+          b.days.push({date:ds,job:jobLabel,hrs,type:'Regular'});
         }
       });
     });
@@ -5532,6 +5535,7 @@ function _payrollCompute(offset){
         let hrs=8;
         if(pto.partial&&pto.from&&pto.to){ const h=parseFloat(jcCalcHrs(pto.from,pto.to)); if(h>0) hrs=h; }
         b.ptoHrs+=hrs; b.ptoPay+=hrs*baseRate;
+        b.days.push({date:ds,job:'PTO',hrs,type:'PTO'});
       });
     });
   });
@@ -5557,6 +5561,7 @@ function _payrollCompute(offset){
       const b=bucket(key,cd.full);
       const baseRate=parseFloat(cd.hourly)||0;
       b.holHrs+=8; b.holPay+=8*baseRate;
+      b.days.push({date:ds,job:'Holiday Pay',hrs:8,type:'Holiday'});
     });
   });
 
@@ -5603,10 +5608,13 @@ function renderPayroll(){
         <div style="${color?`color:${color};font-weight:600;`:''}">${label}</div>
         <div style="text-align:right;font-family:'DM Mono',monospace;">${fmtH(hrs)}</div>
         <div style="text-align:right;font-family:'DM Mono',monospace;font-weight:600;${color?`color:${color};`:''}">${fmt(pay)}</div>`;
+    const fmtDay=ds=>{ const dt=new Date(ds+'T12:00:00'); return dt.toLocaleDateString('en-US',{weekday:'short'})+' '+(dt.getMonth()+1)+'/'+dt.getDate(); };
+    const dayTypeColor={Overtime:'var(--blue)',['Prevailing Wage']:'var(--purple,#a855f7)',Holiday:'var(--orange)',PTO:'var(--text3)'};
     rows.forEach(r=>{
       const totalHrs=r.regHrs+r.otHrs+r.pwHrs+r.ptoHrs+r.holHrs;
       const totalPay=r.regPay+r.otPay+r.pwPay+r.ptoPay+r.holPay;
       const pwJobs=Object.entries(r.pwByJob||{});
+      const daysSorted=(r.days||[]).slice().sort((a,b)=>a.date.localeCompare(b.date));
       html+=`
       <div class="jobs-block" style="padding:16px 18px;margin-bottom:14px;">
         <div style="font-size:15px;font-weight:700;margin-bottom:10px;">${r.label}</div>
@@ -5620,6 +5628,15 @@ function renderPayroll(){
           <div style="border-top:1px solid var(--border2);margin-top:4px;padding-top:7px;text-align:right;font-family:'DM Mono',monospace;font-weight:700;">${fmtH(totalHrs)}</div>
           <div style="border-top:1px solid var(--border2);margin-top:4px;padding-top:7px;text-align:right;font-family:'DM Mono',monospace;font-weight:700;">${fmt(totalPay)}</div>
         </div>
+        ${daysSorted.length?`<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border2);">
+          <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">Day-by-Day (for verifying crew-entered hours)</div>
+          <div style="display:grid;grid-template-columns:auto 1fr auto;gap:5px 12px;font-size:12.5px;">
+            ${daysSorted.map(d=>`
+            <div style="color:var(--text3);font-family:'DM Mono',monospace;white-space:nowrap;">${fmtDay(d.date)}</div>
+            <div>${d.job}${(d.type==='Overtime'||d.type==='Prevailing Wage')?` <span style="color:${dayTypeColor[d.type]};font-size:10.5px;font-weight:600;">(${d.type})</span>`:''}</div>
+            <div style="text-align:right;font-family:'DM Mono',monospace;${dayTypeColor[d.type]?`color:${dayTypeColor[d.type]};`:''}">${fmtH(d.hrs)}</div>`).join('')}
+          </div>
+        </div>`:''}
       </div>`;
     });
   }
