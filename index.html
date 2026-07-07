@@ -5471,9 +5471,10 @@ function _payrollCompute(offset){
   const dateSet=new Set(dates);
   const byKey={};
   function bucket(key,label){
-    if(!byKey[key]) byKey[key]={label,regHrs:0,regPay:0,otHrs:0,otPay:0,cashHrs:0,cashPay:0,pwHrs:0,pwPay:0,ptoHrs:0,ptoPay:0};
+    if(!byKey[key]) byKey[key]={label,regHrs:0,regPay:0,otHrs:0,otPay:0,cashHrs:0,cashPay:0,pwHrs:0,pwPay:0,pwByJob:{},ptoHrs:0,ptoPay:0,holHrs:0,holPay:0};
     return byKey[key];
   }
+  const paidDates=new Set(); // `${key}|${ds}` — already has worked or PTO hours that day, so skip auto Holiday pay
 
   JOB_RECORDS.forEach(job=>{
     const logs=job.dayLogs; if(!logs) return;
@@ -5489,11 +5490,16 @@ function _payrollCompute(offset){
         const label=(hasCrew?CREW_DATA[c.crewIdx].full:(c.name||'')).trim();
         if(!label) return;
         const key=hasCrew?('c'+c.crewIdx):('n:'+label.toLowerCase());
+        paidDates.add(key+'|'+ds);
         const b=bucket(key,label);
         const baseRate=hasCrew?(parseFloat(CREW_DATA[c.crewIdx].hourly)||0):0;
         if(prevailing){
           const rate=(parseFloat(job.prevailingWageRate)||0)*(ot?1.5:1);
-          b.pwHrs+=hrs; b.pwPay+=hrs*rate;
+          const pay=hrs*rate;
+          b.pwHrs+=hrs; b.pwPay+=pay;
+          const jobLabel=(job.customer||'Unnamed Job').trim();
+          if(!b.pwByJob[jobLabel]) b.pwByJob[jobLabel]={hrs:0,pay:0};
+          b.pwByJob[jobLabel].hrs+=hrs; b.pwByJob[jobLabel].pay+=pay;
         } else if(cash){
           const rate=baseRate*(ot?1.5:1);
           b.cashHrs+=hrs; b.cashPay+=hrs*rate;
@@ -5518,6 +5524,7 @@ function _payrollCompute(offset){
         const dt=new Date(BASE); dt.setDate(dt.getDate()+parseInt(wStr)*7+parseInt(dStr));
         const ds=dt.toISOString().slice(0,10);
         if(!dateSet.has(ds)) return;
+        paidDates.add('c'+ci+'|'+ds);
         const label=CREW_DATA[ci].full;
         const b=bucket('c'+ci,label);
         const baseRate=parseFloat(CREW_DATA[ci].hourly)||0;
@@ -5528,37 +5535,61 @@ function _payrollCompute(offset){
     });
   });
 
+  // Holiday Pay — a recognized federal or custom-added day off (isHoliday) pays every crew
+  // member 8hrs at base rate, UNLESS they already have worked or PTO hours that same date
+  // (e.g. a job that ran through the holiday, or vacation already covering that day).
+  // Weekends are skipped: a fixed federal holiday with noObserve (e.g. July 4th) still shows in
+  // HOLIDAYS on its raw calendar date even when that's a Saturday/Sunday (for schedule display),
+  // but nobody works weekends anyway — the actual paid day off is the separate weekday "observed"
+  // custom holiday Will adds for that case, so counting both would double the holiday pay.
+  const holidaysInPeriod=[];
+  dates.forEach(ds=>{
+    const hol=isHoliday(new Date(ds+'T00:00:00')); if(!hol) return;
+    const dow=new Date(ds+'T00:00:00').getDay();
+    if(dow===0||dow===6) return;
+    holidaysInPeriod.push({date:ds,label:hol});
+    CREW_DATA.forEach((cd,ci)=>{
+      const key='c'+ci;
+      if(paidDates.has(key+'|'+ds)) return;
+      const b=bucket(key,cd.full);
+      const baseRate=parseFloat(cd.hourly)||0;
+      b.holHrs+=8; b.holPay+=8*baseRate;
+    });
+  });
+
   const rows=[];
   CREW_DATA.forEach((cd,ci)=>{ const b=byKey['c'+ci]; if(b) rows.push(b); });
   Object.keys(byKey).forEach(k=>{ if(k.startsWith('n:')) rows.push(byKey[k]); });
-  return {startDate:dates[0], endDate:dates[13], rows};
+  return {startDate:dates[0], endDate:dates[13], rows, holidaysInPeriod};
 }
 
 function renderPayroll(){
   const el=document.getElementById('payroll-content'); if(!el) return;
   if(_payrollPeriodOffset===null) _payrollPeriodOffset=_payrollPeriodOffsetForToday();
-  const {startDate,endDate,rows}=_payrollCompute(_payrollPeriodOffset);
+  const {startDate,endDate,rows,holidaysInPeriod}=_payrollCompute(_payrollPeriodOffset);
   const fmt=n=>'$'+(Math.round(n*100)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
   const fmtH=n=>{ n=Math.round(n*10)/10; return (n%1===0?n.toFixed(0):n.toFixed(1))+'h'; };
   const fmtPd=ds=>new Date(ds+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
   const isCurrent=_payrollPeriodOffset===_payrollPeriodOffsetForToday();
 
   const totReg=rows.reduce((a,r)=>a+r.regPay+r.otPay+r.ptoPay,0);
+  const totHol=rows.reduce((a,r)=>a+r.holPay,0);
   const totPW=rows.reduce((a,r)=>a+r.pwPay,0);
   const totCash=rows.reduce((a,r)=>a+r.cashPay,0);
 
   let html=`
-  <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:10px 14px;margin-bottom:22px;">
+  <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:10px 14px;margin-bottom:${holidaysInPeriod.length?8:22}px;">
     <button class="btn btn-ghost" onclick="payrollShiftPeriod(-1)">‹ Prev</button>
     <div style="font-size:15px;font-weight:700;text-align:center;">${fmtPd(startDate)} – ${fmtPd(endDate)}</div>
     <button class="btn btn-ghost" onclick="payrollShiftPeriod(1)">Next ›</button>
     ${!isCurrent?`<button class="btn btn-ghost" onclick="payrollGoToCurrent()" style="font-size:11.5px;">Current Period</button>`:''}
   </div>
+  ${holidaysInPeriod.length?`<div style="text-align:center;font-size:12px;color:var(--orange);margin-bottom:22px;">${holidaysInPeriod.map(h=>h.label+' — '+fmtPd(h.date)).join(' &nbsp;·&nbsp; ')} <span style="color:var(--text3);">(paid holiday — 8h at base rate for crew without other hours that day)</span></div>`:''}
   <div class="mgrid4" style="margin-bottom:24px;">
     <div class="stat-card"><div class="stat-label">Regular Payroll</div><div class="stat-value">${fmt(totReg)}</div></div>
-    <div class="stat-card"><div class="stat-label">Prevailing Wage (Davis-Bacon)</div><div class="stat-value" style="color:var(--purple,#a855f7);">${fmt(totPW)}</div></div>
+    <div class="stat-card"><div class="stat-label">Holiday Pay</div><div class="stat-value" style="color:var(--orange);">${fmt(totHol)}</div></div>
+    <div class="stat-card"><div class="stat-label">Prevailing Wage</div><div class="stat-value" style="color:var(--purple,#a855f7);">${fmt(totPW)}</div></div>
     <div class="stat-card"><div class="stat-label">Cash</div><div class="stat-value" style="color:var(--green);">${fmt(totCash)}</div></div>
-    <div class="stat-card"><div class="stat-label">Employees w/ Hours</div><div class="stat-value">${rows.length}</div></div>
   </div>`;
 
   if(!rows.length){
@@ -5569,9 +5600,10 @@ function renderPayroll(){
         <div style="text-align:right;font-family:'DM Mono',monospace;">${fmtH(hrs)}</div>
         <div style="text-align:right;font-family:'DM Mono',monospace;font-weight:600;${color?`color:${color};`:''}">${fmt(pay)}</div>`;
     rows.forEach(r=>{
-      const totalHrs=r.regHrs+r.otHrs+r.cashHrs+r.pwHrs+r.ptoHrs;
+      const totalHrs=r.regHrs+r.otHrs+r.cashHrs+r.pwHrs+r.ptoHrs+r.holHrs;
       const regCheckPay=r.regPay+r.otPay+r.ptoPay;
       const regCheckHrs=r.regHrs+r.otHrs+r.ptoHrs;
+      const pwJobs=Object.entries(r.pwByJob||{});
       html+=`
       <div class="jobs-block" style="padding:16px 18px;margin-bottom:14px;">
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
@@ -5582,13 +5614,15 @@ function renderPayroll(){
           ${line('Regular',r.regHrs,r.regPay)}
           ${line('Overtime (1.5×)',r.otHrs,r.otPay)}
           ${line('PTO',r.ptoHrs,r.ptoPay)}
+          ${line('Holiday Pay',r.holHrs,r.holPay,'var(--orange)')}
           ${line('Cash',r.cashHrs,r.cashPay,'var(--green)')}
-          ${line('Prevailing Wage (Davis-Bacon)',r.pwHrs,r.pwPay,'var(--purple,#a855f7)')}
+          ${pwJobs.map(([jobLabel,pj])=>line('Prevailing Wage — '+jobLabel,pj.hrs,pj.pay,'var(--purple,#a855f7)')).join('')}
         </div>
         <div style="border-top:1px solid var(--border2);margin-top:12px;padding-top:10px;display:flex;flex-direction:column;gap:5px;font-size:13px;">
           <div style="display:flex;justify-content:space-between;font-weight:700;"><span>Regular Paycheck</span><span>${fmt(regCheckPay)} <span style="font-weight:400;color:var(--text3);font-size:11.5px;">(${fmtH(regCheckHrs)})</span></span></div>
-          ${r.pwHrs>0?`<div style="display:flex;justify-content:space-between;font-weight:700;color:var(--purple,#a855f7);"><span>⚠ Prevailing Wage — separate check</span><span>${fmt(r.pwPay)} <span style="font-weight:400;color:var(--text3);font-size:11.5px;">(${fmtH(r.pwHrs)})</span></span></div>`:''}
+          ${r.holHrs>0?`<div style="display:flex;justify-content:space-between;font-weight:700;color:var(--orange);"><span>Holiday Pay</span><span>${fmt(r.holPay)} <span style="font-weight:400;color:var(--text3);font-size:11.5px;">(${fmtH(r.holHrs)})</span></span></div>`:''}
           ${r.cashHrs>0?`<div style="display:flex;justify-content:space-between;font-weight:700;color:var(--green);"><span>Cash</span><span>${fmt(r.cashPay)} <span style="font-weight:400;color:var(--text3);font-size:11.5px;">(${fmtH(r.cashHrs)})</span></span></div>`:''}
+          ${pwJobs.map(([jobLabel,pj])=>`<div style="display:flex;justify-content:space-between;font-weight:700;color:var(--purple,#a855f7);"><span>⚠ Prevailing Wage — ${jobLabel} — separate check</span><span>${fmt(pj.pay)} <span style="font-weight:400;color:var(--text3);font-size:11.5px;">(${fmtH(pj.hrs)})</span></span></div>`).join('')}
         </div>
       </div>`;
     });
