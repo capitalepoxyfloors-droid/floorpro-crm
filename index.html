@@ -5471,11 +5471,15 @@ function _payrollCompute(offset){
   const dateSet=new Set(dates);
   const byKey={};
   function bucket(key,label){
-    if(!byKey[key]) byKey[key]={label,regHrs:0,regPay:0,otHrs:0,otPay:0,cashHrs:0,cashPay:0,pwHrs:0,pwPay:0,pwByJob:{},ptoHrs:0,ptoPay:0,holHrs:0,holPay:0};
+    if(!byKey[key]) byKey[key]={label,regHrs:0,regPay:0,otHrs:0,otPay:0,pwHrs:0,pwPay:0,pwByJob:{},ptoHrs:0,ptoPay:0,holHrs:0,holPay:0};
     return byKey[key];
   }
-  const paidDates=new Set(); // `${key}|${ds}` — already has worked or PTO hours that day, so skip auto Holiday pay
+  const ptoDates=new Set(); // `${key}|${ds}` — already has PTO that day, so skip auto Holiday pay
 
+  // Cash-wage hours are paid outside payroll (handed over separately), so this worksheet only
+  // reflects what actually goes through payroll — cash hours are excluded entirely, not folded
+  // into Regular. A crew member who ALSO worked cash on a holiday still gets full Holiday Pay
+  // for the day (see below) — the two are independent, not a substitute for one another.
   JOB_RECORDS.forEach(job=>{
     const logs=job.dayLogs; if(!logs) return;
     dates.forEach(ds=>{
@@ -5489,8 +5493,8 @@ function _payrollCompute(offset){
         const hasCrew=c.crewIdx>=0&&CREW_DATA[c.crewIdx];
         const label=(hasCrew?CREW_DATA[c.crewIdx].full:(c.name||'')).trim();
         if(!label) return;
+        if(cash&&!prevailing) return; // off-payroll — not sent to payroll, so not shown here
         const key=hasCrew?('c'+c.crewIdx):('n:'+label.toLowerCase());
-        paidDates.add(key+'|'+ds);
         const b=bucket(key,label);
         const baseRate=hasCrew?(parseFloat(CREW_DATA[c.crewIdx].hourly)||0):0;
         if(prevailing){
@@ -5500,9 +5504,6 @@ function _payrollCompute(offset){
           const jobLabel=(job.customer||'Unnamed Job').trim();
           if(!b.pwByJob[jobLabel]) b.pwByJob[jobLabel]={hrs:0,pay:0};
           b.pwByJob[jobLabel].hrs+=hrs; b.pwByJob[jobLabel].pay+=pay;
-        } else if(cash){
-          const rate=baseRate*(ot?1.5:1);
-          b.cashHrs+=hrs; b.cashPay+=hrs*rate;
         } else if(ot){
           b.otHrs+=hrs; b.otPay+=hrs*baseRate*1.5;
         } else {
@@ -5524,7 +5525,7 @@ function _payrollCompute(offset){
         const dt=new Date(BASE); dt.setDate(dt.getDate()+parseInt(wStr)*7+parseInt(dStr));
         const ds=dt.toISOString().slice(0,10);
         if(!dateSet.has(ds)) return;
-        paidDates.add('c'+ci+'|'+ds);
+        ptoDates.add('c'+ci+'|'+ds);
         const label=CREW_DATA[ci].full;
         const b=bucket('c'+ci,label);
         const baseRate=parseFloat(CREW_DATA[ci].hourly)||0;
@@ -5536,8 +5537,10 @@ function _payrollCompute(offset){
   });
 
   // Holiday Pay — a recognized federal or custom-added day off (isHoliday) pays every crew
-  // member 8hrs at base rate, UNLESS they already have worked or PTO hours that same date
-  // (e.g. a job that ran through the holiday, or vacation already covering that day).
+  // member 8hrs at base rate, UNLESS they already have PTO that same date (vacation already
+  // covering the day off). Working that day (regular or cash) does NOT cancel Holiday Pay —
+  // a crew member who chose to work a holiday is paid for the hours worked (whatever way) AND
+  // still gets the holiday entitlement, so those are tracked independently.
   // Weekends are skipped: a fixed federal holiday with noObserve (e.g. July 4th) still shows in
   // HOLIDAYS on its raw calendar date even when that's a Saturday/Sunday (for schedule display),
   // but nobody works weekends anyway — the actual paid day off is the separate weekday "observed"
@@ -5550,7 +5553,7 @@ function _payrollCompute(offset){
     holidaysInPeriod.push({date:ds,label:hol});
     CREW_DATA.forEach((cd,ci)=>{
       const key='c'+ci;
-      if(paidDates.has(key+'|'+ds)) return;
+      if(ptoDates.has(key+'|'+ds)) return;
       const b=bucket(key,cd.full);
       const baseRate=parseFloat(cd.hourly)||0;
       b.holHrs+=8; b.holPay+=8*baseRate;
@@ -5578,7 +5581,6 @@ function renderPayroll(){
   const totReg=rows.reduce((a,r)=>a+r.regPay+r.otPay+r.ptoPay,0);
   const totHol=rows.reduce((a,r)=>a+r.holPay,0);
   const totPW=rows.reduce((a,r)=>a+r.pwPay,0);
-  const totCash=rows.reduce((a,r)=>a+r.cashPay,0);
 
   let html=`
   <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:10px 14px;margin-bottom:${holidaysInPeriod.length?8:22}px;">
@@ -5587,12 +5589,11 @@ function renderPayroll(){
     <button class="btn btn-ghost" onclick="payrollShiftPeriod(1)">Next ›</button>
     ${!isCurrent?`<button class="btn btn-ghost" onclick="payrollGoToCurrent()" style="font-size:11.5px;">Current Period</button>`:''}
   </div>
-  ${holidaysInPeriod.length?`<div style="text-align:center;font-size:12px;color:var(--orange);margin-bottom:22px;">${holidaysInPeriod.map(h=>h.label+' — '+fmtPd(h.date)).join(' &nbsp;·&nbsp; ')} <span style="color:var(--text3);">(paid holiday — 8h at base rate for crew without other hours that day)</span></div>`:''}
+  ${holidaysInPeriod.length?`<div style="text-align:center;font-size:12px;color:var(--orange);margin-bottom:22px;">${holidaysInPeriod.map(h=>h.label+' — '+fmtPd(h.date)).join(' &nbsp;·&nbsp; ')} <span style="color:var(--text3);">(paid holiday — 8h at base rate for every crew member, unless already on PTO that day)</span></div>`:''}
   <div class="mgrid4" style="margin-bottom:24px;">
     <div class="stat-card"><div class="stat-label">Regular Payroll</div><div class="stat-value">${fmt(totReg)}</div></div>
     <div class="stat-card"><div class="stat-label">Holiday Pay</div><div class="stat-value" style="color:var(--orange);">${fmt(totHol)}</div></div>
     <div class="stat-card"><div class="stat-label">Prevailing Wage</div><div class="stat-value" style="color:var(--purple,#a855f7);">${fmt(totPW)}</div></div>
-    <div class="stat-card"><div class="stat-label">Cash</div><div class="stat-value" style="color:var(--green);">${fmt(totCash)}</div></div>
   </div>`;
 
   if(!rows.length){
@@ -5603,8 +5604,8 @@ function renderPayroll(){
         <div style="text-align:right;font-family:'DM Mono',monospace;">${fmtH(hrs)}</div>
         <div style="text-align:right;font-family:'DM Mono',monospace;font-weight:600;${color?`color:${color};`:''}">${fmt(pay)}</div>`;
     rows.forEach(r=>{
-      const totalHrs=r.regHrs+r.otHrs+r.cashHrs+r.pwHrs+r.ptoHrs+r.holHrs;
-      const totalPay=r.regPay+r.otPay+r.cashPay+r.pwPay+r.ptoPay+r.holPay;
+      const totalHrs=r.regHrs+r.otHrs+r.pwHrs+r.ptoHrs+r.holHrs;
+      const totalPay=r.regPay+r.otPay+r.pwPay+r.ptoPay+r.holPay;
       const pwJobs=Object.entries(r.pwByJob||{});
       html+=`
       <div class="jobs-block" style="padding:16px 18px;margin-bottom:14px;">
@@ -5614,7 +5615,6 @@ function renderPayroll(){
           ${line('Overtime (1.5×)',r.otHrs,r.otPay)}
           ${line('PTO',r.ptoHrs,r.ptoPay)}
           ${line('Holiday Pay',r.holHrs,r.holPay,'var(--orange)')}
-          ${line('Cash',r.cashHrs,r.cashPay,'var(--green)')}
           ${pwJobs.map(([jobLabel,pj])=>line('Prevailing Wage — '+jobLabel,pj.hrs,pj.pay,'var(--purple,#a855f7)')).join('')}
           <div style="border-top:1px solid var(--border2);margin-top:4px;padding-top:7px;font-weight:700;">Total</div>
           <div style="border-top:1px solid var(--border2);margin-top:4px;padding-top:7px;text-align:right;font-family:'DM Mono',monospace;font-weight:700;">${fmtH(totalHrs)}</div>
