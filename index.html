@@ -5558,7 +5558,10 @@ function _payrollCompute(offset){
   });
 
   const rows=[];
-  CREW_DATA.forEach((cd,ci)=>{ const b=byKey['c'+ci]; if(b) rows.push(b); });
+  // Will draws a salary, not hourly pay — leave him off this hourly worksheet entirely.
+  // Matched by name (not role/index) since the live crew table's role text and ordering
+  // both drift from whatever's hardcoded — see CREW_DATA fallback array vs loadCrew().
+  CREW_DATA.forEach((cd,ci)=>{ if((cd.full||'').trim().toLowerCase()==='will bradford') return; const b=byKey['c'+ci]; if(b) rows.push(b); });
   Object.keys(byKey).forEach(k=>{ if(k.startsWith('n:')) rows.push(byKey[k]); });
   return {startDate:dates[0], endDate:dates[13], rows, holidaysInPeriod};
 }
