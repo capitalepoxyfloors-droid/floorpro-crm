@@ -467,6 +467,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/><path d="M8 14h4M8 10h2"/></svg>
         <span>Job Costing</span>
       </button>
+      <button class="nav-item" onclick="showPage('payroll')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/><path d="M6 15h4"/></svg>
+        <span>Payroll</span>
+      </button>
       <button class="nav-item" id="nav-matreqs" onclick="showPage('matreqs')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 3H8a2 2 0 00-2 2v2h12V5a2 2 0 00-2-2z"/><path d="M12 13v4M10 15h4"/></svg>
         <span>Mat. Requests</span>
@@ -755,6 +759,16 @@
       </div>
       <div class="content">
         <div id="jc-cost-page-content"></div>
+      </div>
+    </div>
+
+    <!-- PAYROLL PAGE -->
+    <div class="page" id="page-payroll">
+      <div class="topbar">
+        <div class="page-title">Payroll</div>
+      </div>
+      <div class="content">
+        <div id="payroll-content"></div>
       </div>
     </div>
 
@@ -5423,6 +5437,165 @@ function renderJobCostingPage(){
   el.innerHTML=html;
 }
 
+// ── PAYROLL ──────────────────────────────────────────────────────────────────
+// Bi-weekly pay-period worksheet: per employee, hours + $ broken out by pay TYPE
+// (Regular / Overtime / Cash / Prevailing Wage / PTO), since each type is handled
+// differently at check-cutting time (prevailing-wage/Davis-Bacon jobs need a
+// separate check; cash is off the regular payroll run). $ amounts use each crew
+// member's BASE hourly rate (×1.5 for OT-flagged hours) — NOT the burdened rate
+// used in Job Costing, which folds in employer-side tax/insurance and would
+// overstate what the employee is actually owed.
+const PAYROLL_ANCHOR='2026-06-21'; // a known pay-period start date, confirmed by Will
+let _payrollPeriodOffset=null;     // null = not yet initialized this session
+
+function _payrollPeriodOffsetForToday(){
+  const anchor=new Date(PAYROLL_ANCHOR+'T00:00:00');
+  const today=new Date(); today.setHours(0,0,0,0);
+  const daysSince=Math.floor((today-anchor)/86400000);
+  // Default to the most recently COMPLETED period (payroll is cut a few days after period end),
+  // not the in-progress one — e.g. still shows 6/21–7/4 through all of 7/5–7/18 until that ends too.
+  return Math.floor((daysSince-13)/14);
+}
+function _payrollPeriodDates(offset){
+  const start=new Date(PAYROLL_ANCHOR+'T00:00:00');
+  start.setDate(start.getDate()+offset*14);
+  const dates=[];
+  for(let i=0;i<14;i++){ const d=new Date(start); d.setDate(d.getDate()+i); dates.push(d.toISOString().slice(0,10)); }
+  return dates;
+}
+function payrollShiftPeriod(delta){ _payrollPeriodOffset=(_payrollPeriodOffset??_payrollPeriodOffsetForToday())+delta; renderPayroll(); }
+function payrollGoToCurrent(){ _payrollPeriodOffset=_payrollPeriodOffsetForToday(); renderPayroll(); }
+
+function _payrollCompute(offset){
+  const dates=_payrollPeriodDates(offset);
+  const dateSet=new Set(dates);
+  const byKey={};
+  function bucket(key,label){
+    if(!byKey[key]) byKey[key]={label,regHrs:0,regPay:0,otHrs:0,otPay:0,cashHrs:0,cashPay:0,pwHrs:0,pwPay:0,ptoHrs:0,ptoPay:0};
+    return byKey[key];
+  }
+
+  JOB_RECORDS.forEach(job=>{
+    const logs=job.dayLogs; if(!logs) return;
+    dates.forEach(ds=>{
+      const log=logs[ds]; if(!log) return;
+      const ot=(log.overtimeWage!==undefined)?!!log.overtimeWage:!!job.overtimeWage;
+      const cash=(log.cashWages!==undefined)?!!log.cashWages:!!job.cashWages;
+      const prevailing=!!job.prevailingWage;
+      (Array.isArray(log.crewPresent)?log.crewPresent:[]).forEach(c=>{
+        const hrs=jcGetCrewMemberHrs(c,log);
+        if(hrs<=0) return;
+        const hasCrew=c.crewIdx>=0&&CREW_DATA[c.crewIdx];
+        const label=(hasCrew?CREW_DATA[c.crewIdx].full:(c.name||'')).trim();
+        if(!label) return;
+        const key=hasCrew?('c'+c.crewIdx):('n:'+label.toLowerCase());
+        const b=bucket(key,label);
+        const baseRate=hasCrew?(parseFloat(CREW_DATA[c.crewIdx].hourly)||0):0;
+        if(prevailing){
+          const rate=(parseFloat(job.prevailingWageRate)||0)*(ot?1.5:1);
+          b.pwHrs+=hrs; b.pwPay+=hrs*rate;
+        } else if(cash){
+          const rate=baseRate*(ot?1.5:1);
+          b.cashHrs+=hrs; b.cashPay+=hrs*rate;
+        } else if(ot){
+          b.otHrs+=hrs; b.otPay+=hrs*baseRate*1.5;
+        } else {
+          b.regHrs+=hrs; b.regPay+=hrs*baseRate;
+        }
+      });
+    });
+  });
+
+  // PTO — ptoSlots[crewIdx][weekOffset][dayIdx] is anchored to the CURRENT BASE (Monday),
+  // same convention as the schedule grid, so re-derive each slot's absolute date the same way.
+  Object.keys(ptoSlots).forEach(ciStr=>{
+    const ci=parseInt(ciStr); if(!CREW_DATA[ci]) return;
+    const weeks=ptoSlots[ci]||{};
+    Object.keys(weeks).forEach(wStr=>{
+      const days=weeks[wStr]||{};
+      Object.keys(days).forEach(dStr=>{
+        const pto=days[dStr]; if(!pto) return;
+        const dt=new Date(BASE); dt.setDate(dt.getDate()+parseInt(wStr)*7+parseInt(dStr));
+        const ds=dt.toISOString().slice(0,10);
+        if(!dateSet.has(ds)) return;
+        const label=CREW_DATA[ci].full;
+        const b=bucket('c'+ci,label);
+        const baseRate=parseFloat(CREW_DATA[ci].hourly)||0;
+        let hrs=8;
+        if(pto.partial&&pto.from&&pto.to){ const h=parseFloat(jcCalcHrs(pto.from,pto.to)); if(h>0) hrs=h; }
+        b.ptoHrs+=hrs; b.ptoPay+=hrs*baseRate;
+      });
+    });
+  });
+
+  const rows=[];
+  CREW_DATA.forEach((cd,ci)=>{ const b=byKey['c'+ci]; if(b) rows.push(b); });
+  Object.keys(byKey).forEach(k=>{ if(k.startsWith('n:')) rows.push(byKey[k]); });
+  return {startDate:dates[0], endDate:dates[13], rows};
+}
+
+function renderPayroll(){
+  const el=document.getElementById('payroll-content'); if(!el) return;
+  if(_payrollPeriodOffset===null) _payrollPeriodOffset=_payrollPeriodOffsetForToday();
+  const {startDate,endDate,rows}=_payrollCompute(_payrollPeriodOffset);
+  const fmt=n=>'$'+(Math.round(n*100)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const fmtH=n=>{ n=Math.round(n*10)/10; return (n%1===0?n.toFixed(0):n.toFixed(1))+'h'; };
+  const fmtPd=ds=>new Date(ds+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  const isCurrent=_payrollPeriodOffset===_payrollPeriodOffsetForToday();
+
+  const totReg=rows.reduce((a,r)=>a+r.regPay+r.otPay+r.ptoPay,0);
+  const totPW=rows.reduce((a,r)=>a+r.pwPay,0);
+  const totCash=rows.reduce((a,r)=>a+r.cashPay,0);
+
+  let html=`
+  <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:10px 14px;margin-bottom:22px;">
+    <button class="btn btn-ghost" onclick="payrollShiftPeriod(-1)">‹ Prev</button>
+    <div style="font-size:15px;font-weight:700;text-align:center;">${fmtPd(startDate)} – ${fmtPd(endDate)}</div>
+    <button class="btn btn-ghost" onclick="payrollShiftPeriod(1)">Next ›</button>
+    ${!isCurrent?`<button class="btn btn-ghost" onclick="payrollGoToCurrent()" style="font-size:11.5px;">Current Period</button>`:''}
+  </div>
+  <div class="mgrid4" style="margin-bottom:24px;">
+    <div class="stat-card"><div class="stat-label">Regular Payroll</div><div class="stat-value">${fmt(totReg)}</div></div>
+    <div class="stat-card"><div class="stat-label">Prevailing Wage (Davis-Bacon)</div><div class="stat-value" style="color:var(--purple,#a855f7);">${fmt(totPW)}</div></div>
+    <div class="stat-card"><div class="stat-label">Cash</div><div class="stat-value" style="color:var(--green);">${fmt(totCash)}</div></div>
+    <div class="stat-card"><div class="stat-label">Employees w/ Hours</div><div class="stat-value">${rows.length}</div></div>
+  </div>`;
+
+  if(!rows.length){
+    html+=`<div style="text-align:center;padding:60px 20px;color:var(--text3);font-size:15px;">No hours logged for this pay period.</div>`;
+  } else {
+    const line=(label,hrs,pay,color)=>hrs<=0?'':`
+        <div style="${color?`color:${color};font-weight:600;`:''}">${label}</div>
+        <div style="text-align:right;font-family:'DM Mono',monospace;">${fmtH(hrs)}</div>
+        <div style="text-align:right;font-family:'DM Mono',monospace;font-weight:600;${color?`color:${color};`:''}">${fmt(pay)}</div>`;
+    rows.forEach(r=>{
+      const totalHrs=r.regHrs+r.otHrs+r.cashHrs+r.pwHrs+r.ptoHrs;
+      const regCheckPay=r.regPay+r.otPay+r.ptoPay;
+      const regCheckHrs=r.regHrs+r.otHrs+r.ptoHrs;
+      html+=`
+      <div class="jobs-block" style="padding:16px 18px;margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
+          <div style="font-size:15px;font-weight:700;">${r.label}</div>
+          <div style="font-size:12.5px;color:var(--text3);">${fmtH(totalHrs)} total</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr auto auto;gap:6px 16px;font-size:13px;align-items:center;">
+          ${line('Regular',r.regHrs,r.regPay)}
+          ${line('Overtime (1.5×)',r.otHrs,r.otPay)}
+          ${line('PTO',r.ptoHrs,r.ptoPay)}
+          ${line('Cash',r.cashHrs,r.cashPay,'var(--green)')}
+          ${line('Prevailing Wage (Davis-Bacon)',r.pwHrs,r.pwPay,'var(--purple,#a855f7)')}
+        </div>
+        <div style="border-top:1px solid var(--border2);margin-top:12px;padding-top:10px;display:flex;flex-direction:column;gap:5px;font-size:13px;">
+          <div style="display:flex;justify-content:space-between;font-weight:700;"><span>Regular Paycheck</span><span>${fmt(regCheckPay)} <span style="font-weight:400;color:var(--text3);font-size:11.5px;">(${fmtH(regCheckHrs)})</span></span></div>
+          ${r.pwHrs>0?`<div style="display:flex;justify-content:space-between;font-weight:700;color:var(--purple,#a855f7);"><span>⚠ Prevailing Wage — separate check</span><span>${fmt(r.pwPay)} <span style="font-weight:400;color:var(--text3);font-size:11.5px;">(${fmtH(r.pwHrs)})</span></span></div>`:''}
+          ${r.cashHrs>0?`<div style="display:flex;justify-content:space-between;font-weight:700;color:var(--green);"><span>Cash</span><span>${fmt(r.cashPay)} <span style="font-weight:400;color:var(--text3);font-size:11.5px;">(${fmtH(r.cashHrs)})</span></span></div>`:''}
+        </div>
+      </div>`;
+    });
+  }
+  el.innerHTML=html;
+}
+
 // ── JOB COSTING (modal tab) ────────────────────────────────────────────────────
 function renderJobCosting(){
   const job=getJobRecord(_jcId); if(!job) return;
@@ -7018,6 +7191,7 @@ function showPage(id){
   if(id==='schedule') renderSchedule();
   if(id==='salesschedule') renderSalesSchedule();
   if(id==='jobcosting') renderJobCostingPage();
+  if(id==='payroll') renderPayroll();
   if(id==='holidays') renderHolidaySettings();
   if(id==='installers') renderCrewCards();
   if(id==='vehicles'){ _activeVehicleId=null; renderVehicles(); }
