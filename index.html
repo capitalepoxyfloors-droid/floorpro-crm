@@ -3361,6 +3361,19 @@ async function saveWeekendWork(){
   showToast('✓ Weekend work added for '+(CREW[ci]?.name||''));
 }
 
+// Remove just the double-booked (extra) slot(s) matching a specific job label for one
+// crew/day — unlike seRemoveSlot (which wipes ALL extras for that day), this targets only
+// the job being removed so an unrelated double-booking on the same day survives.
+async function seRemoveExtraSlotForLabel(ci,w,d,label){
+  const k=_msKey(ci,w,d);
+  const list=multiSlots[k]; if(!list||!list.length) return;
+  const matching=list.filter(ex=>ex.l===label);
+  if(!matching.length) return;
+  for(const ex of matching){ if(ex.db_id) await sb.delete('scheduled_slots',ex.db_id); }
+  const remaining=list.filter(ex=>ex.l!==label);
+  if(remaining.length) multiSlots[k]=remaining; else delete multiSlots[k];
+}
+
 async function seRemoveSlot(ci, w, d){
   const s=newSlots[ci]?.[w]?.[d];
   if(s?.db_id){
@@ -3730,12 +3743,20 @@ async function jcCleanOrphanedSlots(job){
       const pos=cvDateToSlot(new Date(ds+'T00:00:00')); if(!pos) continue;
       const{w,d}=pos;
       const s=newSlots[ci]?.[w]?.[d];
-      if(!s||s.l!==job.customer) continue; // not this job
-      // Crew member has a slot for this job but isn't in crewNames — delete it
-      await seRemoveSlot(ci,w,d);
-      const key=jcSlotKey(ci,w,d);
-      delete SLOT_JOB_MAP[key];
-      changed=true;
+      if(s&&s.l===job.customer){
+        // Crew member has a PRIMARY slot for this job but isn't in crewNames — delete it
+        await seRemoveSlot(ci,w,d);
+        const key=jcSlotKey(ci,w,d);
+        delete SLOT_JOB_MAP[key];
+        changed=true;
+      }
+      // Also clean up a stray double-booked (extra) slot for this job — a crew member's
+      // booking can live ENTIRELY in the extra layer (their primary slot that day was a
+      // different job), which the primary-slot check above never sees.
+      if(getExtraSlots(ci,w,d).some(ex=>ex.l===job.customer)){
+        await seRemoveExtraSlotForLabel(ci,w,d,job.customer);
+        changed=true;
+      }
     }
   }
   if(changed){ await saveSlotJobMap(); renderSchedule(); }
@@ -3959,12 +3980,18 @@ async function jcToggleCrew(i){
         await seRemoveSlot(i,w,d);
         delete SLOT_JOB_MAP[key];
       }
+      // Also remove any double-booked (extra) slot for this job on this day — a crew member's
+      // booking can live ENTIRELY in the extra layer if their primary slot was a different job
+      // that day (added via "⚡ Override & Schedule Anyway"), so the primary-slot check above
+      // alone would silently leave it stranded on the schedule after removing them from the job.
+      await seRemoveExtraSlotForLabel(i,w,d,job.customer);
     }
   }
 
   await saveSlotJobMap();
   jcRenderCrewPicker();
-  // Refresh crew view calendar if it's open
+  // Refresh whichever schedule view is open
+  if(document.getElementById('page-schedule')?.classList.contains('active')) renderSchedule();
   if(document.getElementById('page-crewview')?.classList.contains('active')) renderCrewView();
   const verb=adding?'Added to':'Removed from';
   showToast(skipped
