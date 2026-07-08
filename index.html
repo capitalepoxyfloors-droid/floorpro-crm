@@ -2472,6 +2472,12 @@ async function dbAddExtraSlot(ci,w,d,label,type,jobId,dateStr){
   multiSlots[k].push({l:label,t:type,db_id:dbId,jobId:jobId||null,dt:dateStr||null});
 }
 async function loadScheduledSlots(){
+  // Reset the double-booked/extra-slot store before repopulating — loadAllFromSupabase can run
+  // more than once in the same browser session (e.g. a session-timeout re-login without a page
+  // refresh), and multiSlots is built by push(), not overwrite, so without this every double-booked
+  // slot silently doubles up in memory on each additional load (primary `newSlots` is unaffected
+  // since it's a direct overwrite, not a push).
+  Object.keys(multiSlots).forEach(k=>delete multiSlots[k]);
   const rows=await sb.get('scheduled_slots');
   rows.forEach(r=>{
     // Decode absolute date from job_type (e.g. 'epoxy:2026-06-05')
@@ -11425,6 +11431,37 @@ function buildWeekGrid(wOff,mon,dNames){
       exCols.forEach(c=>suppressedExtraKeys.add(c+'_'+run.l));
       mergedExtraSpans.push({s:allCols[0],e:allCols[allCols.length-1]+1,l:run.l,t:run.t});
     });
+    // Merge consecutive extra-only days sharing the same label that have NO adjacent primary
+    // run at all — e.g. a crew member double-booked onto the same job for several days in a row
+    // while their primary slot those days is a different job. Without this each day rendered as
+    // its own disconnected 1-day pill even though it's one continuous booking.
+    {
+      const extraByLabel={};
+      extraDays.forEach(({d,extras})=>{
+        extras.forEach(ex=>{
+          if(suppressedExtraKeys.has(d+'_'+ex.l)) return; // already merged above
+          if(!extraByLabel[ex.l]) extraByLabel[ex.l]=[];
+          extraByLabel[ex.l].push({d,t:ex.t});
+        });
+      });
+      Object.keys(extraByLabel).forEach(label=>{
+        const seen=new Set();
+        const entries=extraByLabel[label].filter(e=>{ if(seen.has(e.d)) return false; seen.add(e.d); return true; }).sort((a,b)=>a.d-b.d);
+        let rS=null,rE=null,rT=null;
+        const flush=()=>{
+          if(rS!==null&&rE>rS){ // only merge runs of 2+ consecutive days — a lone day stays as-is
+            mergedExtraSpans.push({s:rS,e:rE+1,l:label,t:rT});
+            for(let c=rS;c<=rE;c++) suppressedExtraKeys.add(c+'_'+label);
+          }
+        };
+        entries.forEach(({d,t})=>{
+          if(rS===null){rS=d;rE=d;rT=t;}
+          else if(d===rE+1){rE=d;}
+          else{flush();rS=d;rE=d;rT=t;}
+        });
+        flush();
+      });
+    }
 
     // Pre-compute PTO+job days so Pass 2 can flush border-radius on connecting edges
     const ptoPlusLabelMap=new Map(); // day index -> job label
