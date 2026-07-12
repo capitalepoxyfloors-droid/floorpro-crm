@@ -481,6 +481,10 @@
         <span>PTO Requests</span>
         <span id="pto-nav-badge" style="display:none;background:var(--red,#e53e3e);color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:1px 6px;line-height:1.4;font-family:'DM Mono',monospace;"></span>
       </button>
+      <button class="nav-item" onclick="showPage('photos')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+        <span>Photos</span>
+      </button>
       <div class="nav-label" style="margin-top:8px;">Settings</div>
       <button class="nav-item" onclick="showPage('reference')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/><path d="M9 7h6M9 11h6M9 15h4"/></svg>
@@ -770,6 +774,14 @@
       <div class="content">
         <div id="payroll-content"></div>
       </div>
+    </div>
+
+    <!-- PHOTOS PAGE -->
+    <div class="page" id="page-photos">
+      <div class="topbar">
+        <div class="page-title">Photos</div>
+      </div>
+      <div class="content" id="photos-content"></div>
     </div>
 
     <!-- REFERENCE LIBRARY PAGE -->
@@ -7311,6 +7323,7 @@ function showPage(id){
   if(id==='materialcalc') renderMaterialCalc();
   if(id==='matreqs') renderMatRequestsPage();
   if(id==='ptoreqs') renderPtoRequestsPage();
+  if(id==='photos') renderPhotosPage();
   if(id==='pinsettings') renderCrewPins();
   if(id==='jobs') _markJobsSeen();
   try{localStorage.setItem('fpLastPage',id);}catch(e){}
@@ -12319,10 +12332,61 @@ function jcDayPhotosHtml(ds){
       ${thumbs}
       <label style="width:74px;height:74px;flex-shrink:0;border:1.5px dashed var(--border2);border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text3);font-size:22px;">
         +
-        <input type="file" id="jcphoto-file-${key}" accept="image/*" capture="environment" multiple style="display:none;" onchange="jcUploadPhotos('${ds}')"/>
+        <input type="file" id="jcphoto-file-${key}" accept="image/*" multiple style="display:none;" onchange="jcUploadPhotos('${ds}')"/>
       </label>
     </div>
     ${photos.length===0?'<div style="font-size:11px;color:var(--text3);margin-top:4px;">No photos yet — tap + or drag & drop images here.</div>':''}`;
+}
+
+// ── PHOTOS PAGE — all job photos, grouped by job, newest job activity first ──
+function renderPhotosPage(){
+  const el=document.getElementById('photos-content'); if(!el) return;
+  const groups=[];
+  Object.keys(JOB_PHOTOS||{}).forEach(jobId=>{
+    const byDate=JOB_PHOTOS[jobId]||{};
+    const flat=[];
+    Object.keys(byDate).forEach(ds=>{ (byDate[ds]||[]).forEach(p=>flat.push(Object.assign({},p,{ds}))); });
+    if(!flat.length) return;
+    flat.sort((a,b)=>(a.ds+(a.ts||'')).localeCompare(b.ds+(b.ts||''))); // chronological, oldest first
+    groups.push({ jobId, job:getJobRecord(jobId), photos:flat, latest:flat[flat.length-1].ds+(flat[flat.length-1].ts||'') });
+  });
+  if(!groups.length){
+    el.innerHTML='<div style="padding:60px 20px;text-align:center;color:var(--text3);">No job photos yet. Photos added from a job\'s Daily Log will show up here, grouped by job.</div>';
+    return;
+  }
+  groups.sort((a,b)=>b.latest.localeCompare(a.latest)); // most recently active job first
+  el.innerHTML=groups.map(g=>{
+    const name=g.job?(g.job.customer||'Unnamed Job'):'Deleted Job';
+    const meta=g.job&&g.job.jobTypeLabel?g.job.jobTypeLabel+' · ':'';
+    const thumbs=g.photos.map(p=>`
+      <div style="position:relative;width:104px;height:104px;flex-shrink:0;">
+        <a href="${p.url}" target="_blank" rel="noopener">
+          <img src="${p.url}" loading="lazy" style="width:104px;height:104px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;"/>
+        </a>
+        <div style="position:absolute;bottom:2px;left:2px;right:2px;background:rgba(0,0,0,.55);color:#fff;font-size:9px;border-radius:4px;padding:1px 4px;text-align:center;pointer-events:none;">${jcFmtDate(p.ds)}</div>
+        <button onclick="phDeletePhoto('${g.jobId}','${p.ds}','${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
+      </div>`).join('');
+    return `
+      <div class="jobs-block" style="margin-bottom:18px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border2);cursor:pointer;" onclick="openPhotoJob('${g.jobId}')">
+          <div>
+            <div style="font-weight:600;font-size:14.5px;">${name}</div>
+            <div style="font-size:11.5px;color:var(--text3);">${meta}${g.photos.length} photo${g.photos.length!==1?'s':''}</div>
+          </div>
+          <div style="font-size:12px;color:var(--accent);white-space:nowrap;">View Job →</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;padding:14px 16px;">${thumbs}</div>
+      </div>`;
+  }).join('');
+}
+function openPhotoJob(jobId){
+  if(!getJobRecord(jobId)){ showToast('That job no longer exists.'); return; }
+  openJobCard(jobId);
+  jcTab('log');
+}
+function phDeletePhoto(jobId,ds,photoId){
+  _jcId=jobId;
+  jcDeletePhoto(ds,photoId).then(renderPhotosPage);
 }
 
 // Field-note helpers. Notes are a per-material LIST so crews on separate phones can each add
