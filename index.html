@@ -4903,10 +4903,15 @@ function jcSetMileageRate(val){
   renderJobCosting();
 }
 
+// Commission row cost — 'pct' rows are a % of the job's revenue basis (effective/billed revenue); 'flat' rows are a plain $ amount.
+function _commRowCost(c,revenueBasis){
+  const amt=parseFloat(c.amount)||0;
+  return c.type==='pct' ? Math.round(revenueBasis*amt/100*100)/100 : Math.round(amt*100)/100;
+}
 function jcAddCommission(){
   const job=getJobRecord(_jcId); if(!job) return;
   if(!job.commissions) job.commissions=[];
-  job.commissions.push({recipient:'',amount:''});
+  job.commissions.push({recipient:'',amount:'',type:'flat'});
   saveJobRecords();
   renderJobCosting();
 }
@@ -5451,12 +5456,12 @@ function renderJobCostingPage(){
     const mileRate=parseFloat(job.mileageRate!==undefined?job.mileageRate:0.725);
     const wDays=allDates.filter(ds=>{const l=logs[ds];if(!l)return false;if(jcGetLogHrs(l)>0)return true;return(Array.isArray(l.crewPresent)?l.crewPresent:[]).some(c=>jcGetCrewMemberHrs(c,l)>0);}).length;
     const mileCost=Math.round(mileOneWay*2*wDays*mileRate*100)/100;
-    const commCost=Math.round((job.commissions||[]).reduce((a,c)=>a+(parseFloat(c.amount)||0),0)*100)/100;
-    const totalCost=Math.round((laborCost+matCost+consCost+mileCost+commCost)*100)/100;
     // Time & Material: bill = labor +labor-markup% and materials +material-markup% (separate %s).
     const effRev = job.tmJob
       ? Math.round((laborCost*(1+(parseFloat(job.tmLaborMarkup)||0)/100) + matCost*(1+(parseFloat(job.tmMaterialMarkup)||0)/100) + consCost + mileCost)*100)/100
       : revenue;
+    const commCost=Math.round((job.commissions||[]).reduce((a,c)=>a+_commRowCost(c,effRev),0)*100)/100;
+    const totalCost=Math.round((laborCost+matCost+consCost+mileCost+commCost)*100)/100;
     const profit=Math.round((effRev-totalCost)*100)/100;
     const margin=effRev>0?Math.round(profit/effRev*1000)/10:null;
     const dailyProfit=wDays>0&&effRev>0?Math.round(profit/wDays*100)/100:null;
@@ -5838,12 +5843,7 @@ function renderJobCosting(){
   const totalMiles=Math.round(mileageOneWay*2*workDays*10)/10;
   const mileageCost=Math.round(totalMiles*irsRate*100)/100;
 
-  // ── COMMISSION ──
-  if(!job.commissions) job.commissions=[];
-  const commCost=Math.round(job.commissions.reduce((a,c)=>a+(parseFloat(c.amount)||0),0)*100)/100;
-
-  // ── SUMMARY ──
-  const totalCost=Math.round((totalLaborCost+totalMatCost+consCost+mileageCost+commCost)*100)/100;
+  // ── TIME & MATERIAL / EFFECTIVE REVENUE (computed before Commission — % commissions are based on this) ──
   // Time & Material: invoice = labor cost + labor-markup%, plus materials + material-markup%.
   const tmJob=!!job.tmJob;
   const tmLM=parseFloat(job.tmLaborMarkup)||0;
@@ -5853,6 +5853,13 @@ function renderJobCosting(){
   // Mileage + consumables are billed through at cost (T&M reimbursement); labor/material markups are the profit.
   const tmBilled=Math.round((tmLaborBilled+tmMatBilled+consCost+mileageCost)*100)/100;
   const effRevenue=tmJob?tmBilled:revenue;
+
+  // ── COMMISSION ── ('pct' rows are a % of effRevenue above; 'flat' rows are a plain $ amount)
+  if(!job.commissions) job.commissions=[];
+  const commCost=Math.round(job.commissions.reduce((a,c)=>a+_commRowCost(c,effRevenue),0)*100)/100;
+
+  // ── SUMMARY ──
+  const totalCost=Math.round((totalLaborCost+totalMatCost+consCost+mileageCost+commCost)*100)/100;
   const grossProfit=Math.round((effRevenue-totalCost)*100)/100;
   const margin=effRevenue>0?Math.round(grossProfit/effRevenue*1000)/10:0;
   const profitColor=grossProfit>=0?'var(--green)':'var(--red)';
@@ -6023,17 +6030,24 @@ function renderJobCosting(){
   if(job.commissions.length===0){
     html+=`<div style="font-size:13px;color:var(--text3);margin-bottom:2px;">No commission added — click below to add one.</div>`;
   } else {
-    html+=job.commissions.map((c,i)=>`
-      <div style="display:grid;grid-template-columns:1fr 120px 28px;gap:8px;align-items:center;margin-bottom:8px;">
-        <input class="form-input" placeholder="Who it's to" value="${(c.recipient||'').replace(/"/g,'&quot;')}"
-          onchange="jcSetCommission(${i},'recipient',this.value)" style="font-size:12px;padding:6px 10px;"/>
-        <div style="position:relative;">
-          <span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--text3);pointer-events:none;">$</span>
-          <input class="form-input" type="number" min="0" step="0.01" placeholder="0.00" value="${c.amount||''}"
-            onchange="jcSetCommission(${i},'amount',this.value)" style="font-size:12px;padding:6px 10px 6px 20px;font-family:'DM Mono',monospace;"/>
+    html+=job.commissions.map((c,i)=>{
+      const isPct=c.type==='pct';
+      const rowCost=_commRowCost(c,effRevenue);
+      return `
+      <div style="margin-bottom:10px;">
+        <div style="display:grid;grid-template-columns:1fr 130px 28px;gap:8px;align-items:center;">
+          <input class="form-input" placeholder="Who it's to" value="${(c.recipient||'').replace(/"/g,'&quot;')}"
+            onchange="jcSetCommission(${i},'recipient',this.value)" style="font-size:12px;padding:6px 10px;"/>
+          <div style="display:flex;align-items:center;border:1px solid var(--border2);border-radius:4px;overflow:hidden;background:var(--surface);">
+            <button type="button" onclick="jcSetCommission(${i},'type','${isPct?'flat':'pct'}')" title="Switch to ${isPct?'flat $ amount':'% of revenue'}" style="flex-shrink:0;width:26px;height:28px;border:none;border-right:1px solid var(--border2);background:var(--surface2);color:var(--text2);font-size:12px;font-weight:700;cursor:pointer;font-family:'DM Mono',monospace;">${isPct?'%':'$'}</button>
+            <input type="number" min="0" ${isPct?'max="100" step="0.1"':'step="0.01"'} placeholder="${isPct?'0':'0.00'}" value="${c.amount||''}"
+              onchange="jcSetCommission(${i},'amount',this.value)" style="width:100%;min-width:0;border:none;font-size:12px;padding:6px 8px;background:var(--surface);color:var(--text);font-family:'DM Mono',monospace;text-align:right;outline:none;"/>
+          </div>
+          <button onclick="jcRemoveCommission(${i})" style="background:none;border:none;cursor:pointer;color:var(--danger,#e74c3c);font-size:18px;line-height:1;padding:0 4px;">×</button>
         </div>
-        <button onclick="jcRemoveCommission(${i})" style="background:none;border:none;cursor:pointer;color:var(--danger,#e74c3c);font-size:18px;line-height:1;padding:0 4px;">×</button>
-      </div>`).join('')
+        ${isPct?`<div style="font-size:11px;color:var(--text3);margin-top:3px;">= ${effRevenue>0?fmt(rowCost):'—'}${effRevenue<=0?' (set a job value or T&M markup to compute)':' of '+fmt(effRevenue)}</div>`:''}
+      </div>`;
+    }).join('')
     +`<div style="display:flex;justify-content:space-between;margin-top:2px;padding-top:6px;border-top:1px solid var(--border2);font-weight:600;">
       <span style="font-size:13px;">Total Commission</span>
       <span style="font-family:'DM Mono',monospace;">${fmt(commCost)}</span>
