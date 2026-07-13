@@ -972,6 +972,7 @@
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end;">
           <button class="cv-today-btn" onclick="cvGoToday()">Today</button>
           <button class="cv-today-btn" onclick="openPtoRequestModal()" style="color:var(--accent);border-color:var(--accent);">✋ Request PTO</button>
+          <button class="cv-today-btn" onclick="openMyPtoRequests()" style="position:relative;color:var(--accent);border-color:var(--accent);">📋 My PTO Requests<span id="cv-mypto-badge" style="display:none;position:absolute;top:-7px;right:-7px;background:var(--accent);color:#fff;font-size:9px;font-weight:700;border-radius:10px;padding:1px 5px;line-height:1.4;font-family:'DM Mono',monospace;"></span></button>
           <button class="cv-today-btn" onclick="openMatRequestModal()" style="color:var(--accent);border-color:var(--accent);">🛒 Request Material</button>
           <button class="cv-today-btn" onclick="openProdDocs()" style="color:var(--accent);border-color:var(--accent);">📄 Product Docs</button>
           <button class="cv-lock-btn cv-today-btn" onclick="cvLockDevice()" style="color:var(--red);border-color:var(--red-dim);">🔒 Crew Mode</button>
@@ -1070,6 +1071,22 @@
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closePtoRequestModal()">Cancel</button>
       <button class="btn btn-primary" id="ptoreq-submit-btn" onclick="submitPtoRequest()">Send Request</button>
+    </div>
+  </div>
+</div>
+
+<!-- MY PTO REQUESTS MODAL (crew — read-only status) -->
+<div class="modal-overlay" id="modal-myptoreqs">
+  <div class="modal" style="max-width:520px;">
+    <div class="modal-header">
+      <div class="modal-title">📋 My PTO Requests</div>
+      <button class="modal-close" onclick="closeModal('myptoreqs')">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="mypto-list"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('myptoreqs')">Close</button>
     </div>
   </div>
 </div>
@@ -6568,6 +6585,7 @@ function renderCrewView(){
   }
 
   elCal.innerHTML=`<div class="cv-dow-row">${dowHdr}</div>${weeksHtml}`;
+  _updateMyPtoBadge();
 }
 
 // Tap a job event — open job card on the daily log tab, scrolled to that day
@@ -7765,6 +7783,8 @@ function mrClearReceived(){
 
 // ── PTO REQUESTS ───────────────────────────────────────────────────────────────
 let PTO_REQUESTS = [];
+const PTO_STATUS_COLOR={pending:'var(--accent)',approved:'var(--green)',denied:'var(--red)'};
+const PTO_STATUS_LABEL={pending:'Pending',approved:'Approved',denied:'Denied'};
 
 async function loadPtoRequests(){
   try{const v=await sb.getKV('pto_requests');if(v){try{PTO_REQUESTS=JSON.parse(v)||[];}catch(e){PTO_REQUESTS=[];}}}catch(e){}
@@ -7893,6 +7913,7 @@ function submitPtoRequest(){
   PTO_REQUESTS.push(req);
   savePtoRequests();
   closeModal('ptorequest');
+  _updateMyPtoBadge();
   showToast('✓ PTO request sent — Will will review it shortly.');
 }
 
@@ -7948,8 +7969,6 @@ function renderPtoRequestsPage(){
     el.innerHTML=`<div style="text-align:center;padding:60px 20px;color:var(--text3);font-size:14px;">${filter==='pending'?'✅ No pending PTO requests.':'No requests found.'}</div>`;
     return;
   }
-  const statusColor={pending:'var(--accent)',approved:'var(--green)',denied:'var(--red)'};
-  const statusLabel={pending:'Pending',approved:'Approved',denied:'Denied'};
   const fmtD=ds=>{const d=new Date(ds+'T00:00:00');return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});};
   const fmtT=t=>{if(!t)return '';const[h,m]=t.split(':');const hr=parseInt(h);return(hr%12||12)+':'+m+(hr<12?'am':'pm');};
   el.innerHTML=list.map(r=>{
@@ -7957,11 +7976,11 @@ function renderPtoRequestsPage(){
       ? `${fmtD(r.startDate)} <span style="color:var(--accent);font-weight:700;">${fmtT(r.fromTime)}–${fmtT(r.toTime)}</span> <span style="color:var(--text3);font-weight:400;">(partial day)</span>`
       : `${fmtD(r.startDate)}${r.endDate!==r.startDate?' – '+fmtD(r.endDate):''} <span style="color:var(--text3);font-weight:400;">(${r.weekdays} working day${r.weekdays!==1?'s':''})</span>`;
     return `
-    <div style="background:var(--surface);border:1px solid var(--border2);border-left:4px solid ${statusColor[r.status]};border-radius:var(--radius);padding:16px 18px;margin-bottom:10px;display:flex;align-items:flex-start;gap:14px;">
+    <div style="background:var(--surface);border:1px solid var(--border2);border-left:4px solid ${PTO_STATUS_COLOR[r.status]};border-radius:var(--radius);padding:16px 18px;margin-bottom:10px;display:flex;align-items:flex-start;gap:14px;">
       <div style="flex:1;min-width:0;">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:5px;">
           <span style="font-size:15px;font-weight:700;color:var(--text);">${r.crewName}</span>
-          <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;background:${statusColor[r.status]}22;color:${statusColor[r.status]};text-transform:uppercase;letter-spacing:.4px;">${statusLabel[r.status]}</span>
+          <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;background:${PTO_STATUS_COLOR[r.status]}22;color:${PTO_STATUS_COLOR[r.status]};text-transform:uppercase;letter-spacing:.4px;">${PTO_STATUS_LABEL[r.status]}</span>
           ${r.partial?`<span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;background:var(--accent-dim);color:var(--accent);text-transform:uppercase;letter-spacing:.4px;">⏱ Partial</span>`:''}
         </div>
         <div style="font-size:13px;font-weight:600;color:var(--text2);margin-bottom:3px;">${dateRange}</div>
@@ -7977,6 +7996,45 @@ function renderPtoRequestsPage(){
         ${r.status==='approved'?`<span style="font-size:11px;color:var(--green);font-weight:600;">✓ On calendar</span>`:''}
         ${r.status==='denied'?`<span style="font-size:11px;color:var(--red);font-weight:600;">✕ Denied</span>`:''}
       </div>
+    </div>`;}).join('');
+}
+
+// ── CREW-FACING: "My PTO Requests" — read-only status view of THIS crew member's own requests ──
+function _updateMyPtoBadge(){
+  const badge=document.getElementById('cv-mypto-badge'); if(!badge) return;
+  const idx=_tcCrewIdentity();
+  const count=idx<0?0:PTO_REQUESTS.filter(r=>r.crewIdx===idx&&r.status==='pending').length;
+  badge.style.display=count?'inline-block':'none';
+  badge.textContent=count>9?'9+':count;
+}
+function openMyPtoRequests(){
+  renderMyPtoRequestsList();
+  openModal('myptoreqs');
+}
+function renderMyPtoRequestsList(){
+  const el=document.getElementById('mypto-list'); if(!el) return;
+  const idx=_tcCrewIdentity();
+  const list=(idx<0?[]:PTO_REQUESTS.filter(r=>r.crewIdx===idx))
+    .slice().sort((a,b)=>b.submittedDate.localeCompare(a.submittedDate));
+  if(!list.length){
+    el.innerHTML=`<div style="text-align:center;padding:40px 20px;color:var(--text3);font-size:14px;">You haven't submitted any PTO requests yet.</div>`;
+    return;
+  }
+  const fmtD=ds=>{const d=new Date(ds+'T00:00:00');return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});};
+  const fmtT=t=>{if(!t)return '';const[h,m]=t.split(':');const hr=parseInt(h);return(hr%12||12)+':'+m+(hr<12?'am':'pm');};
+  el.innerHTML=list.map(r=>{
+    const dateRange=r.partial
+      ? `${fmtD(r.startDate)} <span style="color:var(--accent);font-weight:700;">${fmtT(r.fromTime)}–${fmtT(r.toTime)}</span> <span style="color:var(--text3);font-weight:400;">(partial day)</span>`
+      : `${fmtD(r.startDate)}${r.endDate!==r.startDate?' – '+fmtD(r.endDate):''} <span style="color:var(--text3);font-weight:400;">(${r.weekdays} working day${r.weekdays!==1?'s':''})</span>`;
+    return `
+    <div style="background:var(--surface);border:1px solid var(--border2);border-left:4px solid ${PTO_STATUS_COLOR[r.status]};border-radius:var(--radius);padding:14px 16px;margin-bottom:10px;">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:5px;">
+        <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;background:${PTO_STATUS_COLOR[r.status]}22;color:${PTO_STATUS_COLOR[r.status]};text-transform:uppercase;letter-spacing:.4px;">${PTO_STATUS_LABEL[r.status]}</span>
+        ${r.partial?`<span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;background:var(--accent-dim);color:var(--accent);text-transform:uppercase;letter-spacing:.4px;">⏱ Partial</span>`:''}
+      </div>
+      <div style="font-size:13.5px;font-weight:600;color:var(--text2);margin-bottom:3px;">${dateRange}</div>
+      ${r.reason&&r.reason!=='PTO'?`<div style="font-size:12px;color:var(--text2);margin-bottom:4px;">💬 ${r.reason}</div>`:''}
+      <div style="font-size:11px;color:var(--text3);">Submitted ${r.submittedDate}${r.reviewedDate?' · Reviewed '+r.reviewedDate:''}</div>
     </div>`;}).join('');
 }
 
