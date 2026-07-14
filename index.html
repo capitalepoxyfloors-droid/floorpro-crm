@@ -196,7 +196,7 @@
   .form-textarea{resize:vertical;min-height:70px;}
   .form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
   /* Job Card → Materials tab planned-materials row (product / qty / unit / remove) */
-  .jc-mat-plan-row{display:grid;grid-template-columns:1fr 80px 110px 32px;gap:8px;align-items:center;}
+  .jc-mat-plan-row{display:grid;grid-template-columns:1fr 80px 110px 36px;gap:8px;align-items:center;}
   input[type="date"],input[type="time"]{color-scheme:light;color:var(--text);}
   .modal-footer{padding:14px 22px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;align-items:center;}
   .legend{display:flex;gap:14px;flex-wrap:wrap;}
@@ -282,7 +282,7 @@
     .form-row{grid-template-columns:1fr;}
     /* Job Card → Materials tab: stack product name on its own full-width row so crews can
        actually read it on a phone (was squeezed to a sliver by the fixed qty/unit columns) */
-    .jc-mat-plan-row{grid-template-columns:80px 1fr 32px;grid-template-areas:"name name name" "qty unit x";row-gap:6px;}
+    .jc-mat-plan-row{grid-template-columns:80px 1fr 36px;grid-template-areas:"name name name" "qty unit x";row-gap:6px;}
     .jc-mat-plan-row>input:nth-child(1){grid-area:name;}
     .jc-mat-plan-row>input:nth-child(2){grid-area:qty;}
     .jc-mat-plan-row>select:nth-child(3){grid-area:unit;}
@@ -4072,7 +4072,7 @@ function jcRenderMaterials(){
       <select class="form-select" id="jc-mat-unit-${i}" onchange="jcMatSet(${i},'unit',this.value)" style="font-size:12px;">
         ${['Gallons','Lbs','Kits','Bags','Sheets','Sq Ft','Each'].map(u=>`<option${m.unit===u?' selected':''}>${u}</option>`).join('')}
       </select>
-      <button onclick="jcRemoveMat(${i})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:20px;line-height:1;padding:0;width:28px;text-align:center;">×</button>`;
+      <button onclick="jcRemoveMat(${i})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:20px;line-height:1;width:36px;height:36px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">×</button>`;
     list.appendChild(row);
   });
 }
@@ -4579,7 +4579,7 @@ function jcDayCrewHtml(ds,log){
           ${CREW_DATA.map((cd,ci)=>`<option value="${ci}"${c.crewIdx===ci?' selected':''}>${cd.full}</option>`).join('')}
         </select>
         ${c.crewIdx===-1?`<input class="form-input" placeholder="Name" value="${(c.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetCrew('${ds}',${i},'name',this.value)" onblur="jcLogSetCrew('${ds}',${i},'name',this.value)" style="flex:1;font-size:12px;padding:4px 6px;"/>`:``}
-        <button onclick="jcLogRemoveCrewMember('${ds}',${i})" style="background:none;border:none;cursor:pointer;color:var(--red);font-size:16px;padding:0 2px;line-height:1;" title="Remove">×</button>
+        <button onclick="jcLogRemoveCrewMember('${ds}',${i})" style="background:none;border:none;cursor:pointer;color:var(--red);font-size:16px;line-height:1;width:32px;height:32px;display:flex;align-items:center;justify-content:center;flex-shrink:0;" title="Remove">×</button>
       </div>
       <div style="display:flex;align-items:center;gap:5px;padding:3px 8px 5px;border-top:1px solid var(--border2);background:var(--surface2);${dimTime}">
         <span style="font-size:10px;color:var(--text3);flex-shrink:0;">⏱</span>
@@ -4777,7 +4777,7 @@ function jcDayMatsHtml(ds,log){
       ${m.matIdx===-1?`<input class="form-input" placeholder="Material name" value="${(m.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetMaterial('${ds}',${i},'name',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'name',this.value)" style="flex:1;font-size:12px;padding:4px 6px;"/>`:``}
       <input class="form-input" type="number" min="0" step="any" placeholder="Qty" value="${m.qty||''}" oninput="jcLogSetMaterial('${ds}',${i},'qty',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'qty',this.value)" style="width:65px;flex:none;font-size:12px;padding:4px 6px;" title="Amount actually used"/>
       <input class="form-input" placeholder="Unit" value="${(m.usageUnit||'').replace(/"/g,'&quot;')}" oninput="jcLogSetMaterial('${ds}',${i},'usageUnit',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'usageUnit',this.value)" style="width:52px;flex:none;font-size:12px;padding:4px 6px;" title="e.g. Gal, Lbs, SF"/>
-      <button onclick="jcLogRemoveMat('${ds}',${i})" style="background:none;border:none;cursor:pointer;color:var(--danger,#e74c3c);font-size:16px;padding:0 2px;line-height:1;" title="Remove">×</button>
+      <button onclick="jcLogRemoveMat('${ds}',${i})" style="background:none;border:none;cursor:pointer;color:var(--danger,#e74c3c);font-size:16px;line-height:1;width:32px;height:32px;display:flex;align-items:center;justify-content:center;flex-shrink:0;" title="Remove">×</button>
     </div>`;
   });
   return `<div id="jc-mats-${ds.replace(/-/g,'')}">`+
