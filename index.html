@@ -195,6 +195,8 @@
   .form-select{cursor:pointer;}
   .form-textarea{resize:vertical;min-height:70px;}
   .form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  /* Job Card → Materials tab planned-materials row (product / qty / unit / remove) */
+  .jc-mat-plan-row{display:grid;grid-template-columns:1fr 80px 110px 32px;gap:8px;align-items:center;}
   input[type="date"],input[type="time"]{color-scheme:light;color:var(--text);}
   .modal-footer{padding:14px 22px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;align-items:center;}
   .legend{display:flex;gap:14px;flex-wrap:wrap;}
@@ -278,6 +280,13 @@
     .job-installer,.job-value{display:none;}
     .crew-picker{grid-template-columns:1fr;}
     .form-row{grid-template-columns:1fr;}
+    /* Job Card → Materials tab: stack product name on its own full-width row so crews can
+       actually read it on a phone (was squeezed to a sliver by the fixed qty/unit columns) */
+    .jc-mat-plan-row{grid-template-columns:80px 1fr 32px;grid-template-areas:"name name name" "qty unit x";row-gap:6px;}
+    .jc-mat-plan-row>input:nth-child(1){grid-area:name;}
+    .jc-mat-plan-row>input:nth-child(2){grid-area:qty;}
+    .jc-mat-plan-row>select:nth-child(3){grid-area:unit;}
+    .jc-mat-plan-row>button:nth-child(4){grid-area:x;}
     /* Materials price list → 2-column card */
     #page-materials .mat-head{display:none!important;}
     #materials-list .job-row{grid-template-columns:1fr auto!important;gap:3px 10px!important;padding:11px 14px!important;align-items:start!important;}
@@ -4053,7 +4062,7 @@ function jcRenderMaterials(){
   }
   job.plannedMaterials.forEach((m,i)=>{
     const row=document.createElement('div');
-    row.style.cssText='display:grid;grid-template-columns:1fr 80px 110px 32px;gap:8px;align-items:center;';
+    row.className='jc-mat-plan-row';
     row.innerHTML=`
       <input class="form-input" value="${(m.name||'').replace(/"/g,'&quot;')}" placeholder="Product / description" list="jc-mat-options"
         oninput="jcMatSet(${i},'name',this.value)"
