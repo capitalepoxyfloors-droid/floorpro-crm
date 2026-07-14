@@ -8399,14 +8399,17 @@ function bookLeadVisit(idx){
     editSalesVisit(existingIdx);
     return;
   }
-  // New visit — open modal pre-filled with lead info
+  // New visit — open modal pre-filled with lead info.
+  // openModal('salesvisit') blanks sv-name/phone/address (it resets the form for a fresh
+  // "Add Sales Visit" whenever not editing), so it must run BEFORE we prefill from the lead —
+  // otherwise the reset wipes out the values we just set.
+  openModal('salesvisit');
   populateSvLeadDropdown();
   document.getElementById('sv-lead-select').value=idx;
   svLeadSelected(idx);
   document.getElementById('sv-type').value='Estimate / Measure';
   document.getElementById('sv-title').textContent='Add Sales Visit';
   svTypeChanged();
-  openModal('salesvisit');
   _updateSvNotifBadge();
   // Move lead to Scheduled stage after visit is saved
   window._pendingLeadToSchedule=idx;
