@@ -3932,29 +3932,23 @@ function jcSetStatus(val){
 // dropdown / install schedule). Without this, changing a job's status on the schedule left
 // the board card stranded in its old column ("board not recognizing the change"). Matches on
 // the normalized name and never pulls an already-invoiced card backward.
-function syncBoardCardStatus(customer, recordStatus){
-  const board=document.getElementById('jobs-board'); if(!board) return;
+// Reconciles against the LOADED rows (_lastJobRows), not the DOM board — the DOM can be
+// transiently empty/stale (or not even rendered, since this fires from the Job Card modal),
+// and matching against it is what spawned duplicate no-Wave board rows for the same job
+// (George Belchik ×2, 2026-07-13) — see the identical fix already applied to autoAdvanceJobsByDate.
+async function syncBoardCardStatus(customer, recordStatus){
   const want={scheduled:'scheduled', in_progress:'inprogress', complete:'complete'}[recordStatus];
   if(!want) return;
   const key=_jobMatchKey(customer);
-  const cards=[...board.querySelectorAll('.lead-card')]
-    .filter(c=>_jobMatchKey(c.dataset.customer||c.querySelector('.lead-name')?.textContent||'')===key);
-  if(!cards.length) return;
-  if(cards.some(c=>c.dataset.status===want)) return;            // already in the right column
-  const card=cards.find(c=>c.dataset.status!=='invoiced');      // leave an invoiced card alone
-  if(!card) return;
-  const cust=card.dataset.customer||customer;
-  const dbId=card.dataset.dbId||null;
-  const jobLabel=card.querySelector('.lead-detail')?.textContent||'';
-  const detail=card.querySelectorAll('.lead-detail')[1]?.textContent||'';
-  const extraData={address:card.dataset.address||'', notes:card.dataset.notes||'', sqft:card.dataset.sqft||''};
-  const addrNote=[extraData.address,extraData.notes].filter(Boolean).join('\n');
-  const val=card.dataset.value||'';
-  const dispVal=card.querySelector('.lead-value')?.textContent||'—';
-  if(dbId) dbSaveJob({customer:cust, jobLabel, value:val, displayVal:dispVal, detail, status:want, notes:addrNote, db_id:dbId});
-  card.remove(); updateJobCounts();
-  addJobCard(cust, jobLabel, val, dispVal, detail, want, dbId||undefined, extraData);
-  if(_jobsListActive()) setTimeout(renderJobsListView,0);
+  const rows=(_lastJobRows||[]).filter(r=>r && r.status!=='invoiced' && _jobMatchKey(r.customer||'')===key);
+  if(!rows.length) return;                     // no board row for this job — nothing to sync
+  if(rows.some(r=>r.status===want)) return;     // already in the right column
+  const row=rows.find(r=>r.status!==want);
+  if(!row) return;
+  await sb.update('jobs', row.id, {status:want});
+  row.status=want;                              // keep the cache coherent
+  await loadJobs();
+  if(_jobsListActive()) renderJobsListView();
 }
 
 // Render crew chip picker on the Info tab
