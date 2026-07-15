@@ -494,6 +494,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
         <span>Photos</span>
       </button>
+      <button class="nav-item" onclick="showPage('jobscope')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 4h6a1 1 0 011 1v1H8V5a1 1 0 011-1z"/><rect x="5" y="6" width="14" height="16" rx="2"/><path d="M9 12h6M9 16h4"/><circle cx="17" cy="17" r="3.2"/><path d="M19.4 19.4L22 22"/></svg>
+        <span>Job Scope</span>
+      </button>
       <div class="nav-label" style="margin-top:8px;">Settings</div>
       <button class="nav-item" onclick="showPage('reference')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/><path d="M9 7h6M9 11h6M9 15h4"/></svg>
@@ -791,6 +795,17 @@
         <div class="page-title">Photos</div>
       </div>
       <div class="content" id="photos-content"></div>
+    </div>
+
+    <!-- JOB SCOPE PAGE — searchable list of every Sales Visit's Job Scope note -->
+    <div class="page" id="page-jobscope">
+      <div class="topbar">
+        <div class="page-title">Job Scope</div>
+        <div class="topbar-actions">
+          <input id="jscope-search" class="form-input" type="text" placeholder="🔍 Search title, notes, or customer…" oninput="renderJobScopePage()" autocomplete="off" style="width:260px;padding:7px 12px;font-size:13px;"/>
+        </div>
+      </div>
+      <div class="content" id="jobscope-page-list"></div>
     </div>
 
     <!-- REFERENCE LIBRARY PAGE -->
@@ -7431,6 +7446,7 @@ function showPage(id){
   if(id==='matreqs') renderMatRequestsPage();
   if(id==='ptoreqs') renderPtoRequestsPage();
   if(id==='photos') renderPhotosPage();
+  if(id==='jobscope') renderJobScopePage();
   if(id==='pinsettings') renderCrewPins();
   if(id==='jobs') _markJobsSeen();
   try{localStorage.setItem('fpLastPage',id);}catch(e){}
@@ -8524,6 +8540,7 @@ function saveSalesVisit(){
     visit.id=existing.id;
     visit.scopeTitle=existing.scopeTitle;
     visit.scopeNotes=existing.scopeNotes;
+    visit.scopeUpdatedAt=existing.scopeUpdatedAt;
     if(existing.type==='Bid Due'||visit.type==='Bid Due'){
       visit.submitted=existing.submitted||false;
       visit.yourBid=existing.yourBid||'';
@@ -12557,6 +12574,7 @@ function phDeletePhoto(jobId,ds,photoId){
 let SALES_SCOPE_PHOTOS = {};   // { visitId: [{id,name,path,url,size,author,role,ts}] }
 let _svScopeIdx = null;        // which SALES_VISITS index the modal is currently open for
 let _svScopeSaveTimer = null;
+let _svScopeDirty = false;     // true once title/notes changed this session — gates the flush-on-close save
 
 async function loadSalesScopePhotos(){
   const v=await sb.getKV('sales_scope_photos');
@@ -12573,10 +12591,21 @@ function _svEnsureId(idx){
 
 function openJobScope(){
   if(editingSvIdx===null) return;
-  _svScopeIdx=editingSvIdx;
-  const v=SALES_VISITS[_svScopeIdx];
-  _svEnsureId(_svScopeIdx);
-  persistSalesVisits();
+  _openJobScopeFor(editingSvIdx);
+}
+// Open the Job Scope note directly for a given SALES_VISITS index — used by the searchable
+// Job Scope workspace page, which doesn't go through the Sales Visit edit modal at all.
+function openScopeCard(idx){
+  _openJobScopeFor(idx);
+}
+function _openJobScopeFor(idx){
+  if(!SALES_VISITS[idx]) return;
+  _svScopeIdx=idx;
+  _svScopeDirty=false;
+  const v=SALES_VISITS[idx];
+  const hadId=!!v.id;
+  _svEnsureId(idx);
+  if(!hadId) persistSalesVisits();   // only a real write if we just backfilled a missing id
   const titleEl=document.getElementById('jscope-title');
   const notesEl=document.getElementById('jscope-notes');
   titleEl.value=v.scopeTitle||v.name||'';
@@ -12587,20 +12616,26 @@ function openJobScope(){
 }
 function closeJobScope(){
   clearTimeout(_svScopeSaveTimer);
-  if(_svScopeIdx!==null) persistSalesVisits();
+  if(_svScopeDirty) persistSalesVisits();   // flush a pending debounced title/notes save
+  _svScopeDirty=false;
   closeModal('jobscope');
+  if(document.getElementById('page-jobscope')?.classList.contains('active')) renderJobScopePage();
 }
 function svScopeSetTitle(val){
   if(_svScopeIdx===null||!SALES_VISITS[_svScopeIdx]) return;
   SALES_VISITS[_svScopeIdx].scopeTitle=val;
+  SALES_VISITS[_svScopeIdx].scopeUpdatedAt=new Date().toISOString();
+  _svScopeDirty=true;
   clearTimeout(_svScopeSaveTimer);
-  _svScopeSaveTimer=setTimeout(()=>persistSalesVisits(),800);
+  _svScopeSaveTimer=setTimeout(()=>{persistSalesVisits();_svScopeDirty=false;},800);
 }
 function svScopeSetNotes(val){
   if(_svScopeIdx===null||!SALES_VISITS[_svScopeIdx]) return;
   SALES_VISITS[_svScopeIdx].scopeNotes=val;
+  SALES_VISITS[_svScopeIdx].scopeUpdatedAt=new Date().toISOString();
+  _svScopeDirty=true;
   clearTimeout(_svScopeSaveTimer);
-  _svScopeSaveTimer=setTimeout(()=>persistSalesVisits(),800);
+  _svScopeSaveTimer=setTimeout(()=>{persistSalesVisits();_svScopeDirty=false;},800);
 }
 
 function svScopeUploadPhotos(){
@@ -12637,7 +12672,11 @@ async function svScopeUploadPhotoFiles(files){
       ok++;
     }catch(e){ console.error('scope photo upload failed:',e); fail++; }
   }
-  if(ok) await saveSalesScopePhotos();
+  if(ok){
+    await saveSalesScopePhotos();
+    SALES_VISITS[_svScopeIdx].scopeUpdatedAt=new Date().toISOString();
+    await persistSalesVisits();
+  }
   renderSvScopePhotos();
   if(ok&&!fail) showToast(`✓ ${ok} photo${ok!==1?'s':''} added.`);
   else if(ok&&fail) showToast(`${ok} added, ${fail} failed.`);
@@ -12674,6 +12713,8 @@ async function svScopeDeletePhoto(photoId){
   }catch(e){ console.error('scope photo storage delete failed',e); }
   SALES_SCOPE_PHOTOS[visitId]=list.filter(p=>p.id!==photoId);
   await saveSalesScopePhotos();
+  SALES_VISITS[_svScopeIdx].scopeUpdatedAt=new Date().toISOString();
+  await persistSalesVisits();
   renderSvScopePhotos();
   showToast('Photo removed.');
 }
@@ -12699,6 +12740,54 @@ function renderSvScopePhotos(){
       </label>
     </div>
     ${photos.length===0?'<div style="font-size:11px;color:var(--text3);margin-top:4px;">No photos yet — tap + or drag & drop images here.</div>':''}`;
+}
+
+function _jscopeFmtEdited(iso){
+  const d=new Date(iso); if(isNaN(d)) return '';
+  const now=new Date();
+  const timeStr=d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+  if(d.toDateString()===now.toDateString()) return 'Edited today, '+timeStr;
+  const yest=new Date(now); yest.setDate(now.getDate()-1);
+  if(d.toDateString()===yest.toDateString()) return 'Edited yesterday, '+timeStr;
+  return 'Edited '+d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:d.getFullYear()!==now.getFullYear()?'numeric':undefined});
+}
+
+// ── JOB SCOPE WORKSPACE PAGE — every Sales Visit's Job Scope note, searchable like Keep ──
+function renderJobScopePage(){
+  const el=document.getElementById('jobscope-page-list'); if(!el) return;
+  const q=(document.getElementById('jscope-search')?.value||'').trim().toLowerCase();
+  const items=SALES_VISITS.map((v,i)=>({v,i})).filter(({v})=>
+    (v.scopeNotes&&v.scopeNotes.trim()) || (v.scopeTitle&&v.scopeTitle.trim()) || (SALES_SCOPE_PHOTOS[v.id]||[]).length>0
+  );
+  if(!items.length){
+    el.innerHTML='<div style="padding:60px 20px;text-align:center;color:var(--text3);">No Job Scope notes yet. Open a Sales Visit and tap "📋 Job Scope" to add one.</div>';
+    return;
+  }
+  const filtered = q ? items.filter(({v})=>{
+    const title=(v.scopeTitle||v.name||'').toLowerCase();
+    return title.includes(q) || (v.scopeNotes||'').toLowerCase().includes(q) || (v.name||'').toLowerCase().includes(q);
+  }) : items;
+  if(!filtered.length){
+    el.innerHTML=`<div style="padding:60px 20px;text-align:center;color:var(--text3);">No scope notes match "${q.replace(/</g,'&lt;')}".</div>`;
+    return;
+  }
+  filtered.sort((a,b)=>(b.v.scopeUpdatedAt||'').localeCompare(a.v.scopeUpdatedAt||''));
+  el.innerHTML=`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;">`+
+    filtered.map(({v,i})=>{
+      const title=(v.scopeTitle||v.name||'Untitled').replace(/</g,'&lt;');
+      const notes=(v.scopeNotes||'').replace(/</g,'&lt;');
+      const photos=SALES_SCOPE_PHOTOS[v.id]||[];
+      const edited=v.scopeUpdatedAt?_jscopeFmtEdited(v.scopeUpdatedAt):'';
+      return `
+      <div onclick="openScopeCard(${i})" style="background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);padding:14px 16px;cursor:pointer;transition:box-shadow .15s;display:flex;flex-direction:column;gap:6px;min-width:0;" onmouseover="this.style.boxShadow='0 2px 10px rgba(0,0,0,.08)'" onmouseout="this.style.boxShadow=''">
+        <div style="font-weight:700;font-size:14.5px;color:var(--text);overflow-wrap:break-word;">${title}</div>
+        <div style="font-size:11px;color:var(--text3);">${(v.name||'').replace(/</g,'&lt;')}${v.date?' · '+jcFmtDate(v.date):''}</div>
+        ${notes?`<div style="font-size:12.5px;color:var(--text2);white-space:pre-wrap;line-height:1.4;max-height:110px;overflow:hidden;">${notes}</div>`:''}
+        ${photos.length?`<div style="display:flex;gap:4px;margin-top:2px;align-items:center;">${photos.slice(0,4).map(p=>`<img src="${p.url}" loading="lazy" style="width:36px;height:36px;object-fit:cover;border-radius:4px;border:1px solid var(--border2);"/>`).join('')}${photos.length>4?`<span style="font-size:11px;color:var(--text3);">+${photos.length-4}</span>`:''}</div>`:''}
+        ${edited?`<div style="font-size:10px;color:var(--text3);margin-top:2px;">${edited}</div>`:''}
+      </div>`;
+    }).join('')
+  +`</div>`;
 }
 
 // Field-note helpers. Notes are a per-material LIST so crews on separate phones can each add
