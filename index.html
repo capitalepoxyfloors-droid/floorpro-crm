@@ -1301,8 +1301,30 @@
       <div class="form-group"><label class="form-label">Notes</label><textarea class="form-textarea" id="sv-notes" placeholder="What to bring, what to measure, what to discuss..."></textarea></div>
     </div>
     <div class="modal-footer">
+      <button id="sv-scope-btn" class="btn btn-ghost" style="margin-right:auto;display:none;" onclick="openJobScope()">📋 Job Scope</button>
       <button class="btn btn-ghost" onclick="closeModal('salesvisit');editingSvIdx=null;window._pendingLeadToSchedule=null;">Cancel</button>
       <button class="btn btn-primary" onclick="saveSalesVisit()">Save Visit</button>
+    </div>
+  </div>
+</div>
+
+<!-- JOB SCOPE MODAL — free-form bulk notes + photos for a sales visit, Google-Keep style.
+     Separate from the visit's own Notes field so filling this in on-site never disturbs
+     the appointment info (name/phone/date/time). Autosaves (title + notes), no Save button. -->
+<div class="modal-overlay" id="modal-jobscope">
+  <div class="modal" style="max-width:520px;">
+    <div class="modal-header">
+      <div class="modal-title">📋 Job Scope</div>
+      <button class="modal-close" onclick="closeJobScope()">×</button>
+    </div>
+    <div class="modal-body">
+      <input class="form-input" id="jscope-title" placeholder="Title" style="font-size:16px;font-weight:700;border:none;background:none;padding:4px 0;margin-bottom:10px;" oninput="svScopeSetTitle(this.value)"/>
+      <textarea id="jscope-notes" placeholder="Dimensions, lip size, flake color, prep needed, anything worth capturing while you're standing here looking at it..." style="width:100%;min-height:160px;border:none;background:none;resize:none;overflow-y:hidden;font-size:14px;font-family:'DM Sans',sans-serif;color:var(--text);outline:none;line-height:1.5;" oninput="svScopeSetNotes(this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'"></textarea>
+      <div style="border-top:1px solid var(--border2);margin:6px 0 12px;"></div>
+      <div id="jscope-photos"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeJobScope()">Close</button>
     </div>
   </div>
 </div>
@@ -2705,7 +2727,7 @@ async function deduplicateSlotsByJobRecord(){
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
   try{
-    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadLeadDupAcks(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadNavOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs(),loadMaterialDocs(),loadMaterialNotes(),loadJobPhotos()]);
+    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadLeadDupAcks(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadNavOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs(),loadMaterialDocs(),loadMaterialNotes(),loadJobPhotos(),loadSalesScopePhotos()]);
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
@@ -8495,8 +8517,13 @@ function saveSalesVisit(){
     lead_idx: selVal!==''?parseInt(selVal):null,
   };
   if(editingSvIdx!==null){
-    // Preserve bid tracking data when editing date/name/time of a bid
+    // Preserve id + Job Scope data + bid tracking — this form never touches those fields,
+    // so they must carry over untouched (the whole point of Job Scope is that editing the
+    // visit's own info never disturbs it).
     const existing=SALES_VISITS[editingSvIdx];
+    visit.id=existing.id;
+    visit.scopeTitle=existing.scopeTitle;
+    visit.scopeNotes=existing.scopeNotes;
     if(existing.type==='Bid Due'||visit.type==='Bid Due'){
       visit.submitted=existing.submitted||false;
       visit.yourBid=existing.yourBid||'';
@@ -8509,6 +8536,7 @@ function saveSalesVisit(){
     editingSvIdx=null;
     showToast('✓ Visit updated!');
   } else {
+    visit.id=(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2));
     SALES_VISITS.push(visit);
     // If this visit was triggered by moving a lead to Scheduled, complete the move
     if(window._pendingLeadToSchedule !== undefined && window._pendingLeadToSchedule !== null){
@@ -8547,6 +8575,7 @@ function editSalesVisit(idx){
   document.getElementById('sv-address').value=v.address||'';
   document.getElementById('sv-notes').value=v.notes||'';
   document.getElementById('sv-title').textContent=v.type==='Bid Due'?'Edit Bid Due Date':'Edit Sales Visit';
+  document.getElementById('sv-scope-btn').style.display='';
   svTypeChanged();
   openModal('salesvisit');
   _updateSvNotifBadge();
@@ -9817,6 +9846,7 @@ function openModal(id){
     document.getElementById('sv-reminder').value='30';
     document.getElementById('sv-lead-select').value='';
     populateSvLeadDropdown();
+    document.getElementById('sv-scope-btn').style.display='none';
     _updateSvNotifBadge();
   }
   if(id==='addref' && editingRefIdx===null){
@@ -12515,6 +12545,160 @@ function openPhotoJob(jobId){
 function phDeletePhoto(jobId,ds,photoId){
   _jcId=jobId;
   jcDeletePhoto(ds,photoId).then(renderPhotosPage);
+}
+
+// ── JOB SCOPE (Sales Visit) ───────────────────────────────────────────────────
+// Free-form bulk notes + photos for a sales visit, opened via "📋 Job Scope" in the
+// Sales Visit modal. Deliberately a SEPARATE field from the visit's own Notes (which is
+// pre-visit "what to bring/measure/discuss") so filling this in on-site — dimensions,
+// materials, flake color, whatever — never disturbs the appointment info. Google-Keep-style:
+// title + big notes box + photos, autosaves as you type, no explicit Save button.
+// Reuses the vehicle-docs Storage bucket under a `salescope/` prefix (no new bucket/SQL setup).
+let SALES_SCOPE_PHOTOS = {};   // { visitId: [{id,name,path,url,size,author,role,ts}] }
+let _svScopeIdx = null;        // which SALES_VISITS index the modal is currently open for
+let _svScopeSaveTimer = null;
+
+async function loadSalesScopePhotos(){
+  const v=await sb.getKV('sales_scope_photos');
+  if(v){ try{ SALES_SCOPE_PHOTOS=JSON.parse(v)||{}; }catch(e){ console.error('loadSalesScopePhotos parse error:',e); } }
+}
+async function saveSalesScopePhotos(){ SALES_SCOPE_PHOTOS = await _saveKVMerged('sales_scope_photos', SALES_SCOPE_PHOTOS); }
+
+// Ensure this visit has a stable id to key scope notes/photos by (older visits predate the id field)
+function _svEnsureId(idx){
+  const v=SALES_VISITS[idx]; if(!v) return null;
+  if(!v.id) v.id = (crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2));
+  return v.id;
+}
+
+function openJobScope(){
+  if(editingSvIdx===null) return;
+  _svScopeIdx=editingSvIdx;
+  const v=SALES_VISITS[_svScopeIdx];
+  _svEnsureId(_svScopeIdx);
+  persistSalesVisits();
+  const titleEl=document.getElementById('jscope-title');
+  const notesEl=document.getElementById('jscope-notes');
+  titleEl.value=v.scopeTitle||v.name||'';
+  notesEl.value=v.scopeNotes||'';
+  notesEl.style.height='auto'; notesEl.style.height=notesEl.scrollHeight+'px';
+  renderSvScopePhotos();
+  openModal('jobscope');
+}
+function closeJobScope(){
+  clearTimeout(_svScopeSaveTimer);
+  if(_svScopeIdx!==null) persistSalesVisits();
+  closeModal('jobscope');
+}
+function svScopeSetTitle(val){
+  if(_svScopeIdx===null||!SALES_VISITS[_svScopeIdx]) return;
+  SALES_VISITS[_svScopeIdx].scopeTitle=val;
+  clearTimeout(_svScopeSaveTimer);
+  _svScopeSaveTimer=setTimeout(()=>persistSalesVisits(),800);
+}
+function svScopeSetNotes(val){
+  if(_svScopeIdx===null||!SALES_VISITS[_svScopeIdx]) return;
+  SALES_VISITS[_svScopeIdx].scopeNotes=val;
+  clearTimeout(_svScopeSaveTimer);
+  _svScopeSaveTimer=setTimeout(()=>persistSalesVisits(),800);
+}
+
+function svScopeUploadPhotos(){
+  const fileInput=document.getElementById('jscope-file');
+  const files=fileInput&&fileInput.files?Array.from(fileInput.files):[];
+  svScopeUploadPhotoFiles(files);
+  if(fileInput) fileInput.value='';
+}
+
+// Shared upload core — called by the file-input (click-to-browse) and the drag & drop zone
+async function svScopeUploadPhotoFiles(files){
+  if(_svScopeIdx===null||!SALES_VISITS[_svScopeIdx]) return;
+  const visitId=_svEnsureId(_svScopeIdx);
+  files=(files||[]).filter(f=>/^image\//.test(f.type));
+  if(!files.length){ showToast('Drop image files only.'); return; }
+  const {author,role}=_matNoteAuthor();
+  let ok=0,fail=0;
+  for(const file of files){
+    if(file.size>25*1024*1024){ showToast(`"${file.name}" is over 25 MB — skipped.`); fail++; continue; }
+    const safe=(file.name||'photo').replace(/[^\w.\-]+/g,'_');
+    const path=`salescope/${visitId}/${Date.now()}_${safe}`;
+    try{
+      const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
+        method:'POST',
+        headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
+        body:file
+      });
+      if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
+      if(!SALES_SCOPE_PHOTOS[visitId]) SALES_SCOPE_PHOTOS[visitId]=[];
+      SALES_SCOPE_PHOTOS[visitId].push({
+        id:(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)),
+        name:file.name, path, url:_vehDocPublicUrl(path), size:file.size, author, role, ts:new Date().toISOString()
+      });
+      ok++;
+    }catch(e){ console.error('scope photo upload failed:',e); fail++; }
+  }
+  if(ok) await saveSalesScopePhotos();
+  renderSvScopePhotos();
+  if(ok&&!fail) showToast(`✓ ${ok} photo${ok!==1?'s':''} added.`);
+  else if(ok&&fail) showToast(`${ok} added, ${fail} failed.`);
+  else showToast('Upload failed — the storage bucket may not be set up yet.');
+}
+
+function svScopeDragOver(e){
+  e.preventDefault();
+  e.currentTarget.style.borderColor='var(--accent)';
+  e.currentTarget.style.background='var(--accent)15';
+}
+function svScopeDragLeave(e){
+  e.currentTarget.style.borderColor='transparent';
+  e.currentTarget.style.background='';
+}
+function svScopeDrop(e){
+  e.preventDefault();
+  svScopeDragLeave(e);
+  const files=Array.from(e.dataTransfer?.files||[]);
+  if(!files.length) return;
+  svScopeUploadPhotoFiles(files);
+}
+
+async function svScopeDeletePhoto(photoId){
+  if(_svScopeIdx===null||!SALES_VISITS[_svScopeIdx]) return;
+  const visitId=SALES_VISITS[_svScopeIdx].id;
+  const list=SALES_SCOPE_PHOTOS[visitId]||[];
+  const photo=list.find(p=>p.id===photoId); if(!photo) return;
+  if(!confirm('Delete this photo?')) return;
+  try{
+    await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(photo.path)}`,{
+      method:'DELETE', headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY }
+    });
+  }catch(e){ console.error('scope photo storage delete failed',e); }
+  SALES_SCOPE_PHOTOS[visitId]=list.filter(p=>p.id!==photoId);
+  await saveSalesScopePhotos();
+  renderSvScopePhotos();
+  showToast('Photo removed.');
+}
+
+function renderSvScopePhotos(){
+  const el=document.getElementById('jscope-photos'); if(!el) return;
+  if(_svScopeIdx===null||!SALES_VISITS[_svScopeIdx]){ el.innerHTML=''; return; }
+  const visitId=SALES_VISITS[_svScopeIdx].id;
+  const photos=(SALES_SCOPE_PHOTOS[visitId]||[]).slice().sort((a,b)=>(a.ts||'').localeCompare(b.ts||''));
+  const thumbs=photos.map(p=>`
+    <div style="position:relative;width:84px;height:84px;flex-shrink:0;">
+      <a href="${p.url}" target="_blank" rel="noopener">
+        <img src="${p.url}" loading="lazy" style="width:84px;height:84px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;"/>
+      </a>
+      <button onclick="svScopeDeletePhoto('${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
+    </div>`).join('');
+  el.innerHTML=`
+    <div ondragover="svScopeDragOver(event)" ondragleave="svScopeDragLeave(event)" ondrop="svScopeDrop(event)" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:6px;margin:-6px;border-radius:10px;border:1.5px dashed transparent;transition:border-color .15s,background .15s;">
+      ${thumbs}
+      <label style="width:84px;height:84px;flex-shrink:0;border:1.5px dashed var(--border2);border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text3);font-size:24px;">
+        +
+        <input type="file" id="jscope-file" accept="image/*" multiple style="display:none;" onchange="svScopeUploadPhotos()"/>
+      </label>
+    </div>
+    ${photos.length===0?'<div style="font-size:11px;color:var(--text3);margin-top:4px;">No photos yet — tap + or drag & drop images here.</div>':''}`;
 }
 
 // Field-note helpers. Notes are a per-material LIST so crews on separate phones can each add
