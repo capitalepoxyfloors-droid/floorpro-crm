@@ -1333,12 +1333,14 @@
       <button class="modal-close" onclick="closeJobScope()">×</button>
     </div>
     <div class="modal-body">
-      <input class="form-input" id="jscope-title" placeholder="Title" style="font-size:16px;font-weight:700;border:none;background:none;padding:4px 0;margin-bottom:10px;" oninput="svScopeSetTitle(this.value)"/>
+      <input class="form-input" id="jscope-title" placeholder="Title" style="font-size:16px;font-weight:700;border:none;background:none;padding:4px 0;margin-bottom:2px;" oninput="svScopeSetTitle(this.value)"/>
+      <div id="jscope-address" style="font-size:12px;color:var(--text3);margin-bottom:10px;"></div>
       <textarea id="jscope-notes" placeholder="Dimensions, lip size, flake color, prep needed, anything worth capturing while you're standing here looking at it..." style="width:100%;min-height:160px;border:none;background:none;resize:none;overflow-y:hidden;font-size:14px;font-family:'DM Sans',sans-serif;color:var(--text);outline:none;line-height:1.5;" oninput="svScopeSetNotes(this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'"></textarea>
       <div style="border-top:1px solid var(--border2);margin:6px 0 12px;"></div>
       <div id="jscope-photos"></div>
     </div>
     <div class="modal-footer">
+      <button id="jscope-archive-btn" class="btn btn-ghost" style="margin-right:auto;" onclick="svScopeToggleArchive()">📦 Archive</button>
       <button class="btn btn-ghost" onclick="closeJobScope()">Close</button>
     </div>
   </div>
@@ -8541,6 +8543,7 @@ function saveSalesVisit(){
     visit.scopeTitle=existing.scopeTitle;
     visit.scopeNotes=existing.scopeNotes;
     visit.scopeUpdatedAt=existing.scopeUpdatedAt;
+    visit.scopeArchived=existing.scopeArchived;
     if(existing.type==='Bid Due'||visit.type==='Bid Due'){
       visit.submitted=existing.submitted||false;
       visit.yourBid=existing.yourBid||'';
@@ -12611,6 +12614,12 @@ function _openJobScopeFor(idx){
   titleEl.value=v.scopeTitle||v.name||'';
   notesEl.value=v.scopeNotes||'';
   notesEl.style.height='auto'; notesEl.style.height=notesEl.scrollHeight+'px';
+  // Address is pulled live from the visit, not copied in — always reflects the current address,
+  // never goes stale, and is never editable here (edit the address on the visit itself).
+  const addrEl=document.getElementById('jscope-address');
+  addrEl.innerHTML = v.address ? `📍 ${v.address.replace(/</g,'&lt;')}` : '';
+  const archiveBtn=document.getElementById('jscope-archive-btn');
+  archiveBtn.textContent = v.scopeArchived ? '📤 Unarchive' : '📦 Archive';
   renderSvScopePhotos();
   openModal('jobscope');
 }
@@ -12620,6 +12629,15 @@ function closeJobScope(){
   _svScopeDirty=false;
   closeModal('jobscope');
   if(document.getElementById('page-jobscope')?.classList.contains('active')) renderJobScopePage();
+}
+function svScopeToggleArchive(){
+  if(_svScopeIdx===null||!SALES_VISITS[_svScopeIdx]) return;
+  const v=SALES_VISITS[_svScopeIdx];
+  v.scopeArchived=!v.scopeArchived;
+  v.scopeUpdatedAt=new Date().toISOString();
+  persistSalesVisits();
+  document.getElementById('jscope-archive-btn').textContent = v.scopeArchived ? '📤 Unarchive' : '📦 Archive';
+  showToast(v.scopeArchived?'Archived — still searchable, just off the main list.':'Unarchived.');
 }
 function svScopeSetTitle(val){
   if(_svScopeIdx===null||!SALES_VISITS[_svScopeIdx]) return;
@@ -12763,12 +12781,19 @@ function renderJobScopePage(){
     el.innerHTML='<div style="padding:60px 20px;text-align:center;color:var(--text3);">No Job Scope notes yet. Open a Sales Visit and tap "📋 Job Scope" to add one.</div>';
     return;
   }
-  const filtered = q ? items.filter(({v})=>{
-    const title=(v.scopeTitle||v.name||'').toLowerCase();
-    return title.includes(q) || (v.scopeNotes||'').toLowerCase().includes(q) || (v.name||'').toLowerCase().includes(q);
-  }) : items;
+  // No search: only the active (non-archived) list, like Keep's main view.
+  // With a search: match across active AND archived, so archiving never makes a note
+  // un-findable — it's just off the default screen. Archived matches get a badge.
+  const filtered = q
+    ? items.filter(({v})=>{
+        const title=(v.scopeTitle||v.name||'').toLowerCase();
+        return title.includes(q) || (v.scopeNotes||'').toLowerCase().includes(q) || (v.name||'').toLowerCase().includes(q) || (v.address||'').toLowerCase().includes(q);
+      })
+    : items.filter(({v})=>!v.scopeArchived);
   if(!filtered.length){
-    el.innerHTML=`<div style="padding:60px 20px;text-align:center;color:var(--text3);">No scope notes match "${q.replace(/</g,'&lt;')}".</div>`;
+    el.innerHTML = q
+      ? `<div style="padding:60px 20px;text-align:center;color:var(--text3);">No scope notes match "${q.replace(/</g,'&lt;')}".</div>`
+      : `<div style="padding:60px 20px;text-align:center;color:var(--text3);">No active scope notes. ${items.length?`(${items.length} archived — search to find them.)`:''}</div>`;
     return;
   }
   filtered.sort((a,b)=>(b.v.scopeUpdatedAt||'').localeCompare(a.v.scopeUpdatedAt||''));
@@ -12779,9 +12804,13 @@ function renderJobScopePage(){
       const photos=SALES_SCOPE_PHOTOS[v.id]||[];
       const edited=v.scopeUpdatedAt?_jscopeFmtEdited(v.scopeUpdatedAt):'';
       return `
-      <div onclick="openScopeCard(${i})" style="background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);padding:14px 16px;cursor:pointer;transition:box-shadow .15s;display:flex;flex-direction:column;gap:6px;min-width:0;" onmouseover="this.style.boxShadow='0 2px 10px rgba(0,0,0,.08)'" onmouseout="this.style.boxShadow=''">
-        <div style="font-weight:700;font-size:14.5px;color:var(--text);overflow-wrap:break-word;">${title}</div>
+      <div onclick="openScopeCard(${i})" style="background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);padding:14px 16px;cursor:pointer;transition:box-shadow .15s;display:flex;flex-direction:column;gap:6px;min-width:0;${v.scopeArchived?'opacity:.65;':''}" onmouseover="this.style.boxShadow='0 2px 10px rgba(0,0,0,.08)'" onmouseout="this.style.boxShadow=''">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <div style="font-weight:700;font-size:14.5px;color:var(--text);overflow-wrap:break-word;flex:1;">${title}</div>
+          ${v.scopeArchived?`<span style="font-size:9px;font-weight:700;color:var(--text3);background:var(--surface2);border:1px solid var(--border2);padding:1px 6px;border-radius:20px;text-transform:uppercase;letter-spacing:.4px;flex-shrink:0;">📦 Archived</span>`:''}
+        </div>
         <div style="font-size:11px;color:var(--text3);">${(v.name||'').replace(/</g,'&lt;')}${v.date?' · '+jcFmtDate(v.date):''}</div>
+        ${v.address?`<div style="font-size:11px;color:var(--text3);">📍 ${v.address.replace(/</g,'&lt;')}</div>`:''}
         ${notes?`<div style="font-size:12.5px;color:var(--text2);white-space:pre-wrap;line-height:1.4;max-height:110px;overflow:hidden;">${notes}</div>`:''}
         ${photos.length?`<div style="display:flex;gap:4px;margin-top:2px;align-items:center;">${photos.slice(0,4).map(p=>`<img src="${p.url}" loading="lazy" style="width:36px;height:36px;object-fit:cover;border-radius:4px;border:1px solid var(--border2);"/>`).join('')}${photos.length>4?`<span style="font-size:11px;color:var(--text3);">+${photos.length-4}</span>`:''}</div>`:''}
         ${edited?`<div style="font-size:10px;color:var(--text3);margin-top:2px;">${edited}</div>`:''}
