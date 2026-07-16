@@ -12613,7 +12613,6 @@ function _openJobScopeFor(idx){
   const notesEl=document.getElementById('jscope-notes');
   titleEl.value=v.scopeTitle||v.name||'';
   notesEl.value=v.scopeNotes||'';
-  notesEl.style.height='auto'; notesEl.style.height=notesEl.scrollHeight+'px';
   // Address is pulled live from the visit, not copied in — always reflects the current address,
   // never goes stale, and is never editable here (edit the address on the visit itself).
   const addrEl=document.getElementById('jscope-address');
@@ -12621,7 +12620,12 @@ function _openJobScopeFor(idx){
   const archiveBtn=document.getElementById('jscope-archive-btn');
   archiveBtn.textContent = v.scopeArchived ? '📤 Unarchive' : '📦 Archive';
   renderSvScopePhotos();
+  // Open the modal BEFORE measuring the textarea's auto-grow height — the modal-overlay is
+  // display:none until openModal() adds the .open class, and scrollHeight on a display:none
+  // element is unreliable (undersized), which was clipping the last line of longer notes
+  // against the divider below it.
   openModal('jobscope');
+  notesEl.style.height='auto'; notesEl.style.height=notesEl.scrollHeight+'px';
 }
 function closeJobScope(){
   clearTimeout(_svScopeSaveTimer);
