@@ -9086,7 +9086,9 @@ function renderJobsListView(){
     const col = document.getElementById('jobs-col-'+status);
     if(!col) return;
     col.querySelectorAll('.lead-card').forEach(card=>{
-      const customer = card.querySelector('.lead-name')?.textContent.trim()||'';
+      // Must read dataset.customer, NOT .lead-name textContent — that element embeds the
+      // "#Wave" badge as plain text, which would then compound with the badge re-added below.
+      const customer = card.dataset.customer||card.querySelector('.lead-name')?.textContent.trim()||'';
       if(!customer) return;
       const dets     = card.querySelectorAll('.lead-detail');
       const jobLabel = dets[0]?.textContent.trim()||'';
