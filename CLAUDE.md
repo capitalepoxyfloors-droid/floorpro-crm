@@ -89,5 +89,7 @@ BASE = getCurrentMonday()   — week-0 anchor, computed once at page load
 
 ## Deployment
 - GitHub Pages: `https://capitalepoxyfloors-droid.github.io/floorpro-crm/`
-- Deploy lag: ~2 minutes after `git push`
-- Always hard-refresh after deploying: Ctrl+Shift+R
+- Deploys via `.github/workflows/deploy-pages.yml` (GitHub Actions), triggered on every push to `main`
+- Deploy lag: usually under a minute after `git push`
+- Always hard-refresh after deploying: Ctrl+Shift+R (the site is served with a 10-min cache header, so a plain refresh can still show the stale copy)
+- **If a change doesn't show up live:** check the "Deploy to GitHub Pages" run at `https://github.com/capitalepoxyfloors-droid/floorpro-crm/actions` — it should show a green check for your commit's SHA within a minute or two of pushing. If there's no run at all for that commit, the workflow trigger was missed; re-run it from the Actions tab (or push an empty commit: `git commit --allow-empty -m "retrigger deploy" && git push`) rather than assuming the code is wrong.
