@@ -3242,9 +3242,15 @@ function sjConfirm(){
     endDate: sjFound.endDate.toISOString().split('T')[0],
     status: 'scheduled',
     plannedMaterials: [],
-    dayLogs: {}
+    dayLogs: {},
+    scopePhotos: []
   };
   JOB_RECORDS.push(jobRecord);
+  // Carry the sales visit's Job Scope photos forward onto the job (copies the files in
+  // Storage so they survive independently of the original visit record).
+  if(window._pendingApprovedCard && window._pendingApprovedCard.dataset.scopeVisitId){
+    _transferScopePhotosToJob(window._pendingApprovedCard.dataset.scopeVisitId, jobId);
+  }
   // Map slots to job ID across week boundaries
   {let curW=w,curD=start;
   for(let i=0;i<days;i++){
@@ -3958,6 +3964,7 @@ function openJobCard(jobId){
   jcRenderCrewPicker();
   jcPopulateMatDatalist(); // keep materials list in sync
   jcRenderSupplierInvoices();
+  jcRenderScopePhotos();
   jcTab('info');
   openModal('jobcard');
   // Apply lock state after modal is open so elements exist
@@ -9202,6 +9209,7 @@ function addJobCard(customer, jobLabel, value, displayVal, detail, status, exist
     if(extraData.address) card.dataset.address=extraData.address;
     if(extraData.notes)   card.dataset.notes=extraData.notes;
     if(extraData.sqft)    card.dataset.sqft=extraData.sqft;
+    if(extraData.scopeVisitId) card.dataset.scopeVisitId=extraData.scopeVisitId;
   }
   card.onclick = function(e){
     if(e.target.closest('button')) return;
@@ -9431,7 +9439,12 @@ function markAsWon(idx){
   const displayVal=l.value?parseFloat(l.value).toLocaleString('en-US',{style:'currency',currency:'USD'}):'—';
   const detail=[l.custType,l.sqft?l.sqft+' sqft':''].filter(Boolean).join(' · ');
 
-  addJobCard(l.name, jobType, l.value||'', displayVal, detail, 'approved');
+  // Carry the sales visit's Job Scope photos forward — matched by customer name (same
+  // convention bookLeadVisit already uses to find "the visit for this lead").
+  const visit=SALES_VISITS.find(v=>v.name===l.name);
+  const scopeVisitId=(visit&&(SALES_SCOPE_PHOTOS[visit.id]||[]).length)?visit.id:null;
+
+  addJobCard(l.name, jobType, l.value||'', displayVal, detail, 'approved', undefined, {scopeVisitId});
 
   // Won leads live on as Approved jobs on the Jobs board — remove the lead entirely (DB too)
   // and clear its follow-up timer so it doesn't reappear on reload or linger in the pipeline.
@@ -10619,7 +10632,12 @@ function wpdfConfirm(){
   if(invoice) parts.push(invoice);
   const detail = parts.join(' · ');
 
-  addJobCard(customer, jobLabel, rawVal||'', displayVal, detail, 'approved', undefined, {address, notes, sqft});
+  // Same Job Scope photo carry-forward as markAsWon() — matched by customer name, since a
+  // Wave-imported job never went through the Leads pipeline to pick up a visit link there.
+  const wpdfVisit=SALES_VISITS.find(v=>v.name===customer);
+  const scopeVisitId=(wpdfVisit&&(SALES_SCOPE_PHOTOS[wpdfVisit.id]||[]).length)?wpdfVisit.id:null;
+
+  addJobCard(customer, jobLabel, rawVal||'', displayVal, detail, 'approved', undefined, {address, notes, sqft, scopeVisitId});
 
   // Reset form fields
   ['wpdf-customer','wpdf-invoice','wpdf-value','wpdf-sqft','wpdf-address','wpdf-notes'].forEach(id=>{
@@ -12557,6 +12575,96 @@ function renderPhotosPage(){
       </div>`;
   }).join('');
 }
+// Copies a sales visit's Job Scope photos into the job's own Storage path (`jobs/{jobId}/scope/`)
+// so they're an independent copy — deleting/editing the original visit's photos afterward
+// can't take the job's copy down with it. Notes are deliberately left behind; only photos travel.
+async function _transferScopePhotosToJob(visitId,jobId){
+  const photos=SALES_SCOPE_PHOTOS[visitId]||[];
+  if(!photos.length) return;
+  const job=getJobRecord(jobId); if(!job) return;
+  if(!job.scopePhotos) job.scopePhotos=[];
+  let ok=0;
+  for(let i=0;i<photos.length;i++){
+    const p=photos[i];
+    const safe=(p.name||'photo').replace(/[^\w.\-]+/g,'_');
+    const destPath=`jobs/${jobId}/scope/${Date.now()}_${i}_${safe}`;
+    try{
+      const res=await fetch(`${SUPABASE_URL}/storage/v1/object/copy`,{
+        method:'POST',
+        headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':'application/json' },
+        body:JSON.stringify({bucketId:VEH_DOCS_BUCKET, sourceKey:p.path, destinationKey:destPath})
+      });
+      if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
+      job.scopePhotos.push({
+        id:(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)),
+        name:p.name, path:destPath, url:_vehDocPublicUrl(destPath), size:p.size, ts:new Date().toISOString()
+      });
+      ok++;
+    }catch(e){ console.error('scope photo transfer failed:',e); }
+  }
+  if(ok){
+    await saveJobRecords();
+    if(_jcId===jobId && document.getElementById('jc-scopephotos-group')) jcRenderScopePhotos();
+  }
+}
+
+function jcRenderScopePhotos(){
+  const job=getJobRecord(_jcId); if(!job) return;
+  const group=document.getElementById('jc-scopephotos-group');
+  const grid=document.getElementById('jc-scopephotos-grid');
+  if(!group||!grid) return;
+  const photos=job.scopePhotos||[];
+  const isCrew=localStorage.getItem('fpRole')==='crew';
+  if(photos.length){
+    group.style.display='';
+    grid.innerHTML=photos.map(p=>`
+      <div style="position:relative;width:74px;height:74px;flex-shrink:0;">
+        <a href="${p.url}" target="_blank" rel="noopener">
+          <img src="${p.url}" loading="lazy" style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;"/>
+        </a>
+        ${isCrew?'':`<button onclick="jcDeleteScopePhoto('${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>`}
+      </div>`).join('');
+    return;
+  }
+  // No photos on the job yet — jobs created before this feature (or via a path that missed the
+  // auto-carry, e.g. Wave import) can still pull them in manually if a matching visit has any.
+  if(!isCrew){
+    const visit=SALES_VISITS.find(v=>v.name===job.customer);
+    const avail=visit?(SALES_SCOPE_PHOTOS[visit.id]||[]).length:0;
+    if(avail){
+      group.style.display='';
+      grid.innerHTML=`<button class="btn btn-ghost" onclick="jcPullInScopePhotos('${visit.id}')" style="font-size:12px;">📷 Pull In ${avail} Photo${avail!==1?'s':''} from Sales Visit</button>`;
+      return;
+    }
+  }
+  group.style.display='none';
+  grid.innerHTML='';
+}
+
+async function jcPullInScopePhotos(visitId){
+  const job=getJobRecord(_jcId); if(!job) return;
+  const grid=document.getElementById('jc-scopephotos-grid');
+  if(grid) grid.innerHTML='<div style="font-size:12px;color:var(--text3);">Copying photos…</div>';
+  await _transferScopePhotosToJob(visitId, job.id);
+  jcRenderScopePhotos();
+  showToast('✓ Sales visit photos added to this job.');
+}
+
+async function jcDeleteScopePhoto(photoId){
+  const job=getJobRecord(_jcId); if(!job) return;
+  const list=job.scopePhotos||[];
+  const photo=list.find(p=>p.id===photoId); if(!photo) return;
+  if(!confirm('Delete this photo?')) return;
+  try{
+    await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(photo.path)}`,{
+      method:'DELETE', headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY }
+    });
+  }catch(e){ console.error('scope photo storage delete failed',e); }
+  job.scopePhotos=list.filter(p=>p.id!==photoId);
+  await saveJobRecords();
+  jcRenderScopePhotos();
+}
+
 function openPhotoJob(jobId){
   if(!getJobRecord(jobId)){ showToast('That job no longer exists.'); return; }
   openJobCard(jobId);
@@ -13440,6 +13548,10 @@ async function deleteMaintEntry(id){
         <button class="btn" onclick="jcForceOverride()" style="background:var(--red,#e53e3e);color:#fff;font-size:12px;padding:5px 14px;border-color:var(--red,#e53e3e);">⚡ Override &amp; Schedule Anyway</button>
       </div>
       <div id="jc-dates-row" style="font-size:12px;color:var(--text3);padding:2px 0 10px;font-family:'DM Mono',monospace;"></div>
+      <div class="form-group" id="jc-scopephotos-group" style="display:none;">
+        <label class="form-label">📷 Site Photos (from Sales Visit)</label>
+        <div id="jc-scopephotos-grid" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+      </div>
     </div>
     <!-- Materials Pane -->
     <div id="jc-pane-materials" class="modal-body" style="display:none;">
