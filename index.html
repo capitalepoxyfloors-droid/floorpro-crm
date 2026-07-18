@@ -3231,7 +3231,7 @@ function sjConfirm(){
   const jobRecord = {
     id: jobId,
     customer: cust,
-    phone: '',
+    phone: (window._pendingApprovedCard && window._pendingApprovedCard.dataset.phone) || '',
     address: document.getElementById('sj-notes').value.trim(),
     scope: '',
     jobType: cssType,
@@ -4214,14 +4214,19 @@ let _addrTimer=null;
 const _stAbbr={Missouri:'MO',Illinois:'IL',Kansas:'KS',Arkansas:'AR',Iowa:'IA',Oklahoma:'OK',Tennessee:'TN',Kentucky:'KY',Indiana:'IN',Ohio:'OH',Nebraska:'NE',Texas:'TX',Florida:'FL',California:'CA',Colorado:'CO',Georgia:'GA','North Carolina':'NC','South Carolina':'SC','New York':'NY','New Jersey':'NJ',Pennsylvania:'PA',Michigan:'MI',Wisconsin:'WI',Minnesota:'MN'};
 
 async function _photonSearch(val){
-  const r=await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(val)}&limit=10&lang=en&lat=38.7&lon=-90.3`);
+  // Restricted to Missouri (the service area) two ways: a bbox so Photon only fetches
+  // candidates near the state, then a hard state-name filter below — the rectangular bbox
+  // alone still clips slivers of neighboring states at the corners, so it can't be trusted
+  // on its own to keep out-of-state results from ever showing up.
+  const MO_BBOX='-95.9,35.9,-89.0,40.7';
+  const r=await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(val)}&limit=10&lang=en&lat=38.7&lon=-90.3&bbox=${MO_BBOX}`);
   const j=await r.json();
   // Photon often only has the street (no exact house number), especially residential —
   // accept street-level results and prepend the house number the user typed.
   const typedHn=((val||'').match(/^\s*(\d+)/)||[])[1]||'';
   const seen=new Set();
   return (j.features||[])
-    .filter(f=>{const p=f.properties||{};return (p.country==='United States'||p.countrycode==='US')&&(p.street||p.name);})
+    .filter(f=>{const p=f.properties||{};return (p.country==='United States'||p.countrycode==='US')&&p.state==='Missouri'&&(p.street||p.name);})
     .map(f=>{
       const p=f.properties||{};
       const street=p.street||p.name||'';
@@ -9209,6 +9214,7 @@ function addJobCard(customer, jobLabel, value, displayVal, detail, status, exist
     if(extraData.address) card.dataset.address=extraData.address;
     if(extraData.notes)   card.dataset.notes=extraData.notes;
     if(extraData.sqft)    card.dataset.sqft=extraData.sqft;
+    if(extraData.phone)   card.dataset.phone=extraData.phone;
     if(extraData.scopeVisitId) card.dataset.scopeVisitId=extraData.scopeVisitId;
   }
   card.onclick = function(e){
@@ -9444,7 +9450,9 @@ function markAsWon(idx){
   const visit=SALES_VISITS.find(v=>v.name===l.name);
   const scopeVisitId=(visit&&(SALES_SCOPE_PHOTOS[visit.id]||[]).length)?visit.id:null;
 
-  addJobCard(l.name, jobType, l.value||'', displayVal, detail, 'approved', undefined, {scopeVisitId});
+  // Carry the lead's phone/address/notes forward too — previously dropped here, so a job
+  // scheduled from a won lead landed with a blank phone and address on the Job Card.
+  addJobCard(l.name, jobType, l.value||'', displayVal, detail, 'approved', undefined, {address:l.address||'', notes:l.notes||'', sqft:l.sqft||'', phone:l.phone||'', scopeVisitId});
 
   // Won leads live on as Approved jobs on the Jobs board — remove the lead entirely (DB too)
   // and clear its follow-up timer so it doesn't reappear on reload or linger in the pipeline.
