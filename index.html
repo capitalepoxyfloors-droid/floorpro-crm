@@ -11606,6 +11606,18 @@ function buildWeekGrid(wOff,mon,dNames){
   wrap.appendChild(hdrGrid);
 
   // One row per crew member
+  // A repeat customer (e.g. "State Tech" booked multiple separate times) can have several
+  // JOB_RECORDS sharing the exact same name — plain `JOB_RECORDS.find(j=>j.customer===label)`
+  // just returns whichever happens to be first in the array, which can open the wrong job
+  // entirely (confirmed: clicking a current in-progress job's bar opened an unrelated
+  // completed job from months earlier). Prefer whichever same-named job's own date range
+  // actually contains the day being resolved.
+  const resolveJobForDate=(label,dateStr)=>{
+    const cands=JOB_RECORDS.filter(j=>j.customer===label);
+    if(cands.length<=1) return cands[0]||null;
+    return cands.find(j=>j.startDate&&j.endDate&&dateStr>=j.startDate&&dateStr<=j.endDate)||cands[0];
+  };
+
   CREW.forEach((cr,i)=>{
     const rowDiv=mk('div','sch-row');
 
@@ -11631,7 +11643,7 @@ function buildWeekGrid(wOff,mon,dNames){
         const slotJobId=SLOT_JOB_MAP[jcSlotKey(i,sw,sd)];
         const _rawJr=slotJobId?getJobRecord(slotJobId):null;
         // Verify mapped job matches slot label (stale when a double-book overwrote the map entry)
-        const jr=(_rawJr&&_rawJr.customer===slotRaw.l)?_rawJr:JOB_RECORDS.find(j=>j.customer===slotRaw.l);
+        const jr=(_rawJr&&_rawJr.customer===slotRaw.l)?_rawJr:resolveJobForDate(slotRaw.l,sdStr);
         if(jr?.extraDays?.includes(sdStr)){
           const jrSD=new Date((jr.startDate||'')+'T00:00:00').getDay(),jrED=new Date((jr.endDate||'')+'T00:00:00').getDay();
           const jrWk=(jrSD===0||jrSD===6||jrED===0||jrED===6);
@@ -11765,7 +11777,7 @@ function buildWeekGrid(wOff,mon,dNames){
       const{s:startDay,e:endExcl,l:label,t:type,x:isExtra}=run;
       const span=endExcl-startDay;
       const jobId=SLOT_JOB_MAP[jcSlotKey(i,days[startDay].sw,days[startDay].sd)];
-      const jr=jobId?getJobRecord(jobId):JOB_RECORDS.find(j=>j.customer===label);
+      const jr=jobId?getJobRecord(jobId):resolveJobForDate(label,colDate(startDay).toISOString().split('T')[0]);
       const isDone=jr?.status==='complete';
       const isWkndBar=(startDay===0||startDay===6);
       const nxt=_runs[ri+1],prv=_runs[ri-1];
@@ -11876,8 +11888,9 @@ function buildWeekGrid(wOff,mon,dNames){
         const lp=(leftFr/TOTAL_FR*100).toFixed(3);
         const wp=(widthFr/TOTAL_FR*100).toFixed(3);
         const topPx=38+item.track*28;
-        const exJobId=item.jobId||(JOB_RECORDS.find(j=>j.customer===item.l)?.id)||null;
-        const exJr=exJobId?getJobRecord(exJobId):JOB_RECORDS.find(j=>j.customer===item.l);
+        const itemDate=colDate(item.s).toISOString().split('T')[0];
+        const exJobId=item.jobId||(resolveJobForDate(item.l,itemDate)?.id)||null;
+        const exJr=exJobId?getJobRecord(exJobId):resolveJobForDate(item.l,itemDate);
         const isDone=exJr?.status==='complete';
         const bar=document.createElement('div');
         bar.className='sch-span-bar '+(isDone?'done':(item.t||'epoxy'));
@@ -11906,7 +11919,7 @@ function buildWeekGrid(wOff,mon,dNames){
         const nextHasSameJob=(d+1<TOTAL_DAYS)&&(days[d+1]?.slot?.l===slotRaw.l||(days[d+1]?.pto&&days[d+1]?.slotRaw?.l===slotRaw.l));
         // Row 1 — job bar (top:10px from CSS; same look as normal span bars)
         const pjJobId=SLOT_JOB_MAP[jcSlotKey(i,days[d].sw,days[d].sd)];
-        const pjJr=pjJobId?getJobRecord(pjJobId):JOB_RECORDS.find(j=>j.customer===slotRaw.l);
+        const pjJr=pjJobId?getJobRecord(pjJobId):resolveJobForDate(slotRaw.l,colDate(d).toISOString().split('T')[0]);
         const pjDone=pjJr?.status==='complete';
         const jobBar=document.createElement('div');
         let jcls='sch-span-bar ';
@@ -11961,7 +11974,7 @@ function buildWeekGrid(wOff,mon,dNames){
         const nextHasSameJob=(d+1<TOTAL_DAYS)&&(days[d+1]?.slot?.l===slotRaw.l||((days[d+1]?.pto||days[d+1]?.hol)&&days[d+1]?.slotRaw?.l===slotRaw.l));
         // Row 1 — job bar (top:10px from CSS; same look as normal span bars)
         const pjJobId=SLOT_JOB_MAP[jcSlotKey(i,days[d].sw,days[d].sd)];
-        const pjJr=pjJobId?getJobRecord(pjJobId):JOB_RECORDS.find(j=>j.customer===slotRaw.l);
+        const pjJr=pjJobId?getJobRecord(pjJobId):resolveJobForDate(slotRaw.l,colDate(d).toISOString().split('T')[0]);
         const pjDone=pjJr?.status==='complete';
         const jobBar=document.createElement('div');
         let jcls='sch-span-bar ';
