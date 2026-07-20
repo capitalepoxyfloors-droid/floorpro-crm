@@ -11834,46 +11834,57 @@ function buildWeekGrid(wOff,mon,dNames){
       body.appendChild(bar);
     });
 
-    // Extra (double-booked) slots — render as a second row of bars.
-    // Slots whose days were merged into a span bar (mergedExtraSpans) are skipped here.
+    // Extra (double-booked) slots — render as additional row(s) below the primary bar.
+    // Slots whose days were merged into a span bar (mergedExtraSpans) are skipped in the raw
+    // per-day loop below (they render once, as their merged span, instead).
+    //
+    // A merged span can itself be a DIFFERENT job's continuous bar covering days where it's
+    // sometimes primary and sometimes double-booked (see the merge passes above) — when two
+    // different jobs each do this over the same block of days, their merged spans overlap.
+    // Previously both always rendered at the same fixed top:38px, so whichever was appended
+    // to the DOM last simply covered the other. Fixed via a greedy interval-coloring pass:
+    // sort every row-2+ item (individual extra pills AND merged spans) by start day, and give
+    // each one the first vertical "track" whose last item already ended by this one's start —
+    // opening a new track only when every existing one is still occupied. Non-overlapping
+    // items naturally share a track (e.g. one job ending Thursday, another starting Friday).
     if(extraDays.length||mergedExtraSpans.length){
-      body.style.minHeight='82px'; // expand row to accommodate second bar row
+      const items=[];
       extraDays.forEach(({d,extras})=>{
-        extras.forEach((ex,ei)=>{
+        extras.forEach(ex=>{
           if(suppressedExtraKeys.has(d+'_'+ex.l)) return; // merged into a span bar below
-          const leftFr=COL_FR.slice(0,d).reduce((a,b)=>a+b,0);
-          const widthFr=COL_FR[d];
-          const lp=(leftFr/TOTAL_FR*100).toFixed(3);
-          const wp=(widthFr/TOTAL_FR*100).toFixed(3);
-          const topPx=38+(ei*28);
-          const exJobId=ex.jobId||(JOB_RECORDS.find(j=>j.customer===ex.l)?.id)||null;
-          const exJr=exJobId?getJobRecord(exJobId):JOB_RECORDS.find(j=>j.customer===ex.l);
-          const isDone=exJr?.status==='complete';
-          let cls='sch-span-bar '+(isDone?'done':(ex.t||'epoxy'));
-          const bar=document.createElement('div');
-          bar.className=cls;
-          bar.textContent=(isDone?'✓ ':'')+ex.l;
-          bar.title='Double-booked · click to open';
-          bar.style.cssText=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);top:${topPx}px;`;
-          bar.onclick=()=>{ if(exJobId) openJobCard(exJobId); else openSlotEdit(i,days[d].sw,days[d].sd); };
-          body.appendChild(bar);
+          items.push({s:d,e:d+1,l:ex.l,t:ex.t,jobId:ex.jobId||null,isMerged:false});
         });
       });
-      // Merged span bars (extra days + adjacent primary run combined into one continuous bar)
-      mergedExtraSpans.forEach(({s,e,l,t})=>{
-        const leftFr=COL_FR.slice(0,s).reduce((a,b)=>a+b,0);
-        const widthFr=COL_FR.slice(s,e).reduce((a,b)=>a+b,0);
+      mergedExtraSpans.forEach(({s,e,l,t})=>{ items.push({s,e,l,t,isMerged:true}); });
+
+      items.sort((a,b)=>a.s-b.s||a.e-b.e);
+      const trackEnds=[];
+      items.forEach(item=>{
+        let track=trackEnds.findIndex(end=>end<=item.s);
+        if(track===-1){ track=trackEnds.length; trackEnds.push(item.e); }
+        else trackEnds[track]=item.e;
+        item.track=track;
+      });
+      // Grow-only: the PTO/holiday blocks below also expand this row and must not clobber a
+      // taller value set here if more than their usual 2 tracks' worth of height is needed.
+      const _neededH=38+trackEnds.length*28+10;
+      if((parseInt(body.style.minHeight)||0)<_neededH) body.style.minHeight=_neededH+'px';
+
+      items.forEach(item=>{
+        const leftFr=COL_FR.slice(0,item.s).reduce((a,b)=>a+b,0);
+        const widthFr=COL_FR.slice(item.s,item.e).reduce((a,b)=>a+b,0);
         const lp=(leftFr/TOTAL_FR*100).toFixed(3);
         const wp=(widthFr/TOTAL_FR*100).toFixed(3);
-        const exJr=JOB_RECORDS.find(j=>j.customer===l)||null;
-        const exJobId=exJr?.id||null;
+        const topPx=38+item.track*28;
+        const exJobId=item.jobId||(JOB_RECORDS.find(j=>j.customer===item.l)?.id)||null;
+        const exJr=exJobId?getJobRecord(exJobId):JOB_RECORDS.find(j=>j.customer===item.l);
         const isDone=exJr?.status==='complete';
         const bar=document.createElement('div');
-        bar.className='sch-span-bar '+(isDone?'done':(t||'epoxy'));
-        bar.textContent=(isDone?'✓ ':'')+l;
-        bar.title='Click to open';
-        bar.style.cssText=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);top:38px;`;
-        bar.onclick=()=>{ if(exJobId) openJobCard(exJobId); else openSlotEdit(i,days[s].sw,days[s].sd); };
+        bar.className='sch-span-bar '+(isDone?'done':(item.t||'epoxy'));
+        bar.textContent=(isDone?'✓ ':'')+item.l;
+        bar.title=item.isMerged?'Click to open':'Double-booked · click to open';
+        bar.style.cssText=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);top:${topPx}px;`;
+        bar.onclick=()=>{ if(exJobId) openJobCard(exJobId); else openSlotEdit(i,days[item.s].sw,days[item.s].sd); };
         body.appendChild(bar);
       });
     }
@@ -11884,7 +11895,7 @@ function buildWeekGrid(wOff,mon,dNames){
     const ptoPlusDays=[];
     days.forEach(({pto,slotRaw,isExtra},d)=>{ if(pto&&slotRaw) ptoPlusDays.push({pto,slotRaw,isExtra,d}); });
     if(ptoPlusDays.length){
-      body.style.minHeight='82px';
+      if((parseInt(body.style.minHeight)||0)<82) body.style.minHeight='82px';
       ptoPlusDays.forEach(({pto,slotRaw,isExtra,d})=>{
         const leftFr=COL_FR.slice(0,d).reduce((a,b)=>a+b,0);
         const widthFr=COL_FR[d];
@@ -11939,7 +11950,7 @@ function buildWeekGrid(wOff,mon,dNames){
     const holPlusDays=[];
     days.forEach(({hol,pto,slotRaw,isExtra},d)=>{ if(hol&&slotRaw&&!pto) holPlusDays.push({hol,slotRaw,isExtra,d}); });
     if(holPlusDays.length){
-      body.style.minHeight='82px';
+      if((parseInt(body.style.minHeight)||0)<82) body.style.minHeight='82px';
       holPlusDays.forEach(({hol,slotRaw,isExtra,d})=>{
         const leftFr=COL_FR.slice(0,d).reduce((a,b)=>a+b,0);
         const widthFr=COL_FR[d];
