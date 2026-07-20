@@ -3874,8 +3874,10 @@ async function jcSyncCrewSlots(job, force=false){
       // Conflict: a different job already has this crew member on this day
       if(newSlots[ci]?.[w]?.[d]&&SLOT_JOB_MAP[key]&&SLOT_JOB_MAP[key]!==job.id){
         if(!force){ _jcConflicts.push({crewName:name, date:ds}); continue; }
-        // force=true — add as a double-booked extra slot, don't overwrite primary
-        await dbAddExtraSlot(ci,w,d,job.customer,job.jobType||'epoxy',job.id);
+        // force=true — add as a double-booked extra slot, don't overwrite primary.
+        // Pass ds (the absolute date already in hand) so the slot never drifts once
+        // BASE advances to a new current week — omitting it was a latent bug here.
+        await dbAddExtraSlot(ci,w,d,job.customer,job.jobType||'epoxy',job.id,ds);
         added++;
         continue;
       }
