@@ -9251,21 +9251,24 @@ function addJobCard(customer, jobLabel, value, displayVal, detail, status, exist
   if(_jobsListActive()) setTimeout(renderJobsListView,0);
 }
 
-function advanceJobCard(btn, nextStatus){
+// Reconciles against the loaded data cache (_lastJobRows), NOT the DOM — a DOM-based
+// dbId read + card.remove() + addJobCard() here previously spawned duplicate board rows
+// whenever the card's dataset.dbId hadn't been backfilled yet (e.g. right after a fresh
+// approved card is created, before the next full reload). Same bug class, same fix already
+// applied to syncBoardCardStatus/autoAdvanceJobsByDate — see project memory for the
+// "George Belchik" incident this exact pattern caused.
+async function advanceJobCard(btn, nextStatus){
   const card=btn.closest('.lead-card');
-  const dbId=card.dataset.dbId||null;
   const customer=card.dataset.customer||card.querySelector('.lead-name').textContent.trim();
-  const jobLabel=card.querySelector('.lead-detail').textContent;
-  const numericValue=card.dataset.value||'';
-  const displayVal=card.querySelector('.lead-value')?.textContent||'—';
-  const detail=card.querySelectorAll('.lead-detail')[1]?.textContent||'';
-  // Carry over address/notes/value so they persist across column moves
-  const extraData={address:card.dataset.address||'',notes:card.dataset.notes||'',sqft:card.dataset.sqft||''};
-  const addrNote=[extraData.address,extraData.notes].filter(Boolean).join('\n');
-  if(dbId) dbSaveJob({customer,jobLabel,value:numericValue,displayVal,detail,status:nextStatus,notes:addrNote,db_id:dbId});
-  card.remove();
-  updateJobCounts();
-  addJobCard(customer, jobLabel, numericValue, displayVal, detail, nextStatus, dbId||undefined, extraData);
+  const key=_jobMatchKey(customer);
+  const rows=(_lastJobRows||[]).filter(r=>r && r.status!=='invoiced' && _jobMatchKey(r.customer||'')===key);
+  const row=rows.find(r=>r.status!==nextStatus)||rows[0];
+  if(row){
+    await sb.update('jobs', row.id, {status:nextStatus});
+    row.status=nextStatus;
+  }
+  await loadJobs();
+  if(_jobsListActive()) renderJobsListView();
   // Keep the install-schedule record in lockstep (reverse of syncBoardCardStatus). Only an
   // EXISTING record is updated — no record is created here (the Schedule wizard owns that, since
   // a record needs dates/crew). Records have no 'invoiced' state, so that move is left to the board.
