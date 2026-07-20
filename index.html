@@ -6306,12 +6306,20 @@ async function jcRescheduleConfirm(){
   if(!newStart){showToast('Pick a new start date.');return;}
   const duration=parseInt(document.getElementById('rs-duration').value,10)||1;
 
-  // Collect distinct crew CIs that have slots for this job
-  const crewCIs=[...new Set(
-    Object.entries(SLOT_JOB_MAP)
-      .filter(([,jid])=>jid===_jcId)
-      .map(([key])=>+key.split('_')[0])
-  )];
+  // Collect distinct crew CIs that have slots for this job. A double-booked "extra" slot's
+  // jobId tag only lives in memory — loadScheduledSlots rebuilds multiSlots from the raw
+  // scheduled_slots rows on every reload and can't restore it (it isn't a persisted column),
+  // so a job that's ENTIRELY double-booked (no day where it's the primary occupant) would
+  // otherwise vanish from this lookup after any reload. Fall back to matching by customer
+  // label for multiSlots, same convention already used elsewhere in this file for stale
+  // SLOT_JOB_MAP data (see "SLOT_JOB_MAP can be stale" in CLAUDE.md).
+  const primaryCIs=Object.entries(SLOT_JOB_MAP)
+    .filter(([,jid])=>jid===_jcId)
+    .map(([key])=>+key.split('_')[0]);
+  const extraCIs=Object.entries(multiSlots)
+    .filter(([,arr])=>(arr||[]).some(x=>x.l===job.customer))
+    .map(([key])=>+key.split('_')[0]);
+  const crewCIs=[...new Set([...primaryCIs,...extraCIs])];
   if(!crewCIs.length){showToast('No schedule slots found for this job.');closeModal('reschedule');return;}
 
   const newDates=getWorkingDaysFrom(newStart,duration);
@@ -6338,12 +6346,28 @@ async function jcRescheduleConfirm(){
 }
 
 async function jcRescheduleApply(crewCIs,newDates,duration,job,newStart,force=false){
-  // 1. Remove ALL old slots belonging to this job
+  // 1. Remove ALL old slots belonging to this job — primary slots via SLOT_JOB_MAP, plus any
+  // of the job's own double-booked EXTRA slots on its old dates, matched by customer label
+  // (not jobId, which multiSlots can't reliably carry across a reload — see crewCIs above).
+  // seRemoveExtraSlotForLabel only removes entries matching this exact label, so an unrelated
+  // job double-booked on the same crew/day is left untouched.
   const oldEntries=Object.entries(SLOT_JOB_MAP).filter(([,jid])=>jid===_jcId);
   for(const[key]of oldEntries){
     const[ci,w,d]=key.split('_').map(Number);
     await seRemoveSlot(ci,w,d);
     delete SLOT_JOB_MAP[key];
+  }
+  if(job.startDate&&job.endDate){
+    const _sDow=new Date(job.startDate+'T00:00:00').getDay();
+    const _eDow=new Date(job.endDate+'T00:00:00').getDay();
+    const _wknd=(_sDow===0||_sDow===6||_eDow===0||_eDow===6);
+    const oldDates=[...new Set([...(_wknd?jcAllDays(job.startDate,job.endDate):jcWeekdays(job.startDate,job.endDate)),...(job.extraDays||[])])];
+    for(const ci of crewCIs){
+      for(const ds of oldDates){
+        const pos=seDateToPos(ds);
+        await seRemoveExtraSlotForLabel(ci,pos.w,pos.d,job.customer);
+      }
+    }
   }
   // 2. Place new slots for each crew member × each new working day. When force=true (user
   // clicked "Apply Anyway" after seeing the conflict warning), a conflicting day is added as a
