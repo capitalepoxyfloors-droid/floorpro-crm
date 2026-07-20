@@ -9362,23 +9362,25 @@ function deleteJobCard(btn){
 
 // ── Invoice workflow ──────────────────────────────────────────────────────────
 
-function markJobInvoiced(btn){
+// Reconciles against _lastJobRows instead of the DOM's dataset.dbId — same bug class as
+// advanceJobCard: a stale/blank dataset.dbId used to make this silently skip the DB write
+// entirely (dbSaveJob only ran inside `if(dbId)`) while the UI still showed the card as
+// invoiced, so the status reverted on the next reload with no indication anything failed.
+async function markJobInvoiced(btn){
   const card=btn.closest('.lead-card');
   const customer=card.dataset.customer||card.querySelector('.lead-name').textContent.trim();
-  const jobLabel=card.querySelector('.lead-detail').textContent;
-  const displayVal=card.querySelector('.lead-value')?.textContent||'—';
-  const detailEls=card.querySelectorAll('.lead-detail');
-  const detail=detailEls[1]?.textContent||'';
-  const dbId=card.dataset.dbId||null;
+  const key=_jobMatchKey(customer);
+  const rows=(_lastJobRows||[]).filter(r=>r && r.status!=='invoiced' && _jobMatchKey(r.customer||'')===key);
+  const row=rows[0];
+  if(!row){ showToast('Could not find that job to invoice — try refreshing the page.'); return; }
 
-  // Append invoice date to detail
   const today=new Date().toLocaleDateString('en-US',{month:'numeric',day:'numeric',year:'2-digit'});
-  const newDetail=(detail?detail+' · ':'')+'Invoiced '+today;
+  const newDetail=(row.detail?row.detail+' · ':'')+'Invoiced '+today;
+  await sb.update('jobs', row.id, {status:'invoiced', value:'', detail:newDetail});
+  row.status='invoiced'; row.value=''; row.detail=newDetail;
 
-  if(dbId) dbSaveJob({customer,jobLabel,value:'',displayVal,detail:newDetail,status:'invoiced',db_id:dbId});
-  card.remove();
-  updateJobCounts();
-  addInvoicedRow(customer,jobLabel,displayVal,newDetail,dbId);
+  await loadJobs();
+  if(_jobsListActive()) renderJobsListView();
   showToast('✓ '+customer+' marked as invoiced!');
 }
 
