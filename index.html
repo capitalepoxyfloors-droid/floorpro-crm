@@ -6325,17 +6325,17 @@ async function jcRescheduleConfirm(){
   }
   if(conflicts.length){
     const warnEl=document.getElementById('rs-warn');
-    warnEl.textContent=`⚠ ${conflicts.length} slot${conflicts.length!==1?'s are':' is'} already booked by another job on the new dates. Those days will be skipped.`;
+    warnEl.textContent=`⚠ ${conflicts.length} slot${conflicts.length!==1?'s are':' is'} already booked by another job on the new dates. Applying anyway will double-book those slots (both jobs stay on the schedule).`;
     warnEl.style.display='block';
     const btn=document.getElementById('rs-confirm-btn');
     btn.textContent='Apply Anyway →';
-    btn.onclick=()=>jcRescheduleApply(crewCIs,newDates,duration,job,newStart);
+    btn.onclick=()=>jcRescheduleApply(crewCIs,newDates,duration,job,newStart,true);
     return;
   }
   await jcRescheduleApply(crewCIs,newDates,duration,job,newStart);
 }
 
-async function jcRescheduleApply(crewCIs,newDates,duration,job,newStart){
+async function jcRescheduleApply(crewCIs,newDates,duration,job,newStart,force=false){
   // 1. Remove ALL old slots belonging to this job
   const oldEntries=Object.entries(SLOT_JOB_MAP).filter(([,jid])=>jid===_jcId);
   for(const[key]of oldEntries){
@@ -6343,13 +6343,22 @@ async function jcRescheduleApply(crewCIs,newDates,duration,job,newStart){
     await seRemoveSlot(ci,w,d);
     delete SLOT_JOB_MAP[key];
   }
-  // 2. Place new slots for each crew member × each new working day
-  let skipped=0;
+  // 2. Place new slots for each crew member × each new working day. When force=true (user
+  // clicked "Apply Anyway" after seeing the conflict warning), a conflicting day is added as a
+  // double-booked EXTRA slot instead of being skipped — same mechanism jcForceOverride already
+  // uses for the crew-picker's own conflict override.
+  let skipped=0, doubled=0;
   for(const ci of crewCIs){
     for(const dt of newDates){
-      const pos=seDateToPos(dt.toISOString().split('T')[0]); if(!pos){skipped++;continue;}
+      const dateStr=dt.toISOString().split('T')[0];
+      const pos=seDateToPos(dateStr); if(!pos){skipped++;continue;}
       const key=jcSlotKey(ci,pos.w,pos.d);
-      if(newSlots[ci]?.[pos.w]?.[pos.d]&&SLOT_JOB_MAP[key]&&SLOT_JOB_MAP[key]!==_jcId){skipped++;continue;}
+      if(newSlots[ci]?.[pos.w]?.[pos.d]&&SLOT_JOB_MAP[key]&&SLOT_JOB_MAP[key]!==_jcId){
+        if(!force){ skipped++; continue; }
+        await dbAddExtraSlot(ci,pos.w,pos.d,job.customer,job.jobType||'epoxy',_jcId,dateStr);
+        doubled++;
+        continue;
+      }
       await sePlaceSlot(ci,pos.w,pos.d,job.customer,job.jobType||'epoxy');
       SLOT_JOB_MAP[key]=_jcId;
     }
@@ -6364,7 +6373,9 @@ async function jcRescheduleApply(crewCIs,newDates,duration,job,newStart){
   closeModal('reschedule');
   renderSchedule();
   if(document.getElementById('page-crewview')?.classList.contains('active')) renderCrewView();
-  showToast(skipped?`Rescheduled — ${skipped} slot${skipped!==1?'s':''} skipped (conflict)`:'Job rescheduled for all crew. ✓');
+  const msg=doubled?`Rescheduled — ${doubled} slot${doubled!==1?'s':''} double-booked as requested.`
+    :(skipped?`Rescheduled — ${skipped} slot${skipped!==1?'s':''} skipped (conflict)`:'Job rescheduled for all crew. ✓');
+  showToast(msg);
 }
 
 // ── CREW MODE — lock device to Crew View only ──────────────────────────────
