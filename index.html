@@ -4314,14 +4314,21 @@ function jcRenderDayLogs(){
     const _crewFilled=log.crewPresent.some(c=>c.name);
     const _matsFilled=log.materialsUsed.some(m=>m.name||m.qty);
     const filled=!!(_crewFilled||log.task||_matsFilled);
+    // Flag a day that has real logged info but no way to compute hours from it — jcGetLogHrs/
+    // jcGetCrewMemberHrs both return 0 with nothing set here, so Job Costing silently excludes
+    // the whole day from labor cost with no indication why. Caught in the wild: real logged
+    // work days missing from costing purely because the time fields were left blank.
+    const _hasTime=log.fullDay||jcGetLogHrs(log)>0||log.crewPresent.some(c=>jcGetCrewMemberHrs(c,log)>0);
+    const missingTime=filled&&!_hasTime;
     const key=ds.replace(/-/g,'');
     const sec=document.createElement('div');
     sec.id='jcday-'+key;
-    sec.style.cssText='margin-bottom:16px;background:var(--surface2);border:1px solid '+(filled?'var(--green)44':'var(--border2)')+';border-radius:var(--radius);overflow:hidden;';
+    sec.style.cssText='margin-bottom:16px;background:var(--surface2);border:1px solid '+(missingTime?'var(--red,#e53e3e)':(filled?'var(--green)44':'var(--border2)'))+';border-radius:var(--radius);overflow:hidden;';
     sec.innerHTML=`
       <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--border2);">
         <div style="font-size:13px;font-weight:700;">Day ${idx+1} — ${jcFmtDate(ds)}</div>
         <div style="display:flex;align-items:center;gap:8px;">
+          ${missingTime?`<div class="status-pill" style="font-size:10px;background:var(--red-dim,#fff0f0);color:var(--red,#e53e3e);" title="Logged but no start/end time (or Full Day) entered — this day won't count toward labor cost in Job Costing until a time is entered.">⚠ Missing Time</div>`:''}
           <div class="status-pill ${filled?'pill-active':'pill-complete'}" style="font-size:10px;">${filled?'✓ Logged':'Not yet filled in'}</div>
           ${(idx===days.length-1||(!_scheduledSet.has(ds)&&job.extraDays.includes(ds)))&&localStorage.getItem('fpRole')!=='crew'?`<button onclick="jcRemoveLastDay('${ds}')" style="background:none;border:1px solid var(--red);color:var(--red);font-size:10px;padding:2px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;">✕ Remove Day</button>`:''}
         </div>
@@ -5523,7 +5530,15 @@ function renderJobCostingPage(){
     const dailyProfit=wDays>0&&effRev>0?Math.round(profit/wDays*100)/100:null;
     // Effective finish date = latest of end date, extra days, and any logged day
     const finishDate=[...(job.endDate?[job.endDate]:[]),...(job.extraDays||[]),...Object.keys(logs)].reduce((mx,d)=>(d>mx?d:mx),'');
-    return{job,revenue:effRev,laborCost,matCost,consCost,mileCost,commCost,totalCost,profit,margin,totalHrs:Math.round(totalHrs*10)/10,wDays,dailyProfit,finishDate,isTM:!!job.tmJob};
+    // Days with real logged info but no time entered — silently contribute $0 above.
+    const missingTimeCount=allDates.filter(ds=>{
+      const log=logs[ds]; if(!log) return false;
+      const crew=Array.isArray(log.crewPresent)?log.crewPresent:[];
+      const filled=!!(crew.some(c=>c.name)||log.task||(Array.isArray(log.materialsUsed)?log.materialsUsed:[]).some(m=>m.name||m.qty));
+      if(!filled) return false;
+      return !(log.fullDay||jcGetLogHrs(log)>0||crew.some(c=>jcGetCrewMemberHrs(c,log)>0));
+    }).length;
+    return{job,revenue:effRev,laborCost,matCost,consCost,mileCost,commCost,totalCost,profit,margin,totalHrs:Math.round(totalHrs*10)/10,wDays,dailyProfit,finishDate,isTM:!!job.tmJob,missingTimeCount};
   });
 
   // Newest-finished jobs first (was raw record order, which looked random)
@@ -5559,7 +5574,7 @@ function renderJobCostingPage(){
       <div>Job</div><div style="text-align:right;">Revenue</div><div style="text-align:right;">Labor</div><div style="text-align:right;">Materials</div><div style="text-align:right;">Profit</div><div style="text-align:right;">Margin</div><div style="text-align:right;">Profit/Day</div>
     </div>`;
 
-  rows.forEach(({job,revenue,laborCost,matCost,profit,margin,totalHrs,wDays,dailyProfit})=>{
+  rows.forEach(({job,revenue,laborCost,matCost,profit,margin,totalHrs,wDays,dailyProfit,missingTimeCount})=>{
     const profitColor=profit>=0?'var(--green)':'var(--red)';
     const statusColors={complete:'var(--green)',in_progress:'var(--accent)',scheduled:'var(--blue)',inprogress:'var(--accent)'};
     const sc=statusColors[job.status]||'var(--text3)';
@@ -5567,7 +5582,10 @@ function renderJobCostingPage(){
       <div>
         <div style="font-size:13px;font-weight:600;">${job.customer||'Unnamed'}</div>
         <div style="font-size:11px;color:var(--text3);margin-top:2px;">${job.jobTypeLabel||job.jobType||''}${totalHrs>0?' · '+totalHrs+'h logged':''}</div>
-        <div style="margin-top:3px;"><span style="font-size:10px;font-family:'DM Mono',monospace;color:${sc};background:${sc}22;padding:1px 7px;border-radius:20px;">${(job.status||'').replace('_',' ').toUpperCase()}</span></div>
+        <div style="margin-top:3px;display:flex;gap:5px;flex-wrap:wrap;">
+          <span style="font-size:10px;font-family:'DM Mono',monospace;color:${sc};background:${sc}22;padding:1px 7px;border-radius:20px;">${(job.status||'').replace('_',' ').toUpperCase()}</span>
+          ${missingTimeCount?`<span title="${missingTimeCount} day${missingTimeCount!==1?'s':''} logged but missing a time — excluded from labor cost" style="font-size:10px;font-family:'DM Mono',monospace;color:var(--red,#e53e3e);background:var(--red-dim,#fff0f0);padding:1px 7px;border-radius:20px;">⚠ ${missingTimeCount} missing time${missingTimeCount!==1?'s':''}</span>`:''}
+        </div>
       </div>
       <div style="text-align:right;font-family:'DM Mono',monospace;font-size:13px;">${revenue>0?fmt(revenue):'<span style="color:var(--text3);">—</span>'}</div>
       <div style="text-align:right;font-family:'DM Mono',monospace;font-size:13px;color:${laborCost>0?'var(--text)':'var(--text3)'};">${laborCost>0?fmt(laborCost):'—'}</div>
@@ -5831,6 +5849,18 @@ function renderJobCosting(){
   const _jcWknd=(_jcSDow===0||_jcSDow===6||_jcEDow===0||_jcEDow===6);
   const allDates=[...new Set([...(_jcWknd?jcAllDays(job.startDate,job.endDate):jcWeekdays(job.startDate,job.endDate)),...(job.extraDays||[])])].sort();
 
+  // Days with real logged info (task/crew/materials) but no way to compute hours from them —
+  // these contribute $0 labor below with no other indication why. Caught in the wild: whole
+  // days' worth of real logged work missing from costing purely because times were left blank.
+  const missingTimeDates=allDates.filter(ds=>{
+    const log=logs[ds]; if(!log) return false;
+    const crew=Array.isArray(log.crewPresent)?log.crewPresent:[];
+    const filled=!!(crew.some(c=>c.name)||log.task||(Array.isArray(log.materialsUsed)?log.materialsUsed:[]).some(m=>m.name||m.qty));
+    if(!filled) return false;
+    const hasTime=log.fullDay||jcGetLogHrs(log)>0||crew.some(c=>jcGetCrewMemberHrs(c,log)>0);
+    return !hasTime;
+  });
+
   allDates.forEach(ds=>{
     const log=logs[ds]; if(!log) return;
     const crew=Array.isArray(log.crewPresent)?log.crewPresent:[];
@@ -5925,6 +5955,16 @@ function renderJobCosting(){
   const sec=(title,color='var(--text3)')=>`<div style="font-size:10px;font-family:'DM Mono',monospace;color:${color};text-transform:uppercase;letter-spacing:.8px;margin:18px 0 8px;padding-bottom:4px;border-bottom:1px solid var(--border2);">${title}</div>`;
 
   let html='';
+
+  // Warn right here, since this is where the missing cost is actually invisible — a day with
+  // no time entered contributes $0 below with nothing else marking it as incomplete.
+  if(missingTimeDates.length){
+    const fmtD=ds=>jcFmtDate(ds);
+    html+=`<div style="background:var(--red-dim,#fff0f0);border:1px solid var(--red,#e53e3e);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:12px;">
+      <div style="font-size:13px;font-weight:600;color:var(--red,#e53e3e);">⚠ ${missingTimeDates.length} day${missingTimeDates.length!==1?'s':''} logged but missing a time — excluded from labor cost below</div>
+      <div style="font-size:11.5px;color:var(--text2);margin-top:3px;">${missingTimeDates.map(fmtD).join(', ')}. Enter a start/end time or check "Full 8-hr Day" on the Daily Log tab for ${missingTimeDates.length!==1?'these days':'this day'} to include ${missingTimeDates.length!==1?'them':'it'} here.</div>
+    </div>`;
+  }
 
   // Prevailing Wage Override
   const pwActive=!!(job.prevailingWage);
