@@ -11971,9 +11971,19 @@ function buildWeekGrid(wOff,mon,dNames){
         // doesn't make the job name appear twice (e.g. Memorial split by a Fri 12–3:30 block).
         jobBar.textContent=prevHasSameJob?'':((pjDone?'✓ ':'')+slotRaw.l);
         jobBar.title='Click to open';
-        // Flush the sides that connect to adjacent bars with the same job
+        // Flush the sides that connect to adjacent bars with the same job. When the very next
+        // day is the same job flipping to an extension day, fade into it (mirrors Pass 2's
+        // fadeToNext) instead of an abrupt opacity cut — without this, a job whose entire run
+        // coexists with PTO (so it's rendered here, not by the normal span-bar path) looked
+        // broken next to the same job's normal single-fade bar for a crew member without PTO
+        // those days.
+        const nextIsExtraSameJob=nextHasSameJob&&days[d+1]?.isExtra&&!isExtra&&!pjDone;
         let jst;
-        if(prevHasSameJob&&nextHasSameJob){
+        if(nextIsExtraSameJob){
+          const rgb=_TYP_RGBA[slotRaw.t||'epoxy']||'26,115,232';
+          const base=prevHasSameJob?`left:calc(${lp}%);width:calc(${wp}%);border-radius:0;`:`left:calc(${lp}% + 2px);width:calc(${wp}% - 1px);border-radius:11px 0 0 11px;`;
+          jst=base+`background:linear-gradient(to right,rgba(${rgb},1) 0%,rgba(${rgb},1) 70%,rgba(${rgb},.32) 100%);`;
+        }else if(prevHasSameJob&&nextHasSameJob){
           jst=`left:calc(${lp}%);width:calc(${wp}%);border-radius:0;`;
         }else if(prevHasSameJob){
           jst=`left:calc(${lp}%);width:calc(${wp}% - 4px);border-radius:0 11px 11px 0;`;
@@ -12024,8 +12034,15 @@ function buildWeekGrid(wOff,mon,dNames){
         jobBar.className=jcls.trim();
         jobBar.textContent=prevHasSameJob?'':((pjDone?'✓ ':'')+slotRaw.l);
         jobBar.title='Click to open';
+        // Fade into an adjacent same-job extension day instead of an abrupt opacity cut —
+        // mirrors the same fix in the PTO+job block above.
+        const nextIsExtraSameJob=nextHasSameJob&&days[d+1]?.isExtra&&!isExtra&&!pjDone;
         let jst;
-        if(prevHasSameJob&&nextHasSameJob){
+        if(nextIsExtraSameJob){
+          const rgb=_TYP_RGBA[slotRaw.t||'epoxy']||'26,115,232';
+          const base=prevHasSameJob?`left:calc(${lp}%);width:calc(${wp}%);border-radius:0;`:`left:calc(${lp}% + 2px);width:calc(${wp}% - 1px);border-radius:11px 0 0 11px;`;
+          jst=base+`background:linear-gradient(to right,rgba(${rgb},1) 0%,rgba(${rgb},1) 70%,rgba(${rgb},.32) 100%);`;
+        }else if(prevHasSameJob&&nextHasSameJob){
           jst=`left:calc(${lp}%);width:calc(${wp}%);border-radius:0;`;
         }else if(prevHasSameJob){
           jst=`left:calc(${lp}%);width:calc(${wp}% - 4px);border-radius:0 11px 11px 0;`;
