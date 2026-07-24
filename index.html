@@ -4441,14 +4441,23 @@ async function jcAddExtraDay(){
   job.extraDays.push(dateStr);
   // Always create/refresh the schedule slot for this extra day for every crew member on the job
   const pos=cvDateToSlot(new Date(dateStr+'T00:00:00'));
+  let doubled=0;
   if(pos){
     const{w,d}=pos;
     const crewNames=(job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean);
     for(const name of crewNames){
       const ci=CREW.findIndex(c=>c.full===name); if(ci===-1) continue;
       const key=jcSlotKey(ci,w,d);
-      // Only skip if a DIFFERENT job owns this slot
-      if(newSlots[ci]?.[w]?.[d]&&SLOT_JOB_MAP[key]&&SLOT_JOB_MAP[key]!==job.id) continue;
+      // A different job already owns this slot — double-book it instead of silently dropping
+      // the day. Previously this just `continue`d, so the day was added to the log (and the
+      // toast said so) but never actually showed up on the calendar, with no indication anything
+      // had gone wrong (caught in the wild: Linn Community Christian Church's added extra days
+      // never appeared because Seth already had another job on those days).
+      if(newSlots[ci]?.[w]?.[d]&&SLOT_JOB_MAP[key]&&SLOT_JOB_MAP[key]!==job.id){
+        await dbAddExtraSlot(ci,w,d,job.customer,job.jobType||'epoxy',job.id,dateStr);
+        doubled++;
+        continue;
+      }
       await sePlaceSlot(ci,w,d,job.customer,job.jobType||'epoxy');
       SLOT_JOB_MAP[key]=job.id;
     }
@@ -4463,7 +4472,7 @@ async function jcAddExtraDay(){
   const next=new Date(dateStr+'T00:00:00');
   next.setDate(next.getDate()+1);
   document.getElementById('jc-extra-date').value=next.toISOString().split('T')[0];
-  showToast('Day added to the log.');
+  showToast(doubled?'Day added — double-booked on the calendar (another job already has that day).':'Day added to the log.');
 }
 
 async function jcRemoveLastDay(ds){
