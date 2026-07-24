@@ -1933,7 +1933,7 @@ const sb = {
     return res.ok;
   },
   async deleteWhere(table,filters){
-    const params=Object.entries(filters).map(([k,v])=>`${k}=eq.${v}`).join('&');
+    const params=Object.entries(filters).map(([k,v])=>`${k}=eq.${encodeURIComponent(v)}`).join('&');
     const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`,{method:'DELETE',headers:this.headers});
     return res.ok;
   },
@@ -3488,21 +3488,25 @@ async function seRemoveExtraSlotForLabel(ci,w,d,label){
 }
 
 async function seRemoveSlot(ci, w, d){
+  // Only removes the PRIMARY slot at this cell — deliberately leaves multiSlots (double-booked
+  // extras) untouched. Every call site only ever intends to remove/move the ONE job it already
+  // resolved at this cell; wiping every extra slot here too meant editing, moving, or deleting a
+  // job on a double- or triple-booked day silently deleted an UNRELATED co-booked job's slot as
+  // collateral damage (its job_record was never touched, so it just vanished off the calendar
+  // with no trace — same failure mode as the "extra day not displaying" gotcha, different cause).
+  // A caller that actually wants a specific OTHER job's extra slot gone calls
+  // seRemoveExtraSlotForLabel for it directly (see jcCleanOrphanedSlots, jcToggleCrew).
   const s=newSlots[ci]?.[w]?.[d];
   if(s?.db_id){
     await sb.delete('scheduled_slots', s.db_id);
+  } else if(s?.l){
+    // No db_id cached in memory (rare) — fall back to a filtered delete, but scope it by label
+    // too so a double/triple-booked cell doesn't lose an unrelated job's row at the DB level.
+    await sb.deleteWhere('scheduled_slots',{crew_idx:ci,week_offset:w,day_idx:d,label:s.l});
   } else {
     await sb.deleteWhere('scheduled_slots',{crew_idx:ci,week_offset:w,day_idx:d});
   }
   if(newSlots[ci]?.[w]) delete newSlots[ci][w][d];
-  // Also remove any extra (double-booked) slots for this crew/day
-  const k=_msKey(ci,w,d);
-  if(multiSlots[k]){
-    for(const ex of multiSlots[k]){
-      if(ex.db_id) await sb.delete('scheduled_slots',ex.db_id);
-    }
-    delete multiSlots[k];
-  }
 }
 
 async function sePlaceSlot(ci, w, d, label, type){
@@ -6313,11 +6317,22 @@ async function saveJobCard(){
 
 async function deleteJobRecord(){
   if(!confirm('Delete this job and remove it from the schedule?')) return;
+  const job=getJobRecord(_jcId);
   const delKeys=Object.entries(SLOT_JOB_MAP).filter(([,jid])=>jid===_jcId).map(([k])=>k);
   for(const key of delKeys){
     const[ci,w,d]=key.split('_').map(Number);
     await seRemoveSlot(ci,w,d);
     delete SLOT_JOB_MAP[key];
+  }
+  // Also remove any of THIS job's OWN double-booked (extra) slots. A job that's ENTIRELY
+  // double-booked (no day where it's the primary occupant for any crew member) has no entry in
+  // SLOT_JOB_MAP at all — see the primaryCIs/extraCIs comment in jcRescheduleApply — so the loop
+  // above would otherwise leave its extra-layer bookings stranded on the schedule forever.
+  if(job){
+    for(const key of Object.keys(multiSlots)){
+      const[ci,w,d]=key.split('_').map(Number);
+      await seRemoveExtraSlotForLabel(ci,w,d,job.customer);
+    }
   }
   JOB_RECORDS=JOB_RECORDS.filter(j=>j.id!==_jcId);
   await saveJobRecords(); await saveSlotJobMap();
