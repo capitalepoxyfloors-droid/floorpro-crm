@@ -2419,7 +2419,13 @@ function _jobMatchKey(name){
 async function autoAdvanceJobsByDate(){
   // Automatically move jobs based on today's date:
   //   Scheduled  → In Progress  when start date has arrived
-  //   In Progress → Complete    when end date has passed
+  // Deliberately does NOT auto-advance In Progress → Complete. A job's planned end date
+  // passing doesn't mean the crew actually finished — jobs commonly run long (weather, scope,
+  // crew reassigned) — so silently marking one "complete" purely because the date passed marked
+  // real, still-in-progress jobs done with no human check-off (caught in the wild: State Tech
+  // and Columbia Environmental Research Center (CERC) both auto-completed while crews were
+  // still logging work on them). Completion must come from an explicit action — the job card
+  // status dropdown (jcSetStatus) or the board's "→" advance button (advanceJobCard).
   const today = new Date(); today.setHours(0,0,0,0);
   let changed = false;
   let advanced = [];
@@ -2428,8 +2434,6 @@ async function autoAdvanceJobsByDate(){
   for(const job of JOB_RECORDS){
     if(!job.startDate) continue;
     const start = new Date(job.startDate+'T00:00:00');
-    const effectiveEndStr = [...(job.extraDays||[]), job.endDate||''].filter(Boolean).sort().pop();
-    const end   = effectiveEndStr ? new Date(effectiveEndStr+'T00:00:00') : start;
 
     let newBoardStatus = null;
     let newRecordStatus = null;
@@ -2437,10 +2441,6 @@ async function autoAdvanceJobsByDate(){
     if(job.status === 'scheduled' && start <= today){
       newBoardStatus  = 'inprogress';
       newRecordStatus = 'in_progress';
-    }
-    if(job.status === 'in_progress' && end < today){
-      newBoardStatus  = 'complete';
-      newRecordStatus = 'complete';
     }
     if(!newBoardStatus) continue;
 
