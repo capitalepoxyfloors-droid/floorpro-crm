@@ -6283,6 +6283,30 @@ async function saveJobCard(){
       const slot=newSlots[ci]?.[w]?.[d];
       if(slot){slot.l=job.customer;if(slot.db_id)sb.update('scheduled_slots',slot.db_id,{label:job.customer});}
     });
+    // Double-booked EXTRA slots aren't tracked in SLOT_JOB_MAP (only the primary slot on a
+    // cell is), so the loop above never sees them and used to leave a stale "<oldName>" slot
+    // behind — the app would then treat that dangling slot as belonging to whichever job IS
+    // the primary for that cell (confirmed: renaming "George" while double-booked with St.
+    // Joseph School left an orphaned "George" slot that opened St. Joseph's job card).
+    // Relabel this job's own extras directly, matched by old label + date + crew (not jobId,
+    // which multiSlots entries usually don't carry after a reload).
+    const _jcCrewIdxs=(job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean)
+      .map(n=>CREW.findIndex(c=>c.full===n)).filter(ix=>ix!==-1);
+    const _jcOwnDates=new Set([
+      ...((job.startDate&&job.endDate)?jcAllDays(job.startDate,job.endDate):[]),
+      ...(job.extraDays||[])
+    ]);
+    _jcCrewIdxs.forEach(ci=>{
+      Object.keys(multiSlots).forEach(k=>{
+        if(!k.startsWith(ci+'_')) return;
+        (multiSlots[k]||[]).forEach(entry=>{
+          if(entry.l!==oldName) return;
+          if(!entry.dt||!_jcOwnDates.has(entry.dt)) return;
+          entry.l=job.customer;
+          if(entry.db_id) sb.update('scheduled_slots',entry.db_id,{label:job.customer});
+        });
+      });
+    });
   }
   document.getElementById('jc-name').textContent=job.customer||'Unnamed Job';
   await saveJobRecords();
@@ -12698,16 +12722,57 @@ async function jcDeletePhoto(ds,photoId){
   showToast('Photo removed.');
 }
 
+// ── PHOTO LIGHTBOX — full-screen viewer with prev/next, shared by the Daily Log grid and the
+// Photos page. Replaces the old "click a thumb → opens a raw image in a new Chrome tab" behavior.
+let _lbPhotos=[], _lbIdx=0;
+function _lbEnsure(){
+  if(document.getElementById('photo-lightbox')) return;
+  const el=document.createElement('div');
+  el.id='photo-lightbox';
+  el.style.cssText='display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.92);align-items:center;justify-content:center;';
+  el.innerHTML=`
+    <button onclick="closeLightbox()" title="Close" style="position:absolute;top:16px;right:20px;background:rgba(255,255,255,.1);border:none;color:#fff;font-size:22px;cursor:pointer;line-height:1;width:40px;height:40px;border-radius:50%;">✕</button>
+    <div id="lb-counter" style="position:absolute;top:26px;left:24px;color:#fff;font-size:13px;font-family:'DM Mono',monospace;opacity:.75;"></div>
+    <button id="lb-prev" onclick="lbNav(-1)" title="Previous" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);background:rgba(255,255,255,.12);border:none;color:#fff;font-size:26px;width:48px;height:48px;border-radius:50%;cursor:pointer;">‹</button>
+    <img id="lb-img" style="max-width:88vw;max-height:84vh;object-fit:contain;border-radius:6px;"/>
+    <button id="lb-next" onclick="lbNav(1)" title="Next" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:rgba(255,255,255,.12);border:none;color:#fff;font-size:26px;width:48px;height:48px;border-radius:50%;cursor:pointer;">›</button>`;
+  el.onclick=(e)=>{ if(e.target===el) closeLightbox(); };
+  document.body.appendChild(el);
+  document.addEventListener('keydown',_lbKeyHandler);
+}
+function _lbKeyHandler(e){
+  const el=document.getElementById('photo-lightbox');
+  if(!el||el.style.display!=='flex') return;
+  if(e.key==='Escape') closeLightbox();
+  else if(e.key==='ArrowLeft') lbNav(-1);
+  else if(e.key==='ArrowRight') lbNav(1);
+}
+function openLightbox(urls,startIdx){
+  if(!urls||!urls.length) return;
+  _lbEnsure();
+  _lbPhotos=urls; _lbIdx=startIdx||0;
+  _lbRender();
+  document.getElementById('photo-lightbox').style.display='flex';
+}
+function closeLightbox(){ const el=document.getElementById('photo-lightbox'); if(el) el.style.display='none'; }
+function lbNav(dir){ if(!_lbPhotos.length) return; _lbIdx=(_lbIdx+dir+_lbPhotos.length)%_lbPhotos.length; _lbRender(); }
+function _lbRender(){
+  document.getElementById('lb-img').src=_lbPhotos[_lbIdx];
+  document.getElementById('lb-counter').textContent=(_lbIdx+1)+' / '+_lbPhotos.length;
+  const multi=_lbPhotos.length>1;
+  document.getElementById('lb-prev').style.display=multi?'':'none';
+  document.getElementById('lb-next').style.display=multi?'':'none';
+}
+
 // Thumbnail grid + add button for one Daily Log day's photos
 function jcDayPhotosHtml(ds){
   const job=getJobRecord(_jcId); if(!job) return '';
   const key=ds.replace(/-/g,'');
   const photos=((JOB_PHOTOS[job.id]||{})[ds]||[]).slice().sort((a,b)=>(a.ts||'').localeCompare(b.ts||''));
-  const thumbs=photos.map(p=>`
+  const photoUrls=JSON.stringify(photos.map(p=>p.url));
+  const thumbs=photos.map((p,idx)=>`
     <div style="position:relative;width:74px;height:74px;flex-shrink:0;">
-      <a href="${p.url}" target="_blank" rel="noopener">
-        <img src="${p.url}" loading="lazy" style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;"/>
-      </a>
+      <img src="${p.url}" loading="lazy" onclick='openLightbox(${photoUrls},${idx})' style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
       <button onclick="jcDeletePhoto('${ds}','${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
     </div>`).join('');
   return `
@@ -12741,11 +12806,10 @@ function renderPhotosPage(){
   el.innerHTML=groups.map(g=>{
     const name=g.job?(g.job.customer||'Unnamed Job'):'Deleted Job';
     const meta=g.job&&g.job.jobTypeLabel?g.job.jobTypeLabel+' · ':'';
-    const thumbs=g.photos.map(p=>`
+    const groupUrls=JSON.stringify(g.photos.map(p=>p.url));
+    const thumbs=g.photos.map((p,idx)=>`
       <div style="position:relative;width:104px;height:104px;flex-shrink:0;">
-        <a href="${p.url}" target="_blank" rel="noopener">
-          <img src="${p.url}" loading="lazy" style="width:104px;height:104px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;"/>
-        </a>
+        <img src="${p.url}" loading="lazy" onclick='openLightbox(${groupUrls},${idx})' style="width:104px;height:104px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
         <div style="position:absolute;bottom:2px;left:2px;right:2px;background:rgba(0,0,0,.55);color:#fff;font-size:9px;border-radius:4px;padding:1px 4px;text-align:center;pointer-events:none;">${jcFmtDate(p.ds)}</div>
         <button onclick="phDeletePhoto('${g.jobId}','${p.ds}','${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
       </div>`).join('');
@@ -12804,11 +12868,10 @@ function jcRenderScopePhotos(){
   const isCrew=localStorage.getItem('fpRole')==='crew';
   if(photos.length){
     group.style.display='';
-    grid.innerHTML=photos.map(p=>`
+    const scopeUrls=JSON.stringify(photos.map(p=>p.url));
+    grid.innerHTML=photos.map((p,idx)=>`
       <div style="position:relative;width:74px;height:74px;flex-shrink:0;">
-        <a href="${p.url}" target="_blank" rel="noopener">
-          <img src="${p.url}" loading="lazy" style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;"/>
-        </a>
+        <img src="${p.url}" loading="lazy" onclick='openLightbox(${scopeUrls},${idx})' style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
         ${isCrew?'':`<button onclick="jcDeleteScopePhoto('${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>`}
       </div>`).join('');
     return;
@@ -13041,11 +13104,10 @@ function renderSvScopePhotos(){
   if(_svScopeIdx===null||!SALES_VISITS[_svScopeIdx]){ el.innerHTML=''; return; }
   const visitId=SALES_VISITS[_svScopeIdx].id;
   const photos=(SALES_SCOPE_PHOTOS[visitId]||[]).slice().sort((a,b)=>(a.ts||'').localeCompare(b.ts||''));
-  const thumbs=photos.map(p=>`
+  const scopeVisitUrls=JSON.stringify(photos.map(p=>p.url));
+  const thumbs=photos.map((p,idx)=>`
     <div style="position:relative;width:84px;height:84px;flex-shrink:0;">
-      <a href="${p.url}" target="_blank" rel="noopener">
-        <img src="${p.url}" loading="lazy" style="width:84px;height:84px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;"/>
-      </a>
+      <img src="${p.url}" loading="lazy" onclick='openLightbox(${scopeVisitUrls},${idx})' style="width:84px;height:84px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
       <button onclick="svScopeDeletePhoto('${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
     </div>`).join('');
   el.innerHTML=`
