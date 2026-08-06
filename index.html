@@ -4538,50 +4538,26 @@ async function jcRemoveLastDay(ds){
   showToast('✓ '+jcFmtDate(ds)+' removed from job.');
 }
 
-function jcMarkComplete(){
+// Was matching the Jobs-board card by raw `.lead-name` textContent, which includes the Wave #
+// badge — a job whose board customer field carries its own baked-in "#NNN" (e.g. "Robbie
+// Edelman #630") never matched job.customer ("Robbie Edelman") exactly, so this silently fell
+// through to the "no board card" branch and INSERTED a brand-new duplicate row instead of
+// updating the real one — the real row was left stranded at its old status forever (confirmed:
+// Robbie Edelman stuck "In Progress" on the board while the schedule/job card said complete/
+// invoiced). Now delegates to `syncBoardCardStatus`, the same data-driven (_lastJobRows +
+// _jobMatchKey, never the DOM) helper `jcSetStatus` already uses safely for every other status
+// change — see the RULE in project memory: reconcile board↔record against DATA, never the DOM.
+async function jcMarkComplete(){
   const job=getJobRecord(_jcId); if(!job) return;
   if(!confirm('Mark "'+job.customer+'" as complete?\n\nThis will move it to the Completed column on the Jobs page.')) return;
 
-  // Update status in JOB_RECORDS
   job.status='complete';
-  saveJobRecords();
+  await saveJobRecords();
 
-  // Sync the status dropdown in the job card header
   const ss=document.getElementById('jc-status-sel');
   if(ss){ss.value='complete'; jcStyleStatus('complete');}
 
-  // Try to find an existing Jobs board card for this job
-  const board=document.getElementById('jobs-board');
-  let matched=false;
-  if(board){
-    const match=[...board.querySelectorAll('.lead-card')].find(c=>{
-      if(c.dataset.status==='complete') return false;
-      const n=c.querySelector('.lead-name');
-      return n&&n.textContent.trim()===job.customer.trim();
-    });
-    if(match){
-      matched=true;
-      const dbId=match.dataset.dbId||null;
-      const jobLabel=match.querySelector('.lead-detail')?.textContent||'';
-      const dispVal=match.querySelector('.lead-value')?.textContent||'—';
-      const detail=match.querySelectorAll('.lead-detail')[1]?.textContent||'';
-      if(dbId) dbSaveJob({customer:job.customer,jobLabel,value:'',displayVal:dispVal,detail,status:'complete',db_id:dbId});
-      match.remove(); updateJobCounts();
-      addJobCard(job.customer,jobLabel,'',dispVal,detail,'complete',dbId||undefined);
-    }
-  }
-
-  // Job had no board card (was scheduled via Smart Scheduler, not through the won pipeline)
-  // Create a fresh completed card from the job record data.
-  if(!matched){
-    const jobLabel=job.jobTypeLabel||job.jobType||'';
-    const _dv2=Math.round((parseFloat(job.value)||0)*100)/100;
-    const dispVal=job.value?'$'+_dv2.toLocaleString('en-US',{minimumFractionDigits:_dv2%1?2:0,maximumFractionDigits:2}):'—';
-    const parts=[];
-    if(job.crewNames) parts.push(job.crewNames);
-    if(job.startDate) parts.push(job.endDate&&job.endDate!==job.startDate?jcFmtDate(job.startDate)+' – '+jcFmtDate(job.endDate):jcFmtDate(job.startDate));
-    addJobCard(job.customer,jobLabel,job.value||'',dispVal,parts.join(' · '),'complete');
-  }
+  await syncBoardCardStatus(job.customer, 'complete');
 
   showToast('✓ '+job.customer+' marked complete!');
 }
