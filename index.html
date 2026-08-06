@@ -12653,6 +12653,36 @@ function _resizePhotoFile(file, maxDim=1600, quality=0.82){
   });
 }
 
+// Uploads a photo's ORIGINAL file byte-for-byte (never shrunk — always safe to send to a
+// customer at full quality) plus a small companion thumbnail for fast grid rendering. Grid
+// thumbnails should read `thumbUrl`; the lightbox and anything customer-facing must keep using
+// `url` (the untouched original). Thumbnail upload failing is non-fatal — falls back to the
+// full-size url so a photo never fails to save just because its thumbnail didn't generate.
+async function _uploadPhotoWithThumb(file, dir, safe, ts){
+  const path=`${dir}/${ts}_${safe}`;
+  const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
+    method:'POST',
+    headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
+    body:file
+  });
+  if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
+  const url=_vehDocPublicUrl(path);
+  let thumbUrl=url, thumbPath=null;
+  try{
+    const thumbFile=await _resizePhotoFile(file);
+    if(thumbFile!==file){
+      const candidatePath=`${dir}/thumb_${ts}_${safe}`;
+      const tres=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(candidatePath)}`,{
+        method:'POST',
+        headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':thumbFile.type||'application/octet-stream', 'x-upsert':'true' },
+        body:thumbFile
+      });
+      if(tres.ok){ thumbUrl=_vehDocPublicUrl(candidatePath); thumbPath=candidatePath; }
+    }
+  }catch(e){ console.error('thumbnail upload failed (non-fatal, using full-size url):',e); }
+  return {path, url, thumbPath, thumbUrl, size:file.size};
+}
+
 async function jcUploadPhotos(ds){
   const key=ds.replace(/-/g,'');
   const fileInput=document.getElementById('jcphoto-file-'+key);
@@ -12670,21 +12700,14 @@ async function jcUploadPhotoFiles(ds,files){
   let ok=0,fail=0;
   for(const file of files){
     if(file.size>25*1024*1024){ showToast(`"${file.name}" is over 25 MB — skipped.`); fail++; continue; }
-    const upFile=await _resizePhotoFile(file);
     const safe=(file.name||'photo').replace(/[^\w.\-]+/g,'_');
-    const path=`jobs/${job.id}/${ds}/${Date.now()}_${safe}`;
     try{
-      const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
-        method:'POST',
-        headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':upFile.type||'application/octet-stream', 'x-upsert':'true' },
-        body:upFile
-      });
-      if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
+      const {path,url,thumbPath,thumbUrl,size}=await _uploadPhotoWithThumb(file, `jobs/${job.id}/${ds}`, safe, Date.now());
       if(!JOB_PHOTOS[job.id]) JOB_PHOTOS[job.id]={};
       if(!JOB_PHOTOS[job.id][ds]) JOB_PHOTOS[job.id][ds]=[];
       JOB_PHOTOS[job.id][ds].push({
         id:(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)),
-        name:file.name, path, url:_vehDocPublicUrl(path), size:upFile.size, author, role, ts:new Date().toISOString()
+        name:file.name, path, url, thumbPath, thumbUrl, size, author, role, ts:new Date().toISOString()
       });
       ok++;
     }catch(e){ console.error('job photo upload failed:',e); fail++; }
@@ -12779,7 +12802,7 @@ function jcDayPhotosHtml(ds){
   const photoUrls=JSON.stringify(photos.map(p=>p.url));
   const thumbs=photos.map((p,idx)=>`
     <div style="position:relative;width:74px;height:74px;flex-shrink:0;">
-      <img src="${p.url}" loading="lazy" onclick='openLightbox(${photoUrls},${idx})' style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
+      <img src="${p.thumbUrl||p.url}" loading="lazy" onclick='openLightbox(${photoUrls},${idx})' style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
       <button onclick="jcDeletePhoto('${ds}','${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
     </div>`).join('');
   return `
@@ -12816,7 +12839,7 @@ function renderPhotosPage(){
     const groupUrls=JSON.stringify(g.photos.map(p=>p.url));
     const thumbs=g.photos.map((p,idx)=>`
       <div style="position:relative;width:104px;height:104px;flex-shrink:0;">
-        <img src="${p.url}" loading="lazy" onclick='openLightbox(${groupUrls},${idx})' style="width:104px;height:104px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
+        <img src="${p.thumbUrl||p.url}" loading="lazy" onclick='openLightbox(${groupUrls},${idx})' style="width:104px;height:104px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
         <div style="position:absolute;bottom:2px;left:2px;right:2px;background:rgba(0,0,0,.55);color:#fff;font-size:9px;border-radius:4px;padding:1px 4px;text-align:center;pointer-events:none;">${jcFmtDate(p.ds)}</div>
         <button onclick="phDeletePhoto('${g.jobId}','${p.ds}','${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
       </div>`).join('');
@@ -12845,7 +12868,8 @@ async function _transferScopePhotosToJob(visitId,jobId){
   for(let i=0;i<photos.length;i++){
     const p=photos[i];
     const safe=(p.name||'photo').replace(/[^\w.\-]+/g,'_');
-    const destPath=`jobs/${jobId}/scope/${Date.now()}_${i}_${safe}`;
+    const ts=Date.now();
+    const destPath=`jobs/${jobId}/scope/${ts}_${i}_${safe}`;
     try{
       const res=await fetch(`${SUPABASE_URL}/storage/v1/object/copy`,{
         method:'POST',
@@ -12853,9 +12877,23 @@ async function _transferScopePhotosToJob(visitId,jobId){
         body:JSON.stringify({bucketId:VEH_DOCS_BUCKET, sourceKey:p.path, destinationKey:destPath})
       });
       if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
+      // Carry the thumbnail along too, if the source photo has one — otherwise the job's copy
+      // falls back to full-size (still correct, just no speed win for this one photo).
+      let destThumbUrl=_vehDocPublicUrl(destPath);
+      if(p.thumbPath){
+        const destThumbPath=`jobs/${jobId}/scope/thumb_${ts}_${i}_${safe}`;
+        try{
+          const tres=await fetch(`${SUPABASE_URL}/storage/v1/object/copy`,{
+            method:'POST',
+            headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':'application/json' },
+            body:JSON.stringify({bucketId:VEH_DOCS_BUCKET, sourceKey:p.thumbPath, destinationKey:destThumbPath})
+          });
+          if(tres.ok) destThumbUrl=_vehDocPublicUrl(destThumbPath);
+        }catch(e){ console.error('scope thumbnail transfer failed (non-fatal):',e); }
+      }
       job.scopePhotos.push({
         id:(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)),
-        name:p.name, path:destPath, url:_vehDocPublicUrl(destPath), size:p.size, ts:new Date().toISOString()
+        name:p.name, path:destPath, url:_vehDocPublicUrl(destPath), thumbUrl:destThumbUrl, size:p.size, ts:new Date().toISOString()
       });
       ok++;
     }catch(e){ console.error('scope photo transfer failed:',e); }
@@ -12878,7 +12916,7 @@ function jcRenderScopePhotos(){
     const scopeUrls=JSON.stringify(photos.map(p=>p.url));
     grid.innerHTML=photos.map((p,idx)=>`
       <div style="position:relative;width:74px;height:74px;flex-shrink:0;">
-        <img src="${p.url}" loading="lazy" onclick='openLightbox(${scopeUrls},${idx})' style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
+        <img src="${p.thumbUrl||p.url}" loading="lazy" onclick='openLightbox(${scopeUrls},${idx})' style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
         ${isCrew?'':`<button onclick="jcDeleteScopePhoto('${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>`}
       </div>`).join('');
     return;
@@ -13042,20 +13080,13 @@ async function svScopeUploadPhotoFiles(files){
   let ok=0,fail=0;
   for(const file of files){
     if(file.size>25*1024*1024){ showToast(`"${file.name}" is over 25 MB — skipped.`); fail++; continue; }
-    const upFile=await _resizePhotoFile(file);
     const safe=(file.name||'photo').replace(/[^\w.\-]+/g,'_');
-    const path=`salescope/${visitId}/${Date.now()}_${safe}`;
     try{
-      const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
-        method:'POST',
-        headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':upFile.type||'application/octet-stream', 'x-upsert':'true' },
-        body:upFile
-      });
-      if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
+      const {path,url,thumbPath,thumbUrl,size}=await _uploadPhotoWithThumb(file, `salescope/${visitId}`, safe, Date.now());
       if(!SALES_SCOPE_PHOTOS[visitId]) SALES_SCOPE_PHOTOS[visitId]=[];
       SALES_SCOPE_PHOTOS[visitId].push({
         id:(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)),
-        name:file.name, path, url:_vehDocPublicUrl(path), size:upFile.size, author, role, ts:new Date().toISOString()
+        name:file.name, path, url, thumbPath, thumbUrl, size, author, role, ts:new Date().toISOString()
       });
       ok++;
     }catch(e){ console.error('scope photo upload failed:',e); fail++; }
@@ -13115,7 +13146,7 @@ function renderSvScopePhotos(){
   const scopeVisitUrls=JSON.stringify(photos.map(p=>p.url));
   const thumbs=photos.map((p,idx)=>`
     <div style="position:relative;width:84px;height:84px;flex-shrink:0;">
-      <img src="${p.url}" loading="lazy" onclick='openLightbox(${scopeVisitUrls},${idx})' style="width:84px;height:84px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
+      <img src="${p.thumbUrl||p.url}" loading="lazy" onclick='openLightbox(${scopeVisitUrls},${idx})' style="width:84px;height:84px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
       <button onclick="svScopeDeletePhoto('${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
     </div>`).join('');
   el.innerHTML=`
