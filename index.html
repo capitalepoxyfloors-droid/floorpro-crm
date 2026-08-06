@@ -12623,6 +12623,36 @@ async function loadJobPhotos(){
 }
 async function saveJobPhotos(){ JOB_PHOTOS = await _saveKVMerged('job_photos', JOB_PHOTOS); }
 
+// Downscale a photo client-side before upload — phone camera photos routinely run 3-8MB at
+// full resolution, and every one of them gets loaded in full just to render a 104px thumbnail
+// on the Photos page. With enough jobs/photos that made the page "take forever to load" (dozens
+// of full-res multi-MB images fetched at once). Resizes to a reasonable on-screen max dimension
+// as a JPEG; always resolves — falls back to the original file untouched on any failure (e.g. a
+// format `<img>` can't decode) so a resize problem can never block an upload that used to work.
+function _resizePhotoFile(file, maxDim=1600, quality=0.82){
+  return new Promise((resolve)=>{
+    if(!/^image\//.test(file.type) || /svg/i.test(file.type)){ resolve(file); return; }
+    const img=new Image();
+    const url=URL.createObjectURL(file);
+    img.onload=()=>{
+      URL.revokeObjectURL(url);
+      let w=img.naturalWidth, h=img.naturalHeight;
+      if(!w||!h||(w<=maxDim && h<=maxDim)){ resolve(file); return; } // already small enough
+      const scale=maxDim/Math.max(w,h);
+      w=Math.round(w*scale); h=Math.round(h*scale);
+      const canvas=document.createElement('canvas');
+      canvas.width=w; canvas.height=h;
+      const ctx=canvas.getContext('2d');
+      ctx.drawImage(img,0,0,w,h);
+      canvas.toBlob(blob=>{
+        resolve(blob ? new File([blob], file.name, {type:'image/jpeg'}) : file);
+      }, 'image/jpeg', quality);
+    };
+    img.onerror=()=>{ URL.revokeObjectURL(url); resolve(file); };
+    img.src=url;
+  });
+}
+
 async function jcUploadPhotos(ds){
   const key=ds.replace(/-/g,'');
   const fileInput=document.getElementById('jcphoto-file-'+key);
@@ -12640,20 +12670,21 @@ async function jcUploadPhotoFiles(ds,files){
   let ok=0,fail=0;
   for(const file of files){
     if(file.size>25*1024*1024){ showToast(`"${file.name}" is over 25 MB — skipped.`); fail++; continue; }
+    const upFile=await _resizePhotoFile(file);
     const safe=(file.name||'photo').replace(/[^\w.\-]+/g,'_');
     const path=`jobs/${job.id}/${ds}/${Date.now()}_${safe}`;
     try{
       const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
         method:'POST',
-        headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
-        body:file
+        headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':upFile.type||'application/octet-stream', 'x-upsert':'true' },
+        body:upFile
       });
       if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
       if(!JOB_PHOTOS[job.id]) JOB_PHOTOS[job.id]={};
       if(!JOB_PHOTOS[job.id][ds]) JOB_PHOTOS[job.id][ds]=[];
       JOB_PHOTOS[job.id][ds].push({
         id:(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)),
-        name:file.name, path, url:_vehDocPublicUrl(path), size:file.size, author, role, ts:new Date().toISOString()
+        name:file.name, path, url:_vehDocPublicUrl(path), size:upFile.size, author, role, ts:new Date().toISOString()
       });
       ok++;
     }catch(e){ console.error('job photo upload failed:',e); fail++; }
@@ -13011,19 +13042,20 @@ async function svScopeUploadPhotoFiles(files){
   let ok=0,fail=0;
   for(const file of files){
     if(file.size>25*1024*1024){ showToast(`"${file.name}" is over 25 MB — skipped.`); fail++; continue; }
+    const upFile=await _resizePhotoFile(file);
     const safe=(file.name||'photo').replace(/[^\w.\-]+/g,'_');
     const path=`salescope/${visitId}/${Date.now()}_${safe}`;
     try{
       const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
         method:'POST',
-        headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
-        body:file
+        headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':upFile.type||'application/octet-stream', 'x-upsert':'true' },
+        body:upFile
       });
       if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
       if(!SALES_SCOPE_PHOTOS[visitId]) SALES_SCOPE_PHOTOS[visitId]=[];
       SALES_SCOPE_PHOTOS[visitId].push({
         id:(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)),
-        name:file.name, path, url:_vehDocPublicUrl(path), size:file.size, author, role, ts:new Date().toISOString()
+        name:file.name, path, url:_vehDocPublicUrl(path), size:upFile.size, author, role, ts:new Date().toISOString()
       });
       ok++;
     }catch(e){ console.error('scope photo upload failed:',e); fail++; }
