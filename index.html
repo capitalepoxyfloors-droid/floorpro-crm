@@ -3765,6 +3765,8 @@ function _kvSnapshotBaselines(){
   _kvBaselines['custom_job_types']=_jrClone(CUSTOM_JOB_TYPES);
   _kvBaselines['job_systems']=_jrClone(JOB_SYSTEMS);
   _kvBaselines['overhead']=_jrClone(OVERHEAD);
+  _kvBaselines['job_photos']=_jrClone(JOB_PHOTOS);
+  _kvBaselines['sales_scope_photos']=_jrClone(SALES_SCOPE_PHOTOS);
 }
 async function loadSlotJobMap(){ const v=await sb.getKV('slot_job_map'); if(v){try{SLOT_JOB_MAP=JSON.parse(v)||{};}catch(e){console.error('loadSlotJobMap parse error – slot_job_map may be corrupt:',e);}} }
 async function saveSlotJobMap(){ SLOT_JOB_MAP = await _saveKVMerged('slot_job_map', SLOT_JOB_MAP); }
