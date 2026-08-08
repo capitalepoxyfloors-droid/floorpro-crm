@@ -12595,15 +12595,23 @@ function _photoMimeType(f){
 // of full-res multi-MB images fetched at once). Resizes to a reasonable on-screen max dimension
 // as a JPEG; always resolves — falls back to the original file untouched on any failure (e.g. a
 // format `<img>` can't decode) so a resize problem can never block an upload that used to work.
+// Decoding a large photo into an <img>/<canvas> can silently never call EITHER onload or
+// onerror on some devices (seen on a lower-spec/rugged Android phone trying to decode a big
+// image) — that left this Promise hanging forever with no timeout, which fully bypasses the
+// upload-side timeouts below since it happens before any network call for the thumbnail. A
+// stuck resize here looked identical to a stuck upload: "Uploading..." and then nothing, ever.
 function _resizePhotoFile(file, maxDim=1600, quality=0.82){
   return new Promise((resolve)=>{
     if(!/^image\//.test(file.type) || /svg/i.test(file.type)){ resolve(file); return; }
+    let settled=false;
+    const finish=(result)=>{ if(settled) return; settled=true; clearTimeout(timer); resolve(result); };
+    const timer=setTimeout(()=>{ URL.revokeObjectURL(url); finish(file); },10000);
     const img=new Image();
     const url=URL.createObjectURL(file);
     img.onload=()=>{
       URL.revokeObjectURL(url);
       let w=img.naturalWidth, h=img.naturalHeight;
-      if(!w||!h||(w<=maxDim && h<=maxDim)){ resolve(file); return; } // already small enough
+      if(!w||!h||(w<=maxDim && h<=maxDim)){ finish(file); return; } // already small enough
       const scale=maxDim/Math.max(w,h);
       w=Math.round(w*scale); h=Math.round(h*scale);
       const canvas=document.createElement('canvas');
@@ -12611,10 +12619,10 @@ function _resizePhotoFile(file, maxDim=1600, quality=0.82){
       const ctx=canvas.getContext('2d');
       ctx.drawImage(img,0,0,w,h);
       canvas.toBlob(blob=>{
-        resolve(blob ? new File([blob], file.name, {type:'image/jpeg'}) : file);
+        finish(blob ? new File([blob], file.name, {type:'image/jpeg'}) : file);
       }, 'image/jpeg', quality);
     };
-    img.onerror=()=>{ URL.revokeObjectURL(url); resolve(file); };
+    img.onerror=()=>{ URL.revokeObjectURL(url); finish(file); };
     img.src=url;
   });
 }
