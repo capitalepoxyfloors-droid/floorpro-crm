@@ -12625,6 +12625,24 @@ async function loadJobPhotos(){
 }
 async function saveJobPhotos(){ JOB_PHOTOS = await _saveKVMerged('job_photos', JOB_PHOTOS); }
 
+// Some Android photo pickers hand back a File with a blank or wrong .type (a known OEM/gallery-
+// app quirk), which made the upload filters below silently reject a real photo with no useful
+// error. Fall back to the filename extension when the MIME type doesn't look like an image.
+function _isImageFile(f){
+  if(/^image\//.test(f.type)) return true;
+  return /\.(jpe?g|png|gif|webp|heic|heif|bmp)$/i.test(f.name||'');
+}
+// If the browser handed back a blank/wrong MIME type (same Android quirk as above), a photo
+// could still upload fine but then fail to display in an <img> tag because Storage serves back
+// whatever Content-Type we sent. Guess a real one from the extension rather than falling back
+// to application/octet-stream for anything that passed _isImageFile.
+function _photoMimeType(f){
+  if(/^image\//.test(f.type)) return f.type;
+  const ext=(f.name||'').match(/\.([a-zA-Z0-9]+)$/);
+  const map={jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png',gif:'image/gif',webp:'image/webp',heic:'image/heic',heif:'image/heif',bmp:'image/bmp'};
+  return (ext && map[ext[1].toLowerCase()]) || 'application/octet-stream';
+}
+
 // Downscale a photo client-side before upload — phone camera photos routinely run 3-8MB at
 // full resolution, and every one of them gets loaded in full just to render a 104px thumbnail
 // on the Photos page. With enough jobs/photos that made the page "take forever to load" (dozens
@@ -12664,7 +12682,7 @@ async function _uploadPhotoWithThumb(file, dir, safe, ts){
   const path=`${dir}/${ts}_${safe}`;
   const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
     method:'POST',
-    headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
+    headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':_photoMimeType(file), 'x-upsert':'true' },
     body:file
   });
   if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
@@ -12696,7 +12714,7 @@ async function jcUploadPhotos(ds){
 // Shared upload core — called by the file-input (click-to-browse) and the drag & drop zone
 async function jcUploadPhotoFiles(ds,files){
   const job=getJobRecord(_jcId); if(!job) return;
-  files=(files||[]).filter(f=>/^image\//.test(f.type));
+  files=(files||[]).filter(_isImageFile);
   if(!files.length){ showToast('Drop image files only.'); return; }
   const {author,role}=_matNoteAuthor();
   let ok=0,fail=0;
@@ -13086,7 +13104,7 @@ function svScopeUploadPhotos(){
 async function svScopeUploadPhotoFiles(files){
   if(_svScopeIdx===null||!SALES_VISITS[_svScopeIdx]) return;
   const visitId=_svEnsureId(_svScopeIdx);
-  files=(files||[]).filter(f=>/^image\//.test(f.type));
+  files=(files||[]).filter(_isImageFile);
   if(!files.length){ showToast('Drop image files only.'); return; }
   const {author,role}=_matNoteAuthor();
   let ok=0,fail=0;
