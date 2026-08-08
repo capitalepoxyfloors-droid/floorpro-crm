@@ -12624,13 +12624,31 @@ function _resizePhotoFile(file, maxDim=1600, quality=0.82){
 // thumbnails should read `thumbUrl`; the lightbox and anything customer-facing must keep using
 // `url` (the untouched original). Thumbnail upload failing is non-fatal — falls back to the
 // full-size url so a photo never fails to save just because its thumbnail didn't generate.
+// Plain fetch() has no built-in timeout — on a spotty job-site connection a stalled request
+// just hangs forever with no error and no way to tell it apart from "still working." A crew
+// member reported exactly that: "said Uploading... then nothing," on what could easily be a
+// stalled multi-MB upload (originals are kept full-resolution on purpose, often 10MB+, and now
+// each photo does TWO uploads — original + thumbnail). Aborts and rejects after timeoutMs so a
+// stall becomes a normal caught error instead of an infinite silent wait.
+function _fetchWithTimeout(url, opts, timeoutMs){
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),timeoutMs);
+  return fetch(url,{...opts,signal:controller.signal}).finally(()=>clearTimeout(timer));
+}
+
 async function _uploadPhotoWithThumb(file, dir, safe, ts){
   const path=`${dir}/${ts}_${safe}`;
-  const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
-    method:'POST',
-    headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':_photoMimeType(file), 'x-upsert':'true' },
-    body:file
-  });
+  let res;
+  try{
+    res=await _fetchWithTimeout(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
+      method:'POST',
+      headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':_photoMimeType(file), 'x-upsert':'true' },
+      body:file
+    },45000);
+  }catch(e){
+    if(e.name==='AbortError') throw new Error('Upload timed out — check your signal and try again.');
+    throw e;
+  }
   if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
   const url=_vehDocPublicUrl(path);
   let thumbUrl=url, thumbPath=null;
@@ -12638,11 +12656,11 @@ async function _uploadPhotoWithThumb(file, dir, safe, ts){
     const thumbFile=await _resizePhotoFile(file);
     if(thumbFile!==file){
       const candidatePath=`${dir}/thumb_${ts}_${safe}`;
-      const tres=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(candidatePath)}`,{
+      const tres=await _fetchWithTimeout(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(candidatePath)}`,{
         method:'POST',
         headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':thumbFile.type||'application/octet-stream', 'x-upsert':'true' },
         body:thumbFile
-      });
+      },20000);
       if(tres.ok){ thumbUrl=_vehDocPublicUrl(candidatePath); thumbPath=candidatePath; }
     }
   }catch(e){ console.error('thumbnail upload failed (non-fatal, using full-size url):',e); }
@@ -12669,7 +12687,7 @@ async function jcUploadPhotoFiles(ds,files){
   files=(files||[]).filter(_isImageFile);
   if(!files.length){ showToast('Drop image files only.'); return; }
   showToast(`Uploading ${files.length} photo${files.length!==1?'s':''}...`);
-  let ok=0,fail=0;
+  let ok=0,fail=0,lastErr=null;
   try{
     const {author,role}=_matNoteAuthor();
     for(const file of files){
@@ -12684,13 +12702,13 @@ async function jcUploadPhotoFiles(ds,files){
           name:file.name, path, url, thumbPath, thumbUrl, size, author, role, ts:new Date().toISOString()
         });
         ok++;
-      }catch(e){ console.error('job photo upload failed:',e); fail++; }
+      }catch(e){ console.error('job photo upload failed:',e); fail++; lastErr=e; }
     }
     if(ok) await saveJobPhotos();
     jcRenderDayLogs();
     if(ok&&!fail) showToast(`✓ ${ok} photo${ok!==1?'s':''} added.`);
-    else if(ok&&fail) showToast(`${ok} added, ${fail} failed.`);
-    else showToast('Upload failed — the storage bucket may not be set up yet.');
+    else if(ok&&fail) showToast(`${ok} added, ${fail} failed` + (lastErr?': '+lastErr.message:'') + '.');
+    else showToast(lastErr ? ('Upload failed: '+lastErr.message) : 'Upload failed — the storage bucket may not be set up yet.');
   }catch(e){
     console.error('photo upload flow failed unexpectedly:',e);
     showToast('Upload failed — check your connection and try again.');
@@ -13065,7 +13083,7 @@ async function svScopeUploadPhotoFiles(files){
   files=(files||[]).filter(_isImageFile);
   if(!files.length){ showToast('Drop image files only.'); return; }
   showToast(`Uploading ${files.length} photo${files.length!==1?'s':''}...`);
-  let ok=0,fail=0;
+  let ok=0,fail=0,lastErr=null;
   try{
     const {author,role}=_matNoteAuthor();
     for(const file of files){
@@ -13079,7 +13097,7 @@ async function svScopeUploadPhotoFiles(files){
           name:file.name, path, url, thumbPath, thumbUrl, size, author, role, ts:new Date().toISOString()
         });
         ok++;
-      }catch(e){ console.error('scope photo upload failed:',e); fail++; }
+      }catch(e){ console.error('scope photo upload failed:',e); fail++; lastErr=e; }
     }
     if(ok){
       await saveSalesScopePhotos();
@@ -13088,8 +13106,8 @@ async function svScopeUploadPhotoFiles(files){
     }
     renderSvScopePhotos();
     if(ok&&!fail) showToast(`✓ ${ok} photo${ok!==1?'s':''} added.`);
-    else if(ok&&fail) showToast(`${ok} added, ${fail} failed.`);
-    else showToast('Upload failed — the storage bucket may not be set up yet.');
+    else if(ok&&fail) showToast(`${ok} added, ${fail} failed` + (lastErr?': '+lastErr.message:'') + '.');
+    else showToast(lastErr ? ('Upload failed: '+lastErr.message) : 'Upload failed — the storage bucket may not be set up yet.');
   }catch(e){
     console.error('scope photo upload flow failed unexpectedly:',e);
     showToast('Upload failed — check your connection and try again.');
