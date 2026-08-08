@@ -12711,32 +12711,44 @@ async function jcUploadPhotos(ds){
   if(fileInput) fileInput.value='';
 }
 
-// Shared upload core — called by the file-input (click-to-browse) and the drag & drop zone
+// Shared upload core — called by the file-input (click-to-browse) and the drag & drop zone.
+// Everything from here down is wrapped so a failure ALWAYS produces a visible toast — a crew
+// member on a slow connection reported "I pick photos and nothing happens," and the previous
+// version could go fully silent: an early `if(!job) return` had no feedback at all, and
+// `saveJobPhotos()` (a network call) wasn't inside the try/catch, so if it failed the function
+// threw before ever reaching the success/failure toast at the bottom.
 async function jcUploadPhotoFiles(ds,files){
-  const job=getJobRecord(_jcId); if(!job) return;
+  const job=getJobRecord(_jcId);
+  if(!job){ showToast('Could not find this job — try reopening it.'); return; }
   files=(files||[]).filter(_isImageFile);
   if(!files.length){ showToast('Drop image files only.'); return; }
-  const {author,role}=_matNoteAuthor();
+  showToast(`Uploading ${files.length} photo${files.length!==1?'s':''}...`);
   let ok=0,fail=0;
-  for(const file of files){
-    if(file.size>25*1024*1024){ showToast(`"${file.name}" is over 25 MB — skipped.`); fail++; continue; }
-    const safe=(file.name||'photo').replace(/[^\w.\-]+/g,'_');
-    try{
-      const {path,url,thumbPath,thumbUrl,size}=await _uploadPhotoWithThumb(file, `jobs/${job.id}/${ds}`, safe, Date.now());
-      if(!JOB_PHOTOS[job.id]) JOB_PHOTOS[job.id]={};
-      if(!JOB_PHOTOS[job.id][ds]) JOB_PHOTOS[job.id][ds]=[];
-      JOB_PHOTOS[job.id][ds].push({
-        id:(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)),
-        name:file.name, path, url, thumbPath, thumbUrl, size, author, role, ts:new Date().toISOString()
-      });
-      ok++;
-    }catch(e){ console.error('job photo upload failed:',e); fail++; }
+  try{
+    const {author,role}=_matNoteAuthor();
+    for(const file of files){
+      if(file.size>25*1024*1024){ showToast(`"${file.name}" is over 25 MB — skipped.`); fail++; continue; }
+      const safe=(file.name||'photo').replace(/[^\w.\-]+/g,'_');
+      try{
+        const {path,url,thumbPath,thumbUrl,size}=await _uploadPhotoWithThumb(file, `jobs/${job.id}/${ds}`, safe, Date.now());
+        if(!JOB_PHOTOS[job.id]) JOB_PHOTOS[job.id]={};
+        if(!JOB_PHOTOS[job.id][ds]) JOB_PHOTOS[job.id][ds]=[];
+        JOB_PHOTOS[job.id][ds].push({
+          id:(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)),
+          name:file.name, path, url, thumbPath, thumbUrl, size, author, role, ts:new Date().toISOString()
+        });
+        ok++;
+      }catch(e){ console.error('job photo upload failed:',e); fail++; }
+    }
+    if(ok) await saveJobPhotos();
+    jcRenderDayLogs();
+    if(ok&&!fail) showToast(`✓ ${ok} photo${ok!==1?'s':''} added.`);
+    else if(ok&&fail) showToast(`${ok} added, ${fail} failed.`);
+    else showToast('Upload failed — the storage bucket may not be set up yet.');
+  }catch(e){
+    console.error('photo upload flow failed unexpectedly:',e);
+    showToast('Upload failed — check your connection and try again.');
   }
-  if(ok) await saveJobPhotos();
-  jcRenderDayLogs();
-  if(ok&&!fail) showToast(`✓ ${ok} photo${ok!==1?'s':''} added.`);
-  else if(ok&&fail) showToast(`${ok} added, ${fail} failed.`);
-  else showToast('Upload failed — the storage bucket may not be set up yet.');
 }
 
 function jcPhotoDragOver(e){
@@ -13106,30 +13118,36 @@ async function svScopeUploadPhotoFiles(files){
   const visitId=_svEnsureId(_svScopeIdx);
   files=(files||[]).filter(_isImageFile);
   if(!files.length){ showToast('Drop image files only.'); return; }
-  const {author,role}=_matNoteAuthor();
+  showToast(`Uploading ${files.length} photo${files.length!==1?'s':''}...`);
   let ok=0,fail=0;
-  for(const file of files){
-    if(file.size>25*1024*1024){ showToast(`"${file.name}" is over 25 MB — skipped.`); fail++; continue; }
-    const safe=(file.name||'photo').replace(/[^\w.\-]+/g,'_');
-    try{
-      const {path,url,thumbPath,thumbUrl,size}=await _uploadPhotoWithThumb(file, `salescope/${visitId}`, safe, Date.now());
-      if(!SALES_SCOPE_PHOTOS[visitId]) SALES_SCOPE_PHOTOS[visitId]=[];
-      SALES_SCOPE_PHOTOS[visitId].push({
-        id:(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)),
-        name:file.name, path, url, thumbPath, thumbUrl, size, author, role, ts:new Date().toISOString()
-      });
-      ok++;
-    }catch(e){ console.error('scope photo upload failed:',e); fail++; }
+  try{
+    const {author,role}=_matNoteAuthor();
+    for(const file of files){
+      if(file.size>25*1024*1024){ showToast(`"${file.name}" is over 25 MB — skipped.`); fail++; continue; }
+      const safe=(file.name||'photo').replace(/[^\w.\-]+/g,'_');
+      try{
+        const {path,url,thumbPath,thumbUrl,size}=await _uploadPhotoWithThumb(file, `salescope/${visitId}`, safe, Date.now());
+        if(!SALES_SCOPE_PHOTOS[visitId]) SALES_SCOPE_PHOTOS[visitId]=[];
+        SALES_SCOPE_PHOTOS[visitId].push({
+          id:(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)),
+          name:file.name, path, url, thumbPath, thumbUrl, size, author, role, ts:new Date().toISOString()
+        });
+        ok++;
+      }catch(e){ console.error('scope photo upload failed:',e); fail++; }
+    }
+    if(ok){
+      await saveSalesScopePhotos();
+      SALES_VISITS[_svScopeIdx].scopeUpdatedAt=new Date().toISOString();
+      await persistSalesVisits();
+    }
+    renderSvScopePhotos();
+    if(ok&&!fail) showToast(`✓ ${ok} photo${ok!==1?'s':''} added.`);
+    else if(ok&&fail) showToast(`${ok} added, ${fail} failed.`);
+    else showToast('Upload failed — the storage bucket may not be set up yet.');
+  }catch(e){
+    console.error('scope photo upload flow failed unexpectedly:',e);
+    showToast('Upload failed — check your connection and try again.');
   }
-  if(ok){
-    await saveSalesScopePhotos();
-    SALES_VISITS[_svScopeIdx].scopeUpdatedAt=new Date().toISOString();
-    await persistSalesVisits();
-  }
-  renderSvScopePhotos();
-  if(ok&&!fail) showToast(`✓ ${ok} photo${ok!==1?'s':''} added.`);
-  else if(ok&&fail) showToast(`${ok} added, ${fail} failed.`);
-  else showToast('Upload failed — the storage bucket may not be set up yet.');
 }
 
 function svScopeDragOver(e){
