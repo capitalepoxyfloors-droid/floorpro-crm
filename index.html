@@ -35,7 +35,7 @@
   .logo-mark{font-size:17px;font-weight:600;letter-spacing:-0.3px;}
   .logo-mark span{color:var(--accent);}
   .logo-sub{font-size:10px;color:var(--text3);font-family:'DM Mono',monospace;margin-top:2px;white-space:nowrap;}
-  .nav{padding:12px 10px;flex:1;}
+  .nav{padding:12px 10px;flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;}
   .nav-label{font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);letter-spacing:1px;text-transform:uppercase;padding:8px 8px 4px;}
   .nav-item{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:var(--radius-sm);cursor:pointer;color:var(--text2);font-size:13.5px;font-weight:400;transition:all .15s;margin-bottom:2px;border:none;background:none;width:100%;text-align:left;}
   .nav-item:hover{background:var(--surface2);color:var(--text);}
@@ -142,6 +142,9 @@
   .sch-span-bar.pto{background:#d93025;color:#fff;border:none;}
   .sch-span-bar.holiday{background:var(--orange-dim);color:var(--orange);border:1px solid #f6c26b;font-style:italic;justify-content:center;text-align:center;white-space:normal;height:auto;min-height:24px;line-height:1.2;}
   .sch-span-bar.extension{opacity:.32;}
+  .sch-span-bar.sch-draggable{cursor:grab;}
+  .sch-span-bar.sch-dragging{opacity:.35;cursor:grabbing;}
+  .sch-row-body.sch-drop-target{background:var(--accent-dim);}
   .cv-event-bar.extension{opacity:.32;}
   .sch-header.weekend{color:var(--orange);opacity:.85;}
   .sch-header.sch-today{color:var(--accent);font-weight:800;}
@@ -374,6 +377,7 @@
   .crew-mode #jc-invoice-section{display:none!important;}
   .crew-mode #jc-delete-btn{display:none!important;}
   .crew-mode #jc-reschedule-btn{display:none!important;}
+  .crew-mode #jc-crew-picker-group{display:none!important;}
   .crew-mode #jc-geo-row{display:none!important;}
   /* PIN login */
   @keyframes pin-shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-9px)}40%{transform:translateX(9px)}60%{transform:translateX(-6px)}80%{transform:translateX(6px)}}
@@ -534,6 +538,10 @@
       <button class="nav-item" onclick="showPage('pinsettings')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
         <span>Security</span>
+      </button>
+      <button class="nav-item" onclick="showPage('auditlog')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12h6M9 16h6M9 8h6"/><path d="M5 3h10l4 4v14a1 1 0 01-1 1H5a1 1 0 01-1-1V4a1 1 0 011-1z"/></svg>
+        <span>Audit Log</span>
       </button>
       <div class="nav-label" style="margin-top:8px;">Crew</div>
       <button class="nav-item" onclick="showPage('crewview')">
@@ -980,6 +988,22 @@
             <p style="font-size:13px;color:var(--text2);margin-bottom:12px;">The app locks automatically after 20 minutes of inactivity, and always locks on page refresh. No one can access any part of the app without the manager code.</p>
             <button class="btn btn-ghost" onclick="pinLogout()" style="color:var(--red);border-color:var(--red);">Sign Out</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- AUDIT LOG PAGE -->
+    <div class="page" id="page-auditlog">
+      <div class="topbar">
+        <div class="page-title">Audit Log</div>
+      </div>
+      <div class="content">
+        <div class="jobs-block" style="padding:0;margin-bottom:16px;">
+          <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+            <input class="form-input" id="al-search" placeholder="Search by customer, crew, or action…" style="flex:1;min-width:220px;max-width:360px;" oninput="renderAuditLog()"/>
+            <div style="font-size:11.5px;color:var(--text2);">Every schedule and job change, newest first. Nothing here can be edited or deleted from the app.</div>
+          </div>
+          <div id="al-list"></div>
         </div>
       </div>
     </div>
@@ -1970,6 +1994,59 @@ const sb = {
   }
 };
 
+// ── AUDIT LOG ──────────────────────────────────────────────────────────────
+// Fire-and-forget: never let a logging failure block the real action it's recording.
+function currentActorName(){
+  if(localStorage.getItem('fpRole')==='crew'){
+    const ci=parseInt(localStorage.getItem('fpClockCrew'));
+    if(!isNaN(ci)&&CREW_DATA[ci]) return CREW_DATA[ci].full;
+    return 'Crew (unknown)';
+  }
+  return 'Manager';
+}
+async function logAudit(action,entity,details){
+  try{ await sb.insert('audit_log',{actor:currentActorName(),action,entity:entity||'',details:details||''}); }
+  catch(e){ console.error('logAudit failed:',e); }
+}
+
+let AUDIT_LOG_CACHE=null;
+const AUDIT_ACTION_META={
+  schedule_added:{icon:'📅',label:'Added to schedule',color:'var(--green)'},
+  schedule_removed:{icon:'🗑️',label:'Removed from schedule',color:'var(--red)'},
+  job_created:{icon:'✚',label:'Job created',color:'var(--green)'},
+  job_deleted:{icon:'✖',label:'Job deleted',color:'var(--red)'}
+};
+async function renderAuditLog(){
+  const el=document.getElementById('al-list'); if(!el) return;
+  if(!AUDIT_LOG_CACHE){
+    el.innerHTML='<div style="padding:40px 20px;text-align:center;color:var(--text3);">Loading…</div>';
+    try{ AUDIT_LOG_CACHE=await sb.get('audit_log','order=created_at.desc&limit=300'); }
+    catch(e){ AUDIT_LOG_CACHE=[]; }
+  }
+  const q=(document.getElementById('al-search')?.value||'').trim().toLowerCase();
+  const rows=(AUDIT_LOG_CACHE||[]).filter(r=>!q||[r.actor,r.action,r.entity,r.details].join(' ').toLowerCase().includes(q));
+  if(!rows.length){
+    el.innerHTML='<div style="padding:60px 20px;text-align:center;color:var(--text3);">'+(q?'No matching entries.':'No activity logged yet.')+'</div>';
+    return;
+  }
+  el.innerHTML=rows.map(r=>{
+    const meta=AUDIT_ACTION_META[r.action]||{icon:'•',label:r.action,color:'var(--text2)'};
+    const when=new Date(r.created_at);
+    const whenStr=when.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' · '+when.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    return `<div style="padding:12px 18px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:12px;">
+      <div style="font-size:16px;flex-shrink:0;">${meta.icon}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13px;color:var(--text);"><span style="font-weight:700;color:${meta.color};">${meta.label}</span> — ${(r.entity||'').toString().replace(/</g,'&lt;')}</div>
+        ${r.details?`<div style="font-size:11.5px;color:var(--text2);margin-top:2px;">${r.details.toString().replace(/</g,'&lt;')}</div>`:''}
+      </div>
+      <div style="font-size:11px;color:var(--text3);white-space:nowrap;text-align:right;">
+        <div>${whenStr}</div>
+        <div>${(r.actor||'').replace(/</g,'&lt;')}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
 function showSyncStatus(msg,color='var(--green)'){
   const old=document.getElementById('sync-status');
   if(old){clearTimeout(old._t);old.remove();}
@@ -2544,6 +2621,7 @@ async function dbSaveSlot(crewIdx,weekOff,dayIdx,label,jobType,dateStr){
   // Encode absolute date into job_type so slots never drift when BASE advances
   const encodedType=dateStr?jobType+':'+dateStr:jobType;
   const res=await sb.insert('scheduled_slots',{crew_idx:crewIdx,week_offset:weekOff,day_idx:dayIdx,label:label,job_type:encodedType});
+  logAudit('schedule_added',label,(CREW[crewIdx]?.full||'Crew '+crewIdx)+(dateStr?' — '+dateStr:''));
   return res&&res[0]?res[0].id:null;
 }
 async function dbAddExtraSlot(ci,w,d,label,type,jobId,dateStr){
@@ -3276,6 +3354,7 @@ function sjConfirm(){
     scopePhotos: []
   };
   JOB_RECORDS.push(jobRecord);
+  logAudit('job_created',jobRecord.customer,jobRecord.startDate+' to '+jobRecord.endDate+' — '+jobRecord.crewNames);
   // Carry the sales visit's Job Scope photos forward onto the job (copies the files in
   // Storage so they survive independently of the original visit record).
   if(window._pendingApprovedCard && window._pendingApprovedCard.dataset.scopeVisitId){
@@ -3485,6 +3564,7 @@ async function seRemoveExtraSlotForLabel(ci,w,d,label){
   for(const ex of matching){ if(ex.db_id) await sb.delete('scheduled_slots',ex.db_id); }
   const remaining=list.filter(ex=>ex.l!==label);
   if(remaining.length) multiSlots[k]=remaining; else delete multiSlots[k];
+  logAudit('schedule_removed',label,(CREW[ci]?.full||'Crew '+ci)+' (double-booked slot)'+(matching[0]?.dt?' — '+matching[0].dt:''));
 }
 
 async function seRemoveSlot(ci, w, d){
@@ -3497,6 +3577,7 @@ async function seRemoveSlot(ci, w, d){
   // A caller that actually wants a specific OTHER job's extra slot gone calls
   // seRemoveExtraSlotForLabel for it directly (see jcCleanOrphanedSlots, jcToggleCrew).
   const s=newSlots[ci]?.[w]?.[d];
+  const _rmLabel=s?.l,_rmDate=s?.dt;
   if(s?.db_id){
     await sb.delete('scheduled_slots', s.db_id);
   } else if(s?.l){
@@ -3507,6 +3588,7 @@ async function seRemoveSlot(ci, w, d){
     await sb.deleteWhere('scheduled_slots',{crew_idx:ci,week_offset:w,day_idx:d});
   }
   if(newSlots[ci]?.[w]) delete newSlots[ci][w][d];
+  if(_rmLabel) logAudit('schedule_removed',_rmLabel,(CREW[ci]?.full||'Crew '+ci)+(_rmDate?' — '+_rmDate:''));
 }
 
 async function sePlaceSlot(ci, w, d, label, type){
@@ -4059,6 +4141,7 @@ function jcRenderCrewPicker(){
 
 // Toggle a crew member on/off this job — also syncs their schedule slots automatically
 async function jcToggleCrew(i){
+  if(document.body.classList.contains('crew-mode')){ showToast('Only the manager can add or remove jobs from the schedule.'); return; }
   const job=getJobRecord(_jcId); if(!job) return;
   _jcConflicts=[];  // reset so new conflicts are detected fresh
   const name=CREW[i].full;
@@ -6284,6 +6367,7 @@ async function deleteJobRecord(){
   }
   JOB_RECORDS=JOB_RECORDS.filter(j=>j.id!==_jcId);
   await saveJobRecords(); await saveSlotJobMap();
+  logAudit('job_deleted',job?.customer||_jcId,job?.startDate?('Was scheduled '+job.startDate+' to '+(job.endDate||job.startDate)):'');
   closeModal('jobcard'); renderSchedule(); showSyncStatus('✓ Deleted');
 }
 
@@ -6293,11 +6377,13 @@ function jcOpenMaps(){
 }
 
 // Helper: return array of numDays weekday Date objects starting from startDateStr
-function getWorkingDaysFrom(startDateStr, numDays){
-  // If start is a weekend day, treat as a weekend job — count every calendar day.
-  // If start is a weekday, count only Mon–Fri (skip weekends).
+function getWorkingDaysFrom(startDateStr, numDays, includeWeekends){
+  // If the caller didn't say explicitly, fall back to inferring from the start day — but an
+  // explicit includeWeekends (from the "Include weekend days" checkbox) always wins. Inferring
+  // only from the start date breaks the common case of "reschedule a weekend job to start on a
+  // weekday" (e.g. Fri→through the weekend): the start day alone can't tell you that.
   const startDow=new Date(startDateStr+'T00:00:00').getDay();
-  const isWkndStart=startDow===0||startDow===6;
+  const isWkndStart=includeWeekends!=null?includeWeekends:(startDow===0||startDow===6);
   const dates=[];
   const cur=new Date(startDateStr+'T00:00:00');
   while(dates.length<numDays){
@@ -6315,8 +6401,15 @@ function jcReschedule(){
   const dates=(job.startDate?jcFmtDate(job.startDate):'?')+' – '+(job.endDate?jcFmtDate(job.endDate):'?');
   document.getElementById('rs-current-info').textContent=dates+' · '+crew;
   document.getElementById('rs-new-start').value=job.startDate||'';
-  // Pre-fill duration select with current working-day count
-  const curDur=(job.startDate&&job.endDate)?jcWeekdays(job.startDate,job.endDate).length:1;
+  // Pre-check "include weekends" if the CURRENT job spans a weekend on either end — matches
+  // the isWkndJob convention used elsewhere (jcSyncCrewSlots, jcCleanOrphanedSlots) instead of
+  // just checking the start day, which is what broke rescheduling a weekend job to a weekday start.
+  const _curSDow=job.startDate?new Date(job.startDate+'T00:00:00').getDay():null;
+  const _curEDow=job.endDate?new Date(job.endDate+'T00:00:00').getDay():null;
+  const _curIsWknd=[_curSDow,_curEDow].some(d=>d===0||d===6);
+  document.getElementById('rs-include-weekends').checked=_curIsWknd;
+  // Pre-fill duration select with current day count (all days if it's a weekend job, weekdays-only otherwise)
+  const curDur=(job.startDate&&job.endDate)?(_curIsWknd?jcAllDays(job.startDate,job.endDate).length:jcWeekdays(job.startDate,job.endDate).length):1;
   document.getElementById('rs-duration').value=Math.min(Math.max(curDur,1),10);
   document.getElementById('rs-preview').textContent='';
   document.getElementById('rs-warn').style.display='none';
@@ -6330,16 +6423,15 @@ function jcReschedulePreview(){
   const duration=parseInt(document.getElementById('rs-duration').value,10)||1;
   const el=document.getElementById('rs-preview');
   if(!newStart){el.textContent='';return;}
-  const startDow=new Date(newStart+'T00:00:00').getDay();
-  const isWkndStart=startDow===0||startDow===6;
+  const includeWeekends=document.getElementById('rs-include-weekends').checked;
   el.style.color='var(--accent)';
-  const workDays=getWorkingDaysFrom(newStart,duration);
+  const workDays=getWorkingDaysFrom(newStart,duration,includeWeekends);
   const newEnd=workDays[workDays.length-1];
   const MO=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const fmt=d=>MO[d.getMonth()]+' '+d.getDate();
   const startD=new Date(newStart+'T00:00:00');
   const sameDayStr=startD.getTime()===newEnd.getTime()?fmt(startD)+', '+startD.getFullYear():fmt(startD)+' – '+fmt(newEnd)+', '+newEnd.getFullYear();
-  el.textContent=sameDayStr+' · '+duration+' day'+(duration!==1?'s':'')+(isWkndStart?' (weekend job — all days counted)':'');
+  el.textContent=sameDayStr+' · '+duration+' day'+(duration!==1?'s':'')+(includeWeekends?' (weekends included)':'');
 }
 
 async function jcRescheduleConfirm(){
@@ -6364,7 +6456,8 @@ async function jcRescheduleConfirm(){
   const crewCIs=[...new Set([...primaryCIs,...extraCIs])];
   if(!crewCIs.length){showToast('No schedule slots found for this job.');closeModal('reschedule');return;}
 
-  const newDates=getWorkingDaysFrom(newStart,duration);
+  const includeWeekends=document.getElementById('rs-include-weekends').checked;
+  const newDates=getWorkingDaysFrom(newStart,duration,includeWeekends);
 
   // Pre-flight: check each new date × each crew CI for conflicts with OTHER jobs
   const conflicts=[];
@@ -6829,6 +6922,7 @@ function cvTapEvent(jobId,ci,w,d,dateStr){
       status:'scheduled',plannedMaterials:[],dayLogs:{},extraDays:[]
     };
     JOB_RECORDS.push(jobRecord);
+    logAudit('job_created',jobRecord.customer,jobRecord.startDate+' to '+jobRecord.endDate+' — '+jobRecord.crewNames+' (auto-created from slot)');
     saveJobRecords(); saveSlotJobMap();
     jobId=newJobId;
     }
@@ -7541,6 +7635,7 @@ function showPage(id){
   if(id==='photos') renderPhotosPage();
   if(id==='jobscope') renderJobScopePage();
   if(id==='pinsettings') renderCrewPins();
+  if(id==='auditlog'){ AUDIT_LOG_CACHE=null; renderAuditLog(); }
   if(id==='jobs') _markJobsSeen();
   try{localStorage.setItem('fpLastPage',id);}catch(e){}
 }
@@ -11578,6 +11673,54 @@ function schedNav(dir){
   renderSchedule();
 }
 
+// ── DRAG-TO-RESCHEDULE ─────────────────────────────────────────────────────
+// {ci, jobId} of the job bar currently being dragged, set by buildWeekGrid's bar.ondragstart.
+let _dragSlot = null;
+
+// Dropping a job's bar on a new day re-dates the WHOLE job to start there, reusing the exact
+// same crew-shift/conflict/double-book logic as the "📅 Reschedule" modal (jcRescheduleApply) —
+// just skipping the modal's date-picker UI. Restricted to the SAME crew row it was dragged from
+// (reassigning crew stays a job-card edit, not a drag gesture).
+async function schedHandleDrop(ci, targetSw, targetSd, dragData){
+  if(!dragData) return;
+  if(dragData.ci!==ci){ showToast('Drag within the same crew row to change dates — reassign crew from the job card.'); return; }
+  const job=getJobRecord(dragData.jobId);
+  if(!job||!job.startDate){ return; }
+  const targetDateStr=seSlotToDate(targetSw,targetSd).toISOString().split('T')[0];
+  if(targetDateStr===job.startDate) return; // dropped back on itself
+
+  const _sDow=new Date(job.startDate+'T00:00:00').getDay();
+  const _eDow=job.endDate?new Date(job.endDate+'T00:00:00').getDay():_sDow;
+  const includeWeekends=[_sDow,_eDow].some(dw=>dw===0||dw===6);
+  const duration=(job.startDate&&job.endDate)?(includeWeekends?jcAllDays(job.startDate,job.endDate).length:jcWeekdays(job.startDate,job.endDate).length):1;
+  const newDates=getWorkingDaysFrom(targetDateStr,duration,includeWeekends);
+
+  // Same crew-collection convention as jcRescheduleConfirm (primary SLOT_JOB_MAP entries +
+  // double-booked extras matched by customer label, since multiSlots can't carry a jobId
+  // across a reload).
+  const primaryCIs=Object.entries(SLOT_JOB_MAP).filter(([,jid])=>jid===dragData.jobId).map(([key])=>+key.split('_')[0]);
+  const extraCIs=Object.entries(multiSlots).filter(([,arr])=>(arr||[]).some(x=>x.l===job.customer)).map(([key])=>+key.split('_')[0]);
+  const crewCIs=[...new Set([...primaryCIs,...extraCIs])];
+  if(!crewCIs.length){ showToast('No schedule slots found for this job.'); return; }
+
+  const conflicts=[];
+  for(const c of crewCIs){
+    for(const dt of newDates){
+      const pos=seDateToPos(dt.toISOString().split('T')[0]); if(!pos) continue;
+      const existingJob=SLOT_JOB_MAP[jcSlotKey(c,pos.w,pos.d)];
+      if(existingJob&&existingJob!==dragData.jobId) conflicts.push({c,dt});
+    }
+  }
+  _jcId=dragData.jobId; // jcRescheduleApply keys its SLOT_JOB_MAP updates off this
+  if(conflicts.length){
+    const ok=confirm(`${conflicts.length} day${conflicts.length!==1?'s are':' is'} already booked by another job on the new dates. Double-book "${job.customer}" and move it anyway?`);
+    if(!ok) return;
+    await jcRescheduleApply(crewCIs,newDates,duration,job,targetDateStr,true);
+  } else {
+    await jcRescheduleApply(crewCIs,newDates,duration,job,targetDateStr);
+  }
+}
+
 function renderSchedule(){
   const container=document.getElementById('sched-container');
   if(!container) return;
@@ -11735,6 +11878,34 @@ function buildWeekGrid(wOff,mon,dNames){
       overlay:'132,48,206',metallic:'132,48,206',prep:'0,151,167',newjob:'24,128,56'};
     const COL_FR=[0.8,1,1,1,1,1,0.8]; // Sun=0.8fr, Mon-Fri=1fr, Sat=0.8fr — must match CSS grid
     const TOTAL_FR=COL_FR.reduce((a,b)=>a+b,0);
+
+    // Drag-and-drop: dropping a job's bar anywhere in this row re-dates the whole job to start
+    // on the dropped day (same crew member only — reassigning crew stays a job-card edit).
+    // Listens on the row body (not per-cell) so a drop lands correctly even on top of an
+    // absolutely-positioned bar; the target day is derived from the pointer's x position using
+    // the same COL_FR fractions the bars are positioned with.
+    const dayFromX=(clientX)=>{
+      const rect=body.getBoundingClientRect();
+      const frac=Math.min(Math.max((clientX-rect.left)/rect.width,0),0.9999);
+      let acc=0;
+      for(let d=0;d<TOTAL_DAYS;d++){ acc+=COL_FR[d]/TOTAL_FR; if(frac<acc) return d; }
+      return TOTAL_DAYS-1;
+    };
+    body.ondragover=(ev)=>{
+      if(!_dragSlot) return;
+      ev.preventDefault(); ev.dataTransfer.dropEffect='move';
+      body.classList.add('sch-drop-target');
+    };
+    body.ondragleave=(ev)=>{ if(!body.contains(ev.relatedTarget)) body.classList.remove('sch-drop-target'); };
+    body.ondrop=(ev)=>{
+      ev.preventDefault();
+      body.classList.remove('sch-drop-target');
+      if(!_dragSlot) return;
+      const dIdx=dayFromX(ev.clientX);
+      schedHandleDrop(i,colSW(dIdx),colSD(dIdx),_dragSlot);
+      _dragSlot=null;
+    };
+
     // Pass 1: collect run segments
     const _runs=[];
     let rS=null,rL=null,rT=null,rX=false;
@@ -11885,6 +12056,24 @@ function buildWeekGrid(wOff,mon,dNames){
       }
       bar.style.cssText=st;
       bar.onclick=()=>openSlotEdit(i,days[startDay].sw,days[startDay].sd);
+      // Drag-to-reschedule: only the primary (non-extension) bar of an actual job record, and
+      // only while it isn't done — a finished job shouldn't move, and dragging an extension pill
+      // would be confusing since a drop always re-dates the WHOLE job from its original start.
+      if(jr&&!isDone&&!isExtra){
+        bar.draggable=true;
+        bar.classList.add('sch-draggable');
+        bar.ondragstart=(ev)=>{
+          _dragSlot={ci:i,jobId:(jobId!=null?jobId:jr.id)};
+          ev.dataTransfer.effectAllowed='move';
+          ev.dataTransfer.setData('text/plain',jr.customer||'');
+          bar.classList.add('sch-dragging');
+        };
+        bar.ondragend=()=>{
+          bar.classList.remove('sch-dragging');
+          document.querySelectorAll('.sch-drop-target').forEach(el=>el.classList.remove('sch-drop-target'));
+          _dragSlot=null;
+        };
+      }
       body.appendChild(bar);
     });
 
@@ -11940,6 +12129,23 @@ function buildWeekGrid(wOff,mon,dNames){
         bar.title=item.isMerged?'Click to open':'Double-booked · click to open';
         bar.style.cssText=`left:calc(${lp}% + 2px);width:calc(${wp}% - 6px);top:${topPx}px;`;
         bar.onclick=()=>{ if(exJobId) openJobCard(exJobId); else openSlotEdit(i,days[item.s].sw,days[item.s].sd); };
+        // Double-booked/extra jobs are dragged exactly like a primary bar (see Pass 2 above) —
+        // a real, not-done job record is required to reschedule.
+        if(exJr&&!isDone){
+          bar.draggable=true;
+          bar.classList.add('sch-draggable');
+          bar.ondragstart=(ev)=>{
+            _dragSlot={ci:i,jobId:(exJobId!=null?exJobId:exJr.id)};
+            ev.dataTransfer.effectAllowed='move';
+            ev.dataTransfer.setData('text/plain',exJr.customer||'');
+            bar.classList.add('sch-dragging');
+          };
+          bar.ondragend=()=>{
+            bar.classList.remove('sch-dragging');
+            document.querySelectorAll('.sch-drop-target').forEach(el=>el.classList.remove('sch-drop-target'));
+            _dragSlot=null;
+          };
+        }
         body.appendChild(bar);
       });
     }
@@ -13850,7 +14056,7 @@ async function deleteMaintEntry(id){
           </div>
         </div>
       </div>
-      <div class="form-group" style="margin-bottom:10px;">
+      <div class="form-group" id="jc-crew-picker-group" style="margin-bottom:10px;">
         <label class="form-label">Crew on This Job</label>
         <div id="jc-crew-picker" style="display:flex;flex-wrap:wrap;gap:7px;margin-top:4px;"></div>
         <div style="font-size:11px;color:var(--text3);margin-top:7px;">Tap to add or remove crew members.</div>
@@ -13954,10 +14160,14 @@ async function deleteMaintEntry(id){
           </select>
         </div>
       </div>
-      <div id="rs-preview" style="font-size:12.5px;color:var(--accent);font-family:'DM Mono',monospace;min-height:18px;margin-top:2px;"></div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:4px;font-size:12.5px;color:var(--text2);cursor:pointer;">
+        <input type="checkbox" id="rs-include-weekends" onchange="jcReschedulePreview()" style="width:16px;height:16px;"/>
+        Include weekend days (Sat/Sun) in this job's schedule
+      </label>
+      <div id="rs-preview" style="font-size:12.5px;color:var(--accent);font-family:'DM Mono',monospace;min-height:18px;margin-top:6px;"></div>
       <div id="rs-warn" style="display:none;margin-top:14px;padding:10px 14px;background:var(--red-dim);border:1px solid var(--red);border-radius:var(--radius-sm);font-size:12.5px;color:var(--red);"></div>
       <div class="info-box" style="margin-top:14px;font-size:12px;color:var(--text3);">
-        Changes apply to <strong>all crew members</strong> on this job. Days that land on a weekend are automatically skipped.
+        Changes apply to <strong>all crew members</strong> on this job. Unless "Include weekend days" is checked, Saturday and Sunday are skipped.
       </div>
     </div>
     <div class="modal-footer">
