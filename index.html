@@ -1972,21 +1972,37 @@ const sb = {
   async setKV(key,value){
     // Prefer an ATOMIC upsert (needs a unique index on settings.key). If that constraint
     // isn't present yet, fall back to delete-then-insert for the rest of this session.
+    // Timeout-guarded (see _fetchWithTimeout) — a plain fetch() never rejects on a merely
+    // STALLED connection (as opposed to an outright failure), so a crew member on a weak
+    // job-site signal could hang here forever with the UI stuck mid-save and no error, ever.
+    // This is the same class of bug fixed for photo uploads (2026-08-08) but was still open
+    // here — every save in the app routes through setKV/getKV, so this was the more likely
+    // culprit for "still hangs" reports even after the photo-upload-specific fixes landed.
     if(this._upsertOk!==false){
-      const res=await fetch(`${SUPABASE_URL}/rest/v1/settings?on_conflict=key`,{
-        method:'POST',
-        headers:{...this.headers,'Prefer':'resolution=merge-duplicates,return=representation'},
-        body:JSON.stringify({key,value})
-      });
+      let res;
+      try{
+        res=await _fetchWithTimeout(`${SUPABASE_URL}/rest/v1/settings?on_conflict=key`,{
+          method:'POST',
+          headers:{...this.headers,'Prefer':'resolution=merge-duplicates,return=representation'},
+          body:JSON.stringify({key,value})
+        },25000);
+      }catch(e){ throw (e.name==='AbortError'?new Error('Save timed out — check your signal and try again.'):e); }
       if(res.ok){ this._upsertOk=true; return res.json(); }
       this._upsertOk=false; // no unique constraint on settings.key — stop trying upsert this session
     }
-    await fetch(`${SUPABASE_URL}/rest/v1/settings?key=eq.${encodeURIComponent(key)}`,{method:'DELETE',headers:this.headers});
+    try{
+      await _fetchWithTimeout(`${SUPABASE_URL}/rest/v1/settings?key=eq.${encodeURIComponent(key)}`,{method:'DELETE',headers:this.headers},25000);
+    }catch(e){ throw (e.name==='AbortError'?new Error('Save timed out — check your signal and try again.'):e); }
     return this.insert('settings',{key,value});
   },
   async getKV(key){
-    // Returns the most recent value string for a settings key, or null
-    const res=await fetch(`${SUPABASE_URL}/rest/v1/settings?key=eq.${encodeURIComponent(key)}`,{headers:this.headers});
+    // Returns the most recent value string for a settings key, or null. Same timeout guard as
+    // setKV above — most callers already tolerate a null/failed read, so a timeout here just
+    // becomes a normal "couldn't read, fall back to defaults" instead of an infinite hang.
+    let res;
+    try{
+      res=await _fetchWithTimeout(`${SUPABASE_URL}/rest/v1/settings?key=eq.${encodeURIComponent(key)}`,{headers:this.headers},25000);
+    }catch(e){ return null; }
     if(!res.ok) return null;
     const rows=await res.json();
     // setKV ensures only one row per key; take last as safety fallback
