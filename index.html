@@ -11838,11 +11838,20 @@ async function schedHandleCrewReassign(originCi,targetCi,targetSw,targetSd,jobId
   _jcId=jobId;
 
   // 1. Remove the ORIGIN crew member's slots for this job (primary + extras) on their own actual
-  // days — the same originDays just computed above, not a reconstructed job-level range.
+  // days — the same originDays just computed above, not a reconstructed job-level range. Remove
+  // the primary by LABEL match (same as how originDays was discovered), not by requiring
+  // SLOT_JOB_MAP to already equal jobId — SLOT_JOB_MAP entries are well known to go stale/missing
+  // in this app (week rollovers, legacy ids, etc.; see project memory), and requiring an exact
+  // match here left a real slot stranded on the origin crew member once in production (Thomas
+  // Construction: Seth's old days had no map entry at all, so the strict check silently skipped
+  // removing them while Will correctly got the new ones — job looked "moved" but wasn't).
   for(const ds of originDays){
     const pos=seDateToPos(ds); if(!pos) continue;
-    const key=jcSlotKey(originCi,pos.w,pos.d);
-    if(SLOT_JOB_MAP[key]===jobId){ await seRemoveSlot(originCi,pos.w,pos.d); delete SLOT_JOB_MAP[key]; }
+    const s=newSlots[originCi]?.[pos.w]?.[pos.d];
+    if(s&&s.l===job.customer){
+      await seRemoveSlot(originCi,pos.w,pos.d);
+      delete SLOT_JOB_MAP[jcSlotKey(originCi,pos.w,pos.d)];
+    }
     await seRemoveExtraSlotForLabel(originCi,pos.w,pos.d,job.customer);
   }
 
