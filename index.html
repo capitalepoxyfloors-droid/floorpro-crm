@@ -6546,6 +6546,25 @@ async function jcRescheduleApply(crewCIs,newDates,duration,job,newStart,force=fa
   // Drop any extraDays that fall outside the new date range
   const newDateSet=new Set(newDates.map(d=>d.toISOString().split('T')[0]));
   if(job.extraDays?.length) job.extraDays=job.extraDays.filter(ds=>newDateSet.has(ds));
+  // Keep status in sync with the new dates. autoAdvanceJobsByDate only ever moves
+  // scheduled→in_progress forward as today's date arrives — it never runs the rule backward, so
+  // a job pushed back out to the future (e.g. dragged from a day that already passed to a later
+  // one) stayed stuck showing In Progress on the Jobs board. Rescheduling is exactly the moment
+  // "has the start date arrived" can flip either way, so re-evaluate it right here instead of
+  // waiting on the next full-board auto-advance pass. Only scheduled<->in_progress are
+  // auto-managed — complete is left alone regardless of new dates, since finishing a job is
+  // always an explicit call, never date-driven (see autoAdvanceJobsByDate's own comment).
+  const _today=new Date(); _today.setHours(0,0,0,0);
+  const _newStartDate=new Date(newStart+'T00:00:00');
+  if(job.status==='in_progress' && _newStartDate>_today){
+    job.status='scheduled';
+    if(document.getElementById('jc-status-sel')){ document.getElementById('jc-status-sel').value='scheduled'; jcStyleStatus('scheduled'); }
+    syncBoardCardStatus(job.customer,'scheduled');
+  }else if(job.status==='scheduled' && _newStartDate<=_today){
+    job.status='in_progress';
+    if(document.getElementById('jc-status-sel')){ document.getElementById('jc-status-sel').value='in_progress'; jcStyleStatus('in_progress'); }
+    syncBoardCardStatus(job.customer,'in_progress');
+  }
   saveJobRecords(); saveSlotJobMap();
   closeModal('reschedule');
   renderSchedule();
