@@ -6496,6 +6496,31 @@ async function jcRescheduleConfirm(){
   await jcRescheduleApply(crewCIs,newDates,duration,job,newStart);
 }
 
+// Keep status in sync with a job's dates. autoAdvanceJobsByDate only ever moves
+// scheduled→in_progress forward as today's date arrives — it never runs the rule backward, so a
+// job pushed back out to the future (e.g. rescheduled or drag-reassigned away from a day that
+// already passed) stayed stuck showing In Progress. Re-evaluates both directions right at the
+// moment dates change instead of waiting on the next full-board auto-advance pass. Only
+// scheduled<->in_progress are auto-managed — complete is left alone regardless of new dates,
+// since finishing a job is always an explicit call, never date-driven (see
+// autoAdvanceJobsByDate's own comment). Takes the job's new effective start date directly since
+// callers may recompute it differently (a straight reschedule vs. a crew-reassign that only
+// moved one person and left the job's overall span to be recomputed from all remaining slots).
+function jcSyncStatusToDate(job,effectiveStartStr){
+  if(!effectiveStartStr) return;
+  const _today=new Date(); _today.setHours(0,0,0,0);
+  const _newStartDate=new Date(effectiveStartStr+'T00:00:00');
+  if(job.status==='in_progress' && _newStartDate>_today){
+    job.status='scheduled';
+    if(document.getElementById('jc-status-sel')){ document.getElementById('jc-status-sel').value='scheduled'; jcStyleStatus('scheduled'); }
+    syncBoardCardStatus(job.customer,'scheduled');
+  }else if(job.status==='scheduled' && _newStartDate<=_today){
+    job.status='in_progress';
+    if(document.getElementById('jc-status-sel')){ document.getElementById('jc-status-sel').value='in_progress'; jcStyleStatus('in_progress'); }
+    syncBoardCardStatus(job.customer,'in_progress');
+  }
+}
+
 async function jcRescheduleApply(crewCIs,newDates,duration,job,newStart,force=false){
   // 1. Remove ALL old slots belonging to this job — primary slots via SLOT_JOB_MAP, plus any
   // of the job's own double-booked EXTRA slots on its old dates, matched by customer label
@@ -6546,25 +6571,7 @@ async function jcRescheduleApply(crewCIs,newDates,duration,job,newStart,force=fa
   // Drop any extraDays that fall outside the new date range
   const newDateSet=new Set(newDates.map(d=>d.toISOString().split('T')[0]));
   if(job.extraDays?.length) job.extraDays=job.extraDays.filter(ds=>newDateSet.has(ds));
-  // Keep status in sync with the new dates. autoAdvanceJobsByDate only ever moves
-  // scheduled→in_progress forward as today's date arrives — it never runs the rule backward, so
-  // a job pushed back out to the future (e.g. dragged from a day that already passed to a later
-  // one) stayed stuck showing In Progress on the Jobs board. Rescheduling is exactly the moment
-  // "has the start date arrived" can flip either way, so re-evaluate it right here instead of
-  // waiting on the next full-board auto-advance pass. Only scheduled<->in_progress are
-  // auto-managed — complete is left alone regardless of new dates, since finishing a job is
-  // always an explicit call, never date-driven (see autoAdvanceJobsByDate's own comment).
-  const _today=new Date(); _today.setHours(0,0,0,0);
-  const _newStartDate=new Date(newStart+'T00:00:00');
-  if(job.status==='in_progress' && _newStartDate>_today){
-    job.status='scheduled';
-    if(document.getElementById('jc-status-sel')){ document.getElementById('jc-status-sel').value='scheduled'; jcStyleStatus('scheduled'); }
-    syncBoardCardStatus(job.customer,'scheduled');
-  }else if(job.status==='scheduled' && _newStartDate<=_today){
-    job.status='in_progress';
-    if(document.getElementById('jc-status-sel')){ document.getElementById('jc-status-sel').value='in_progress'; jcStyleStatus('in_progress'); }
-    syncBoardCardStatus(job.customer,'in_progress');
-  }
+  jcSyncStatusToDate(job,newStart);
   saveJobRecords(); saveSlotJobMap();
   closeModal('reschedule');
   renderSchedule();
@@ -11714,11 +11721,11 @@ let _dragSlot = null;
 
 // Dropping a job's bar on a new day re-dates the WHOLE job to start there, reusing the exact
 // same crew-shift/conflict/double-book logic as the "📅 Reschedule" modal (jcRescheduleApply) —
-// just skipping the modal's date-picker UI. Restricted to the SAME crew row it was dragged from
-// (reassigning crew stays a job-card edit, not a drag gesture).
+// just skipping the modal's date-picker UI. Dropping on a DIFFERENT crew member's row instead
+// reassigns just that one person's participation — see schedHandleCrewReassign below.
 async function schedHandleDrop(ci, targetSw, targetSd, dragData){
   if(!dragData) return;
-  if(dragData.ci!==ci){ showToast('Drag within the same crew row to change dates — reassign crew from the job card.'); return; }
+  if(dragData.ci!==ci){ await schedHandleCrewReassign(dragData.ci,ci,targetSw,targetSd,dragData.jobId); return; }
   const job=getJobRecord(dragData.jobId);
   if(!job||!job.startDate){ return; }
   const targetDateStr=seSlotToDate(targetSw,targetSd).toISOString().split('T')[0];
@@ -11754,6 +11761,132 @@ async function schedHandleDrop(ci, targetSw, targetSd, dragData){
   } else {
     await jcRescheduleApply(crewCIs,newDates,duration,job,targetDateStr);
   }
+}
+
+// Every date this job currently occupies on the calendar, across ALL crew members (primary +
+// double-booked extras) — used to recompute a job's overall startDate/endDate after a
+// crew-reassign drag moves only ONE person, so the job stays accurate for whoever else is still
+// on their own original days plus whoever just moved (job_records has one date range for the
+// whole job, but slots are tracked per crew member — this reconciles the two after a partial move).
+function _jobAllOccupiedDates(jobId,customer){
+  const dates=new Set();
+  for(let ci=0;ci<CREW.length;ci++){
+    for(const wStr in (newSlots[ci]||{})){
+      for(const dStr in (newSlots[ci][wStr]||{})){
+        const s=newSlots[ci][wStr][dStr];
+        if(s&&s.l===customer&&s.dt) dates.add(s.dt);
+      }
+    }
+  }
+  Object.entries(multiSlots).forEach(([key,arr])=>{
+    (arr||[]).forEach(ex=>{ if(ex.l===customer&&ex.dt) dates.add(ex.dt); });
+  });
+  return [...dates].sort();
+}
+
+// Cross-row drag: reassign THIS crew member's participation in the job to a different crew
+// member, landing on the dropped date. Mirrors jcRescheduleApply's remove-old/place-new pattern
+// but scoped to ONE crew member instead of the job's whole crewCIs list — any OTHER crew already
+// on the job (a second installer on a multi-crew job) is left completely untouched on their own
+// existing days, per Will's call: dragging one person's bar shouldn't drag a co-worker along.
+async function schedHandleCrewReassign(originCi,targetCi,targetSw,targetSd,jobId){
+  const job=getJobRecord(jobId);
+  if(!job){ return; }
+  const targetName=CREW[targetCi]?.full, originName=CREW[originCi]?.full;
+  if(!targetName||!originName){ return; }
+
+  // Find the ORIGIN crew member's ACTUAL scheduled days for this job (primary + extras) directly
+  // off the calendar — NOT derived from job.startDate/endDate, which is the WHOLE job's span and
+  // can cover more days than any one crew member individually has (e.g. two crew each on their
+  // own different days of the same job). This is what actually gets moved; using the job-level
+  // range here would hand the target crew member everyone's combined day count instead of just
+  // the dragged person's.
+  const originDates=new Set();
+  for(const wStr in (newSlots[originCi]||{})){
+    for(const dStr in (newSlots[originCi][wStr]||{})){
+      const s=newSlots[originCi][wStr][dStr];
+      if(s&&s.l===job.customer&&s.dt) originDates.add(s.dt);
+    }
+  }
+  Object.entries(multiSlots).forEach(([key,arr])=>{
+    if(+key.split('_')[0]!==originCi) return;
+    (arr||[]).forEach(ex=>{ if(ex.l===job.customer&&ex.dt) originDates.add(ex.dt); });
+  });
+  const originDays=[...originDates].sort();
+  if(!originDays.length){ showToast(originName+' has no scheduled days on this job.'); return; }
+
+  const targetDateStr=seSlotToDate(targetSw,targetSd).toISOString().split('T')[0];
+  const includeWeekends=originDays.some(ds=>{ const dw=new Date(ds+'T00:00:00').getDay(); return dw===0||dw===6; });
+  const duration=originDays.length;
+  const newDates=getWorkingDaysFrom(targetDateStr,duration,includeWeekends);
+
+  // Conflict check against the TARGET crew member's existing bookings only (a different job
+  // already on one of the new dates) — same double-book-or-cancel flow as the same-row date drag.
+  const conflicts=[];
+  for(const dt of newDates){
+    const pos=seDateToPos(dt.toISOString().split('T')[0]); if(!pos) continue;
+    const existingJob=SLOT_JOB_MAP[jcSlotKey(targetCi,pos.w,pos.d)];
+    if(existingJob&&existingJob!==jobId) conflicts.push(dt);
+  }
+  let force=false;
+  if(conflicts.length){
+    const ok=confirm(`${targetName} already has ${conflicts.length} day${conflicts.length!==1?'s':''} booked by another job on the new dates. Double-book "${job.customer}" onto ${targetName}'s schedule anyway?`);
+    if(!ok) return;
+    force=true;
+  }
+
+  _jcId=jobId;
+
+  // 1. Remove the ORIGIN crew member's slots for this job (primary + extras) on their own actual
+  // days — the same originDays just computed above, not a reconstructed job-level range.
+  for(const ds of originDays){
+    const pos=seDateToPos(ds); if(!pos) continue;
+    const key=jcSlotKey(originCi,pos.w,pos.d);
+    if(SLOT_JOB_MAP[key]===jobId){ await seRemoveSlot(originCi,pos.w,pos.d); delete SLOT_JOB_MAP[key]; }
+    await seRemoveExtraSlotForLabel(originCi,pos.w,pos.d,job.customer);
+  }
+
+  // 2. Place the TARGET crew member's slots on the new dates.
+  let doubled=0;
+  for(const dt of newDates){
+    const dateStr=dt.toISOString().split('T')[0];
+    const pos=seDateToPos(dateStr); if(!pos) continue;
+    const key=jcSlotKey(targetCi,pos.w,pos.d);
+    if(newSlots[targetCi]?.[pos.w]?.[pos.d]&&SLOT_JOB_MAP[key]&&SLOT_JOB_MAP[key]!==jobId){
+      if(!force) continue;
+      await dbAddExtraSlot(targetCi,pos.w,pos.d,job.customer,job.jobType||'epoxy',jobId,dateStr);
+      doubled++;
+      continue;
+    }
+    await sePlaceSlot(targetCi,pos.w,pos.d,job.customer,job.jobType||'epoxy');
+    SLOT_JOB_MAP[key]=jobId;
+  }
+
+  // 3. Swap the crew list — origin out, target in. Anyone else already on the job is untouched.
+  const names=(job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean);
+  const idx=names.indexOf(originName);
+  if(idx!==-1) names.splice(idx,1);
+  if(!names.includes(targetName)) names.push(targetName);
+  job.crewNames=names.join(', ');
+
+  // 4. Recompute the job's overall date range from EVERY crew member's actual remaining slots,
+  // not just the moved person's — keeps job.startDate/endDate accurate when someone else is
+  // still on their own original days.
+  const allDates=_jobAllOccupiedDates(jobId,job.customer);
+  if(allDates.length){
+    job.startDate=allDates[0];
+    job.endDate=allDates[allDates.length-1];
+    const newDateSet=new Set(allDates);
+    if(job.extraDays?.length) job.extraDays=job.extraDays.filter(ds=>newDateSet.has(ds));
+  }
+
+  jcSyncStatusToDate(job,job.startDate);
+  saveJobRecords(); saveSlotJobMap();
+  renderSchedule();
+  if(document.getElementById('page-crewview')?.classList.contains('active')) renderCrewView();
+  const msg=doubled?`Moved to ${targetName} — ${doubled} day${doubled!==1?'s':''} double-booked as requested.`
+    :`"${job.customer}" reassigned from ${originName} to ${targetName}. ✓`;
+  showToast(msg);
 }
 
 function renderSchedule(){
