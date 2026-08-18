@@ -2606,10 +2606,17 @@ async function loadCrew(){
   if(rows.length>0){rows.forEach((r,i)=>{if(CREW_DATA[i]){Object.assign(CREW_DATA[i],{db_id:r.id,full:r.full_name,name:r.first_name,initials:r.initials,color:r.color,role:r.role,phone:r.phone,specialties:JSON.parse(r.specialties||'[]'),hourly:r.hourly,hours:r.hours,ss:r.ss,medicare:r.medicare,futa:r.futa,wc:r.wc,gl:r.gl,benefits:r.benefits,ptoDays:r.pto_days});CREW[i].name=r.first_name;CREW[i].full=r.full_name;CREW[i].color=r.color;}});}
 }
 
-async function dbSavePTOEntry(crewIdx,wOff,dIdx,label,dateStr){
+async function dbSavePTOEntry(crewIdx,wOff,dIdx,label,dateStr,partial,fromTime,toTime){
   // Store absolute date in type field ('pto:YYYY-MM-DD') so week_offset can be
-  // recomputed on load regardless of when BASE was when this was saved.
-  const typeVal=dateStr?'pto:'+dateStr:'pto';
+  // recomputed on load regardless of when BASE was when this was saved. A partial-day
+  // block (e.g. a 30-min appointment) additionally appends '|fromTime|toTime' (24h HH:MM,
+  // matching the <input type=time> value) — there is no dedicated DB column for this, so it
+  // rides in the same overloaded text field as the date. Without it, `partial`/`from`/`to`
+  // only existed in this tab's in-memory ptoSlots and vanished on the next reload, so every
+  // partial PTO/appointment block silently became a fake full 8-hour PTO day in Payroll
+  // (Job Costing doesn't consume PTO hours, so it never showed there — only Payroll flagged it).
+  let typeVal=dateStr?'pto:'+dateStr:'pto';
+  if(partial&&fromTime&&toTime) typeVal+='|'+fromTime+'|'+toTime;
   const res=await sb.insert('pto_blocks',{crew_idx:crewIdx,week_offset:wOff,day_idx:dIdx,label:label,type:typeVal});
   return res&&res[0]?res[0].id:null;
 }
@@ -2617,9 +2624,21 @@ async function loadPTO(){
   const rows=await sb.get('pto_blocks');
   rows.forEach(r=>{
     let wOff=r.week_offset, dIdx=r.day_idx;
-    // If the entry has an absolute date encoded in type ('pto:YYYY-MM-DD'), recompute
-    // week_offset relative to the current BASE so it never drifts week-to-week.
-    const dateEnc=(r.type||'').startsWith('pto:')?(r.type.slice(4)):null;
+    // If the entry has an absolute date encoded in type ('pto:YYYY-MM-DD[|from|to]'), recompute
+    // week_offset relative to the current BASE so it never drifts week-to-week, and pull out an
+    // optional partial-day time range (see dbSavePTOEntry).
+    const raw=r.type||'';
+    let dateEnc=null,pPartial=false,pFrom='',pTo='';
+    if(raw.startsWith('pto:')){
+      const rest=raw.slice(4);
+      const pipeIdx=rest.indexOf('|');
+      if(pipeIdx===-1){ dateEnc=rest; }
+      else{
+        dateEnc=rest.slice(0,pipeIdx);
+        const times=rest.slice(pipeIdx+1).split('|');
+        if(times.length===2&&times[0]&&times[1]){ pPartial=true; pFrom=times[0]; pTo=times[1]; }
+      }
+    }
     if(dateEnc){
       const d=new Date(dateEnc+'T00:00:00');
       if(!isNaN(d)){
@@ -2629,7 +2648,7 @@ async function loadPTO(){
     }
     if(!ptoSlots[r.crew_idx])ptoSlots[r.crew_idx]={};
     if(!ptoSlots[r.crew_idx][wOff])ptoSlots[r.crew_idx][wOff]={};
-    ptoSlots[r.crew_idx][wOff][dIdx]={label:r.label,type:'pto',db_id:r.id};
+    ptoSlots[r.crew_idx][wOff][dIdx]={label:r.label,type:'pto',db_id:r.id,partial:pPartial,from:pFrom,to:pTo};
   });
 }
 
@@ -8281,7 +8300,7 @@ async function approvePtoRequest(id){
       if(!ptoSlots[crewIdx]) ptoSlots[crewIdx]={};
       if(!ptoSlots[crewIdx][wOff]) ptoSlots[crewIdx][wOff]={};
       ptoSlots[crewIdx][wOff][dIdx]={label,type:'pto',partial:!!req.partial,from:req.fromTime||'',to:req.toTime||''};
-      await dbSavePTOEntry(crewIdx,wOff,dIdx,label,_ptoDateStr);
+      await dbSavePTOEntry(crewIdx,wOff,dIdx,label,_ptoDateStr,req.partial,req.fromTime,req.toTime);
       placed++;
     }
     cur.setDate(cur.getDate()+1);
@@ -11693,8 +11712,11 @@ async function savePtoDayEdit(){
   // Insert at new date
   if(!ptoSlots[_editPtoCrewIdx]) ptoSlots[_editPtoCrewIdx]={};
   if(!ptoSlots[_editPtoCrewIdx][newWOff]) ptoSlots[_editPtoCrewIdx][newWOff]={};
-  ptoSlots[_editPtoCrewIdx][newWOff][newDIdx]={label:newLabel,type:'pto'};
-  const newId=await dbSavePTOEntry(_editPtoCrewIdx,newWOff,newDIdx,newLabel,newDateStr);
+  // This modal only edits date/label, not the time range, so carry over whatever partial-day
+  // info the entry already had — otherwise every edit would silently downgrade a partial/
+  // appointment PTO block to a full 8-hour day (see dbSavePTOEntry).
+  ptoSlots[_editPtoCrewIdx][newWOff][newDIdx]={label:newLabel,type:'pto',partial:pto?.partial,from:pto?.from,to:pto?.to};
+  const newId=await dbSavePTOEntry(_editPtoCrewIdx,newWOff,newDIdx,newLabel,newDateStr,pto?.partial,pto?.from,pto?.to);
   if(newId) ptoSlots[_editPtoCrewIdx][newWOff][newDIdx].db_id=newId;
   closeModal('ptoday-edit'); renderSchedule(); showToast('✓ PTO updated.');
 }
@@ -12581,7 +12603,7 @@ async function savePTO(){
     if(!ptoSlots[crewIdx]) ptoSlots[crewIdx]={};
     if(!ptoSlots[crewIdx][wOff]) ptoSlots[crewIdx][wOff]={};
     ptoSlots[crewIdx][wOff][dIdx]={label,type:'pto',partial:true,from,to};
-    const _ptoRes1=await dbSavePTOEntry(crewIdx,wOff,dIdx,label,date);
+    const _ptoRes1=await dbSavePTOEntry(crewIdx,wOff,dIdx,label,date,true,from,to);
     if(!_ptoRes1) showSyncStatus('⚠ PTO save failed – check connection','var(--red)');
     closeModal('pto');renderSchedule();
     showToast(`✓ Time slot blocked for ${CREW[crewIdx].name} — ${label}`);
