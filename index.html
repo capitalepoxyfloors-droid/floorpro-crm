@@ -5716,12 +5716,20 @@ function _payrollCompute(offset){
       const ot=(log.overtimeWage!==undefined)?!!log.overtimeWage:!!job.overtimeWage;
       const cash=(log.cashWages!==undefined)?!!log.cashWages:!!job.cashWages;
       const prevailing=!!job.prevailingWage;
+      // Same person can have multiple crewPresent rows for one day (e.g. a split shift logged
+      // as a morning session + an afternoon session). Job Costing already dedupes this by name
+      // per day (see seenDay/seenThisDay in renderJobCostingPage/renderJobCosting) — count once —
+      // but Payroll never got the same guard, so a Full-Day-flagged split shift (each row reports
+      // a flat 8h) summed into a false 16h day instead of one 8h day. Match the same dedup here.
+      const seenDay=new Set();
       (Array.isArray(log.crewPresent)?log.crewPresent:[]).forEach(c=>{
-        const hrs=jcGetCrewMemberHrs(c,log);
-        if(hrs<=0) return;
         const hasCrew=c.crewIdx>=0&&CREW_DATA[c.crewIdx];
         const label=(hasCrew?CREW_DATA[c.crewIdx].full:(c.name||'')).trim();
         if(!label) return;
+        if(seenDay.has(label.toLowerCase())) return;
+        seenDay.add(label.toLowerCase());
+        const hrs=jcGetCrewMemberHrs(c,log);
+        if(hrs<=0) return;
         if(cash&&!prevailing) return; // off-payroll — not sent to payroll, so not shown here
         const key=hasCrew?('c'+c.crewIdx):('n:'+label.toLowerCase());
         const b=bucket(key,label);
