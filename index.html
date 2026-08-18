@@ -12152,6 +12152,23 @@ function buildWeekGrid(wOff,mon,dNames){
         flush();
       });
     }
+    // Merge pass C: a job can independently qualify for the primary-run merge above from TWO
+    // separate primary runs of the same label that both reach toward the same block of extra
+    // days (e.g. primary Mon, primary again Wed-Fri, with itself riding the extra/double-booked
+    // layer on Tue to bridge the gap) — each run produces its own merged span, and both spans
+    // overlap on the shared extra day(s). Collapse any mergedExtraSpans sharing a label that
+    // touch or overlap into one continuous span, so it renders as a single bar.
+    {
+      mergedExtraSpans.sort((a,b)=>a.s-b.s||a.e-b.e);
+      for(let mi=0;mi<mergedExtraSpans.length;mi++){
+        for(let mj=mi+1;mj<mergedExtraSpans.length;mj++){
+          if(mergedExtraSpans[mj].l===mergedExtraSpans[mi].l&&mergedExtraSpans[mj].s<=mergedExtraSpans[mi].e){
+            mergedExtraSpans[mi].e=Math.max(mergedExtraSpans[mi].e,mergedExtraSpans[mj].e);
+            mergedExtraSpans.splice(mj,1); mj--;
+          }
+        }
+      }
+    }
 
     // Pre-compute PTO+job days so Pass 2 can flush border-radius on connecting edges
     const ptoPlusLabelMap=new Map(); // day index -> job label
