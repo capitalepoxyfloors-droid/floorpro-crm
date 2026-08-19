@@ -6737,6 +6737,7 @@ function cvGetWeekSpanEvents(weekSun){
 
   // ── 1. Job slots ─────────────────────────────────────────────────────
   const jobMap={};
+  const extraByGroup={}; // groupKey -> [{col,ci,w,d,label,type,jobId,isComplete,isExtra}] — merged into spans below
   for(let col=0;col<7;col++){
     const dt=new Date(weekSun); dt.setDate(weekSun.getDate()+col); dt.setHours(0,0,0,0);
     const dtStr=dt.toISOString().split('T')[0];
@@ -6767,7 +6768,7 @@ function cvGetWeekSpanEvents(weekSun){
         const isDone=jr?.status==='complete';
         jobMap[key]={key,jobId,ci,w,d,label:slot.l||'Job',type:slot.t||'epoxy',colStart:col,colEnd:col,isComplete:isDone,isExtra};
       }
-      // Extra (double-booked) slots — add directly to dedupedMap, bypassing byLabel merge
+      // Extra (double-booked) slots — collect per-crew occurrences; merged into consecutive-day spans below
       for(const ex of getExtraSlots(ci,w,d)){
         const exJobId=ex.jobId||(JOB_RECORDS.find(j=>j.customer===ex.l)?.id)||null;
         const exJr=exJobId?getJobRecord(exJobId):JOB_RECORDS.find(j=>j.customer===(ex.l||''));
@@ -6778,14 +6779,27 @@ function cvGetWeekSpanEvents(weekSun){
           const eSched=new Set(exJr?.startDate&&exJr?.endDate?(eWk?jcAllDays(exJr.startDate,exJr.endDate):jcWeekdays(exJr.startDate,exJr.endDate)):[]);
           exIsExtra=!eSched.has(dtStr);
         }
-        const exKey='_extra_'+(exJobId||ex.l)+'_'+ci+'_'+col+(exIsExtra?'_ext':'_org');
-        if(!dedupedMap[exKey]){
-          dedupedMap[exKey]={key:exKey,jobId:exJobId,ci,w,d,label:ex.l||'Job',type:ex.t||'epoxy',colStart:col,colEnd:col,isComplete:exJr?.status==='complete',isExtra:exIsExtra};
-        } else {
-          dedupedMap[exKey].colEnd=col;
-        }
+        const groupKey='_extra_'+(exJobId||ex.l)+'_'+ci+(exIsExtra?'_ext':'_org');
+        (extraByGroup[groupKey]=extraByGroup[groupKey]||[]).push({col,ci,w,d,label:ex.l||'Job',type:ex.t||'epoxy',jobId:exJobId,isComplete:exJr?.status==='complete',isExtra:exIsExtra});
       }
     }
+  }
+  // Same crew + same job's extra-slot occurrences merge into one bar per contiguous run of days
+  // (mirrors the PTO run-merge below) — a gap day starts a new bar instead of bridging over it.
+  for(const[groupKey,occs] of Object.entries(extraByGroup)){
+    occs.sort((a,b)=>a.col-b.col);
+    let run=null;
+    const flushRun=()=>{
+      if(!run) return;
+      const exKey=groupKey+'_'+run.colStart;
+      dedupedMap[exKey]={key:exKey,jobId:run.jobId,ci:run.ci,w:run.w,d:run.d,label:run.label,type:run.type,colStart:run.colStart,colEnd:run.colEnd,isComplete:run.isComplete,isExtra:run.isExtra};
+      run=null;
+    };
+    for(const occ of occs){
+      if(run&&occ.col===run.colEnd+1){ run.colEnd=occ.col; }
+      else{ flushRun(); run={...occ,colStart:occ.col,colEnd:occ.col}; }
+    }
+    flushRun();
   }
   // Merge duplicate labels (same job, multiple crew members) — keep original/extension separate
   const byLabel={};
