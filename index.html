@@ -1933,6 +1933,12 @@
 const SUPABASE_URL = 'https://cngbsmmdfxmerlqnkate.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNuZ2JzbW1kZnhtZXJscW5rYXRlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg3NzcxNTEsImV4cCI6MjA5NDM1MzE1MX0.WYzlfn8OHPYsWCY-P7bXjvl_v78wozwjk2ajEBxa-7I';
 
+// ── GEOAPIFY CONFIG (address autocomplete + geocoding) ──────────────────────────
+// Free tier, no credit card: sign up at https://myprojects.geoapify.com, create a
+// project, copy its API key, and paste it below. Until a real key is pasted in,
+// address search silently falls back to the old (much less accurate) free service.
+const GEOAPIFY_KEY = 'YOUR_GEOAPIFY_KEY_HERE';
+
 const sb = {
   headers:{
     'Content-Type':'application/json',
@@ -4364,21 +4370,46 @@ function jcPopulateMatDatalist(){
   }).join('');
 }
 
-// ── ADDRESS AUTOCOMPLETE (Photon — built for typeahead, free, no API key) ────
+// ── ADDRESS AUTOCOMPLETE (Geoapify — proximity-ranked, real house-number matching) ──
 // Biased toward St. Louis, MO — returns closest/most relevant results first.
+// Falls back to the old Photon-based search (see _photonSearch below) if no
+// Geoapify key has been configured yet, or if a Geoapify request fails.
 let _addrTimer=null;
 const _stAbbr={Missouri:'MO',Illinois:'IL',Kansas:'KS',Arkansas:'AR',Iowa:'IA',Oklahoma:'OK',Tennessee:'TN',Kentucky:'KY',Indiana:'IN',Ohio:'OH',Nebraska:'NE',Texas:'TX',Florida:'FL',California:'CA',Colorado:'CO',Georgia:'GA','North Carolina':'NC','South Carolina':'SC','New York':'NY','New Jersey':'NJ',Pennsylvania:'PA',Michigan:'MI',Wisconsin:'WI',Minnesota:'MN'};
 
+async function _addrAutocomplete(val){
+  if(GEOAPIFY_KEY && GEOAPIFY_KEY!=='YOUR_GEOAPIFY_KEY_HERE'){
+    try{
+      const r=await fetch(`https://api.geoapify.com/v1/geocode/autocomplete?text=${encodeURIComponent(val)}&filter=countrycode:us&bias=proximity:-90.3,38.7&limit=8&format=json&apiKey=${GEOAPIFY_KEY}`);
+      if(r.ok){
+        const j=await r.json();
+        const seen=new Set();
+        const out=(j.results||[])
+          .filter(p=>p.housenumber||p.street||p.address_line1)
+          .map(p=>{
+            const line1=[p.housenumber,p.street].filter(Boolean).join(' ')||p.address_line1||'';
+            const city=p.city||p.county||'';
+            const state=_stAbbr[p.state]||p.state_code||p.state||'';
+            const zip=p.postcode||'';
+            const full=[line1,city,state,zip].filter(Boolean).join(', ');
+            return {line1,city,state,zip,full};
+          })
+          .filter(a=>{ if(!a.full||seen.has(a.full))return false; seen.add(a.full); return true; });
+        if(out.length) return out;
+      }
+    }catch(e){ /* fall through to backup search below */ }
+  }
+  return _photonSearch(val);
+}
+
+// Legacy fallback — Photon (free, no API key, but ranks by general "importance"
+// rather than proximity/exact house number, so it frequently surfaces the wrong
+// city entirely for ordinary residential addresses). Only used until a Geoapify
+// key is configured above, or if a Geoapify request fails.
 async function _photonSearch(val){
-  // Restricted to Missouri (the service area) two ways: a bbox so Photon only fetches
-  // candidates near the state, then a hard state-name filter below — the rectangular bbox
-  // alone still clips slivers of neighboring states at the corners, so it can't be trusted
-  // on its own to keep out-of-state results from ever showing up.
   const MO_BBOX='-95.9,35.9,-89.0,40.7';
   const r=await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(val)}&limit=10&lang=en&lat=38.7&lon=-90.3&bbox=${MO_BBOX}`);
   const j=await r.json();
-  // Photon often only has the street (no exact house number), especially residential —
-  // accept street-level results and prepend the house number the user typed.
   const typedHn=((val||'').match(/^\s*(\d+)/)||[])[1]||'';
   const seen=new Set();
   return (j.features||[])
@@ -4404,7 +4435,7 @@ function jcAddrInput(val){
   if(!val||val.length<3){drop.style.display='none';return;}
   _addrTimer=setTimeout(async()=>{
     try{
-      const results=await _photonSearch(val);
+      const results=await _addrAutocomplete(val);
       if(!results.length){drop.style.display='none';return;}
       _jcAddrResults=results;
       drop.innerHTML=results.map((a,i)=>`<div class="addr-opt" data-idx="${i}" onmousedown="event.preventDefault()"><div class="addr-main">${a.line1.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div><div class="addr-sub">${[a.city,a.state,a.zip].filter(Boolean).join(', ').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div></div>`).join('');
@@ -4427,7 +4458,7 @@ function svAddrInput(val){
   if(!val||val.length<3){drop.style.display='none';return;}
   _svAddrTimer=setTimeout(async()=>{
     try{
-      const results=await _photonSearch(val);
+      const results=await _addrAutocomplete(val);
       if(!results.length){drop.style.display='none';return;}
       _svAddrResults=results;
       drop.innerHTML=results.map((a,i)=>`<div class="addr-opt" data-idx="${i}" onmousedown="event.preventDefault()"><div class="addr-main">${a.line1.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div><div class="addr-sub">${[a.city,a.state,a.zip].filter(Boolean).join(', ').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div></div>`).join('');
@@ -5130,6 +5161,29 @@ function jcSetCommission(i,field,val){
   renderJobCosting();
 }
 
+// Single-address geocode used for mileage calc and GPS auto clock-in (needs one
+// best-guess lat/lng, not a list of suggestions). Prefers Geoapify (accurate,
+// proximity-ranked); falls back to Photon if no key is configured or it fails.
+async function _geocodeAddress(address){
+  if(GEOAPIFY_KEY && GEOAPIFY_KEY!=='YOUR_GEOAPIFY_KEY_HERE'){
+    try{
+      const r=await fetch(`https://api.geoapify.com/v1/geocode/search?text=${encodeURIComponent(address)}&filter=countrycode:us&bias=proximity:-90.3,38.7&limit=1&format=json&apiKey=${GEOAPIFY_KEY}`);
+      if(r.ok){
+        const j=await r.json();
+        const p=j.results?.[0];
+        if(p && p.lat!=null && p.lon!=null) return {lat:p.lat,lng:p.lon};
+      }
+    }catch(e){ /* fall through to backup below */ }
+  }
+  try{
+    const r=await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(address)}&limit=1&lang=en`);
+    const j=await r.json();
+    const f=j?.features?.[0];
+    if(f){ const [lng,lat]=f.geometry.coordinates; return {lat,lng}; }
+  }catch(e){}
+  return null;
+}
+
 async function jcCalcMileage(){
   const job=getJobRecord(_jcId); if(!job) return;
   if(!job.address){showToast('No job address set — add one on the Job Info tab.');return;}
@@ -5147,13 +5201,10 @@ async function jcCalcMileage(){
   }
 
   try{
-    // Step 1: geocode job address via Photon (same API already used in this app)
-    const photonRes=await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(job.address)}&limit=3&lang=en`);
-    if(!photonRes.ok) throw new Error('Geocoding service unavailable (HTTP '+photonRes.status+')');
-    const photonData=await photonRes.json();
-    const feature=photonData?.features?.[0];
-    if(!feature) throw new Error('Address not found. Enter miles manually instead.');
-    const [jobLng,jobLat]=feature.geometry.coordinates;
+    // Step 1: geocode job address
+    const coords=await _geocodeAddress(job.address);
+    if(!coords) throw new Error('Address not found. Enter miles manually instead.');
+    const jobLat=coords.lat, jobLng=coords.lng;
 
     // Step 2: driving distance via OSRM
     let miles;
@@ -5220,19 +5271,17 @@ function _tcTimeStr(date){
   const ap=h>=12?'PM':'AM'; h=h%12; if(h===0)h=12;
   return h+':'+String(m).padStart(2,'0')+' '+ap;
 }
-// Cache a job's coordinates (geocode the saved address once via Photon, same API as mileage)
+// Cache a job's coordinates (geocode the saved address once, same helper as mileage calc)
 async function _tcEnsureJobCoords(job){
   if(!job) return null;
   if(job.lat!=null && job.lng!=null && job.geoAddr===job.address) return {lat:job.lat,lng:job.lng};
   if(!job.address) return (job.lat!=null&&job.lng!=null)?{lat:job.lat,lng:job.lng}:null;
   try{
-    const r=await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(job.address)}&limit=1&lang=en`);
-    const j=await r.json();
-    const f=j?.features?.[0]; if(!f) return null;
-    const [lng,lat]=f.geometry.coordinates;
-    job.lat=lat; job.lng=lng; job.geoAddr=job.address;
+    const coords=await _geocodeAddress(job.address);
+    if(!coords) return null;
+    job.lat=coords.lat; job.lng=coords.lng; job.geoAddr=job.address;
     await saveJobRecords();
-    return {lat,lng};
+    return coords;
   }catch(e){ return null; }
 }
 // Jobs whose date range covers today — assignment-agnostic ("they're there for a reason")
@@ -8886,7 +8935,7 @@ function leadAddressSearch(val){
   if(!sugg||val.length<3){if(sugg)sugg.style.display='none';return;}
   leadAddrTimer=setTimeout(async()=>{
     try{
-      const results=await _photonSearch(val);
+      const results=await _addrAutocomplete(val);
       sugg.innerHTML='';
       if(!results.length){sugg.style.display='none';return;}
       results.forEach((a,i)=>{
@@ -11372,7 +11421,7 @@ function addressSearch(val){
   if(val.length<3){sugg.style.display='none';return;}
   addressTimer=setTimeout(async()=>{
     try{
-      const results=await _photonSearch(val);
+      const results=await _addrAutocomplete(val);
       sugg.innerHTML='';
       if(!results.length){sugg.style.display='none';return;}
       results.forEach((a,i)=>{
