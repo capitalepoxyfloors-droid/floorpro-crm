@@ -1937,7 +1937,7 @@ const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 // Free tier, no credit card: sign up at https://myprojects.geoapify.com, create a
 // project, copy its API key, and paste it below. Until a real key is pasted in,
 // address search silently falls back to the old (much less accurate) free service.
-const GEOAPIFY_KEY = 'YOUR_GEOAPIFY_KEY_HERE';
+const GEOAPIFY_KEY = '066b4fb324194ef98ee2843a36a53d62';
 
 const sb = {
   headers:{
@@ -4376,16 +4376,21 @@ function jcPopulateMatDatalist(){
 // Geoapify key has been configured yet, or if a Geoapify request fails.
 let _addrTimer=null;
 const _stAbbr={Missouri:'MO',Illinois:'IL',Kansas:'KS',Arkansas:'AR',Iowa:'IA',Oklahoma:'OK',Tennessee:'TN',Kentucky:'KY',Indiana:'IN',Ohio:'OH',Nebraska:'NE',Texas:'TX',Florida:'FL',California:'CA',Colorado:'CO',Georgia:'GA','North Carolina':'NC','South Carolina':'SC','New York':'NY','New Jersey':'NJ',Pennsylvania:'PA',Michigan:'MI',Wisconsin:'WI',Minnesota:'MN'};
+// Restricted to Missouri (the service area) two ways: a bbox so the geocoder only
+// fetches candidates near the state, then a hard state-name filter below — the
+// rectangular bbox alone still clips slivers of neighboring states at the corners,
+// so it can't be trusted on its own to keep out-of-state results from showing up.
+const MO_BBOX='-95.9,35.9,-89.0,40.7'; // west,south,east,north
 
 async function _addrAutocomplete(val){
   if(GEOAPIFY_KEY && GEOAPIFY_KEY!=='YOUR_GEOAPIFY_KEY_HERE'){
     try{
-      const r=await fetch(`https://api.geoapify.com/v1/geocode/autocomplete?text=${encodeURIComponent(val)}&filter=countrycode:us&bias=proximity:-90.3,38.7&limit=8&format=json&apiKey=${GEOAPIFY_KEY}`);
+      const r=await fetch(`https://api.geoapify.com/v1/geocode/autocomplete?text=${encodeURIComponent(val)}&filter=rect:${MO_BBOX}&bias=proximity:-90.3,38.7&limit=8&format=json&apiKey=${GEOAPIFY_KEY}`);
       if(r.ok){
         const j=await r.json();
         const seen=new Set();
         const out=(j.results||[])
-          .filter(p=>p.housenumber||p.street||p.address_line1)
+          .filter(p=>p.state==='Missouri'&&(p.housenumber||p.street||p.address_line1))
           .map(p=>{
             const line1=[p.housenumber,p.street].filter(Boolean).join(' ')||p.address_line1||'';
             const city=p.city||p.county||'';
@@ -4407,7 +4412,6 @@ async function _addrAutocomplete(val){
 // city entirely for ordinary residential addresses). Only used until a Geoapify
 // key is configured above, or if a Geoapify request fails.
 async function _photonSearch(val){
-  const MO_BBOX='-95.9,35.9,-89.0,40.7';
   const r=await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(val)}&limit=10&lang=en&lat=38.7&lon=-90.3&bbox=${MO_BBOX}`);
   const j=await r.json();
   const typedHn=((val||'').match(/^\s*(\d+)/)||[])[1]||'';
@@ -5167,7 +5171,7 @@ function jcSetCommission(i,field,val){
 async function _geocodeAddress(address){
   if(GEOAPIFY_KEY && GEOAPIFY_KEY!=='YOUR_GEOAPIFY_KEY_HERE'){
     try{
-      const r=await fetch(`https://api.geoapify.com/v1/geocode/search?text=${encodeURIComponent(address)}&filter=countrycode:us&bias=proximity:-90.3,38.7&limit=1&format=json&apiKey=${GEOAPIFY_KEY}`);
+      const r=await fetch(`https://api.geoapify.com/v1/geocode/search?text=${encodeURIComponent(address)}&filter=rect:${MO_BBOX}&bias=proximity:-90.3,38.7&limit=1&format=json&apiKey=${GEOAPIFY_KEY}`);
       if(r.ok){
         const j=await r.json();
         const p=j.results?.[0];
@@ -5176,7 +5180,7 @@ async function _geocodeAddress(address){
     }catch(e){ /* fall through to backup below */ }
   }
   try{
-    const r=await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(address)}&limit=1&lang=en`);
+    const r=await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(address)}&limit=1&lang=en&bbox=${MO_BBOX}`);
     const j=await r.json();
     const f=j?.features?.[0];
     if(f){ const [lng,lat]=f.geometry.coordinates; return {lat,lng}; }
