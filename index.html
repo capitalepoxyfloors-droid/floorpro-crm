@@ -8552,6 +8552,9 @@ function renderSalesSchedule(){
       if(hol){
         cell.appendChild(mk('div','sch-job holiday',hol));
       } else {
+        cell.style.cursor='pointer';
+        cell.title='Click to add a visit on '+dateStr;
+        cell.onclick=()=>openSalesVisitModalForDate(dateStr);
         const dayVisits=SALES_VISITS.filter(v=>v.date===dateStr).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
         if(dayVisits.length){
           dayVisits.forEach(v=>{
@@ -8573,7 +8576,7 @@ function renderSalesSchedule(){
             }
             chip.style.cursor='pointer';
             chip.title='Click to edit';
-            chip.onclick=()=>editSalesVisit(SALES_VISITS.indexOf(v));
+            chip.onclick=(e)=>{e.stopPropagation();editSalesVisit(SALES_VISITS.indexOf(v));};
             cell.appendChild(chip);
           });
         } else {
@@ -8799,6 +8802,12 @@ function bookLeadVisit(idx){
   _updateSvNotifBadge();
   // Move lead to Scheduled stage after visit is saved
   window._pendingLeadToSchedule=idx;
+}
+
+// Click a day cell on the sales schedule grid to add a visit preset to that date
+function openSalesVisitModalForDate(dateStr){
+  openSalesVisitModal();
+  document.getElementById('sv-date').value=dateStr;
 }
 
 function openSalesVisitModal(){
