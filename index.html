@@ -1332,9 +1332,12 @@
       </div>
       <div class="form-group" id="sv-address-row">
         <label class="form-label">Address</label>
-        <div style="position:relative;">
-          <input class="form-input" id="sv-address" placeholder="Start typing address..." oninput="svAddrInput(this.value)" onblur="setTimeout(()=>{const d=document.getElementById('sv-addr-drop');if(d)d.style.display='none';},200)" autocomplete="off"/>
-          <div id="sv-addr-drop" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:9999;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);box-shadow:0 4px 16px rgba(0,0,0,.18);max-height:220px;overflow-y:auto;"></div>
+        <div style="display:flex;gap:8px;align-items:flex-start;">
+          <div style="position:relative;flex:1;">
+            <input class="form-input" id="sv-address" placeholder="Start typing address..." oninput="svAddrInput(this.value)" onblur="setTimeout(()=>{const d=document.getElementById('sv-addr-drop');if(d)d.style.display='none';},200)" autocomplete="off" style="width:100%;"/>
+            <div id="sv-addr-drop" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:9999;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);box-shadow:0 4px 16px rgba(0,0,0,.18);max-height:220px;overflow-y:auto;"></div>
+          </div>
+          <button class="btn btn-ghost" id="sv-map-btn" onclick="svModalOpenMaps()" style="white-space:nowrap;display:none;flex-shrink:0;" title="Open in Google Maps">📍 Maps</button>
         </div>
       </div>
       <div class="form-group"><label class="form-label">Notes</label><textarea class="form-textarea" id="sv-notes" placeholder="What to bring, what to measure, what to discuss..."></textarea></div>
@@ -4455,8 +4458,18 @@ function jcPickAddr(addr){
   document.getElementById('jc-map-btn').style.display='';
 }
 
+function svMapBtnSync(){
+  const btn=document.getElementById('sv-map-btn'); if(!btn) return;
+  btn.style.display=document.getElementById('sv-address').value.trim()?'':'none';
+}
+function svModalOpenMaps(){
+  const a=document.getElementById('sv-address').value.trim();
+  if(a) window.open('https://maps.google.com/?q='+encodeURIComponent(a),'_blank');
+}
+
 let _svAddrTimer=null;
 function svAddrInput(val){
+  svMapBtnSync();
   const drop=document.getElementById('sv-addr-drop');
   clearTimeout(_svAddrTimer);
   if(!val||val.length<3){drop.style.display='none';return;}
@@ -4474,6 +4487,7 @@ function svAddrInput(val){
 function svPickAddr(addr){
   document.getElementById('sv-address').value=addr;
   document.getElementById('sv-addr-drop').style.display='none';
+  svMapBtnSync();
 }
 
 // ── DAILY LOG TAB ─────────────────────────────────────────────────────────────
@@ -8636,6 +8650,7 @@ function svLeadSelected(val){
   document.getElementById('sv-name').value = l.name;
   if(l.phone) document.getElementById('sv-phone').value = l.phone;
   if(l.address) document.getElementById('sv-address').value = l.address;
+  svMapBtnSync();
 }
 
 function populateSvLeadDropdown(){
@@ -8832,6 +8847,7 @@ function svTypeChanged(){
   const titleEl=document.getElementById('sv-title');
   if(durRow) durRow.style.display=isBid?'none':'';
   if(addrRow) addrRow.style.display=isBid?'none':'';
+  svMapBtnSync();
   // Update save button label
   const saveBtn=document.querySelector('#modal-salesvisit .btn-primary');
   if(saveBtn) saveBtn.textContent=isBid?'Save Bid Due Date':'Save Visit';
