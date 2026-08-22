@@ -4564,7 +4564,7 @@ function jcRenderDayLogs(){
           </div>
         </div>
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-          <button id="jcfd-${key}" onclick="jcToggleFullDay('${ds}')" style="font-size:12px;padding:3px 10px;border-radius:6px;border:1px solid var(--primary);cursor:pointer;transition:all .15s;background:${log.fullDay?'var(--primary)':'none'};color:${log.fullDay?'#fff':'var(--primary)'};">${log.fullDay?'✓ Full 8-hr Day':'Full 8-hr Day'}</button>
+          <button id="jcfd-${key}" onclick="jcToggleFullDay('${ds}')" style="font-size:12px;padding:3px 10px;border-radius:6px;border:1px solid var(--primary);cursor:pointer;transition:all .15s;background:${log.fullDay?'var(--primary)':'none'};color:${log.fullDay?'#fff':'var(--primary)'};">${log.fullDay?'✓ Full Day':'Full Day'}</button>
           ${localStorage.getItem('fpRole')!=='crew'?`<div style="display:flex;align-items:center;gap:6px;">
             <span style="font-size:12px;color:var(--text3);">Time on site:</span>
             <span id="jch-${key}" style="font-size:13px;font-weight:700;color:var(--accent);">${log.fullDay?'8.0 hrs':(log.startTime&&log.endTime?jcCalcHrs(log.startTime,log.endTime):'—')}</span>
@@ -5126,7 +5126,7 @@ function jcToggleFullDay(ds){
   if(btn){
     btn.style.background=log.fullDay?'var(--accent)':'none';
     btn.style.color=log.fullDay?'#fff':'var(--accent)';
-    btn.textContent=log.fullDay?'✓ Full 8-hr Day':'Full 8-hr Day';
+    btn.textContent=log.fullDay?'✓ Full Day':'Full Day';
   }
   // Re-render crew rows so per-member time inputs enable/disable
   jcRenderDayCrew(ds);
@@ -6122,7 +6122,7 @@ function renderJobCosting(){
     const fmtD=ds=>jcFmtDate(ds);
     html+=`<div style="background:var(--red-dim,#fff0f0);border:1px solid var(--red,#e53e3e);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:12px;">
       <div style="font-size:13px;font-weight:600;color:var(--red,#e53e3e);">⚠ ${missingTimeDates.length} day${missingTimeDates.length!==1?'s':''} logged but missing a time — excluded from labor cost below</div>
-      <div style="font-size:11.5px;color:var(--text2);margin-top:3px;">${missingTimeDates.map(fmtD).join(', ')}. Enter a start/end time or check "Full 8-hr Day" on the Daily Log tab for ${missingTimeDates.length!==1?'these days':'this day'} to include ${missingTimeDates.length!==1?'them':'it'} here.</div>
+      <div style="font-size:11.5px;color:var(--text2);margin-top:3px;">${missingTimeDates.map(fmtD).join(', ')}. Enter a start/end time or check "Full Day" on the Daily Log tab for ${missingTimeDates.length!==1?'these days':'this day'} to include ${missingTimeDates.length!==1?'them':'it'} here.</div>
     </div>`;
   }
 
@@ -6212,7 +6212,7 @@ function renderJobCosting(){
         <span style="font-size:11px;font-weight:600;color:var(--text2);">${jcFmtDate(ds)} &nbsp;<span style="color:var(--text3);font-weight:400;">${dayHrs.toFixed(1)} hrs on site</span></span>
         <span style="display:flex;align-items:center;gap:4px;">
           ${isFullDay?`<span style="color:#22c55e;font-size:14px;font-weight:700;line-height:1;">✓</span>`:''}
-          <button onclick="jcToggleFullDay('${ds}');renderJobCosting();" style="font-size:10px;padding:3px 10px;border-radius:4px;border:1px solid var(--border2);cursor:pointer;background:var(--surface2);color:var(--text2);">8-hr day</button>
+          <button onclick="jcToggleFullDay('${ds}');renderJobCosting();" style="font-size:10px;padding:3px 10px;border-radius:4px;border:1px solid var(--border2);cursor:pointer;background:var(--surface2);color:var(--text2);">Full Day</button>
         </span>
       </div>`;
       rows.forEach(r=>{
