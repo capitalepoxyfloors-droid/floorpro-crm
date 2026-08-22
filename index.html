@@ -12306,7 +12306,9 @@ function buildWeekGrid(wOff,mon,dNames){
       const{s:startDay,e:endExcl,l:label,t:type,x:isExtra}=run;
       const span=endExcl-startDay;
       const jobId=SLOT_JOB_MAP[jcSlotKey(i,days[startDay].sw,days[startDay].sd)];
-      const jr=jobId?getJobRecord(jobId):resolveJobForDate(label,colDate(startDay).toISOString().split('T')[0]);
+      const _rawJr=jobId?getJobRecord(jobId):null;
+      // Verify mapped job matches this run's label — stale when a double-book overwrote the map entry
+      const jr=(_rawJr&&_rawJr.customer===label)?_rawJr:resolveJobForDate(label,colDate(startDay).toISOString().split('T')[0]);
       const isDone=jr?.status==='complete';
       const isWkndBar=(startDay===0||startDay===6);
       const nxt=_runs[ri+1],prv=_runs[ri-1];
@@ -12436,8 +12438,10 @@ function buildWeekGrid(wOff,mon,dNames){
         const wp=(widthFr/TOTAL_FR*100).toFixed(3);
         const topPx=38+item.track*28;
         const itemDate=colDate(item.s).toISOString().split('T')[0];
-        const exJobId=item.jobId||(resolveJobForDate(item.l,itemDate)?.id)||null;
-        const exJr=exJobId?getJobRecord(exJobId):resolveJobForDate(item.l,itemDate);
+        const _exRawJr=item.jobId?getJobRecord(item.jobId):null;
+        // Verify mapped job matches this item's label — stale when a double-book overwrote the map entry
+        const exJr=(_exRawJr&&_exRawJr.customer===item.l)?_exRawJr:resolveJobForDate(item.l,itemDate);
+        const exJobId=exJr?.id||item.jobId||null;
         const isDone=exJr?.status==='complete';
         const bar=document.createElement('div');
         bar.className='sch-span-bar '+(isDone?'done':(item.t||'epoxy'));
@@ -12483,7 +12487,9 @@ function buildWeekGrid(wOff,mon,dNames){
         const nextHasSameJob=(d+1<TOTAL_DAYS)&&(days[d+1]?.slot?.l===slotRaw.l||(days[d+1]?.pto&&days[d+1]?.slotRaw?.l===slotRaw.l));
         // Row 1 — job bar (top:10px from CSS; same look as normal span bars)
         const pjJobId=SLOT_JOB_MAP[jcSlotKey(i,days[d].sw,days[d].sd)];
-        const pjJr=pjJobId?getJobRecord(pjJobId):resolveJobForDate(slotRaw.l,colDate(d).toISOString().split('T')[0]);
+        const _pjRawJr=pjJobId?getJobRecord(pjJobId):null;
+        // Verify mapped job matches the slot's label — stale when a double-book overwrote the map entry
+        const pjJr=(_pjRawJr&&_pjRawJr.customer===slotRaw.l)?_pjRawJr:resolveJobForDate(slotRaw.l,colDate(d).toISOString().split('T')[0]);
         const pjDone=pjJr?.status==='complete';
         const jobBar=document.createElement('div');
         let jcls='sch-span-bar ';
@@ -12548,7 +12554,9 @@ function buildWeekGrid(wOff,mon,dNames){
         const nextHasSameJob=(d+1<TOTAL_DAYS)&&(days[d+1]?.slot?.l===slotRaw.l||((days[d+1]?.pto||days[d+1]?.hol)&&days[d+1]?.slotRaw?.l===slotRaw.l));
         // Row 1 — job bar (top:10px from CSS; same look as normal span bars)
         const pjJobId=SLOT_JOB_MAP[jcSlotKey(i,days[d].sw,days[d].sd)];
-        const pjJr=pjJobId?getJobRecord(pjJobId):resolveJobForDate(slotRaw.l,colDate(d).toISOString().split('T')[0]);
+        const _pjRawJr=pjJobId?getJobRecord(pjJobId):null;
+        // Verify mapped job matches the slot's label — stale when a double-book overwrote the map entry
+        const pjJr=(_pjRawJr&&_pjRawJr.customer===slotRaw.l)?_pjRawJr:resolveJobForDate(slotRaw.l,colDate(d).toISOString().split('T')[0]);
         const pjDone=pjJr?.status==='complete';
         const jobBar=document.createElement('div');
         let jcls='sch-span-bar ';
