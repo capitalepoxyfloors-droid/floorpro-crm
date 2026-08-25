@@ -4565,7 +4565,7 @@ function jcRenderDayLogs(){
         </div>
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
           <button id="jcfd-${key}" onclick="jcToggleFullDay('${ds}')" style="font-size:12px;padding:3px 10px;border-radius:6px;border:1px solid var(--primary);cursor:pointer;transition:all .15s;background:${log.fullDay?'var(--primary)':'none'};color:${log.fullDay?'#fff':'var(--primary)'};">${log.fullDay?'✓ Full Day':'Full Day'}</button>
-          ${localStorage.getItem('fpRole')!=='crew'?`<div style="display:flex;align-items:center;gap:6px;">
+          ${(localStorage.getItem('fpRole')!=='crew'&&!document.getElementById('page-crewview')?.classList.contains('active'))?`<div style="display:flex;align-items:center;gap:6px;">
             <span style="font-size:12px;color:var(--text3);">Time on site:</span>
             <span id="jch-${key}" style="font-size:13px;font-weight:700;color:var(--accent);">${log.fullDay?'8.0 hrs':(log.startTime&&log.endTime?jcCalcHrs(log.startTime,log.endTime):'—')}</span>
           </div>`:``}
