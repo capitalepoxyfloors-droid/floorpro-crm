@@ -2856,9 +2856,14 @@ async function deduplicateSlotsByJobRecord(){
         const ciN=parseInt(ci),wN=parseInt(w),dN=parseInt(d);
         const mapKey=jcSlotKey(ciN,wN,dN);
 
-        // Resolve the job: prefer SLOT_JOB_MAP, fall back to label match
+        // Resolve the job: prefer SLOT_JOB_MAP, fall back to label match. The map entry can go
+        // stale (e.g. a later double-book on the same crew/day overwrote it with a different
+        // job's id) — verify the resolved job's customer actually matches this slot's label
+        // before trusting its date range, or a leftover slot can hide behind an unrelated
+        // job's valid dates and never get swept.
         const jobId=SLOT_JOB_MAP[mapKey];
-        const job=jobId ? JOB_RECORDS.find(j=>j.id===jobId) : jobByCustomer[slot.l];
+        const mappedJob=jobId ? JOB_RECORDS.find(j=>j.id===jobId) : null;
+        const job=(mappedJob&&mappedJob.customer===slot.l)?mappedJob:jobByCustomer[slot.l];
         if(!job||!job.startDate) continue;
 
         const endDate=job.endDate||job.startDate;
