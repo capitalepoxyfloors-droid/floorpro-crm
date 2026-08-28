@@ -1001,7 +1001,7 @@
         <div class="jobs-block" style="padding:0;margin-bottom:16px;">
           <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
             <input class="form-input" id="al-search" placeholder="Search by customer, crew, or action…" style="flex:1;min-width:220px;max-width:360px;" oninput="renderAuditLog()"/>
-            <div style="font-size:11.5px;color:var(--text2);">Every schedule and job change, newest first. Nothing here can be edited or deleted from the app.</div>
+            <div style="font-size:11.5px;color:var(--text2);">Every change across the CRM, newest first. Nothing here can be edited or deleted from the app.</div>
           </div>
           <div id="al-list"></div>
         </div>
@@ -2038,8 +2038,37 @@ let AUDIT_LOG_CACHE=null;
 const AUDIT_ACTION_META={
   schedule_added:{icon:'📅',label:'Added to schedule',color:'var(--green)'},
   schedule_removed:{icon:'🗑️',label:'Removed from schedule',color:'var(--red)'},
+  schedule_updated:{icon:'📅',label:'Schedule slot updated',color:'var(--blue)'},
   job_created:{icon:'✚',label:'Job created',color:'var(--green)'},
-  job_deleted:{icon:'✖',label:'Job deleted',color:'var(--red)'}
+  job_deleted:{icon:'✖',label:'Job deleted',color:'var(--red)'},
+  job_updated:{icon:'✎',label:'Job updated',color:'var(--blue)'},
+  board_job_created:{icon:'✚',label:'Job board entry created',color:'var(--green)'},
+  board_job_updated:{icon:'✎',label:'Job board entry updated',color:'var(--blue)'},
+  board_job_deleted:{icon:'✖',label:'Job board entry deleted',color:'var(--red)'},
+  board_status_changed:{icon:'➡️',label:'Job status changed',color:'var(--blue)'},
+  job_invoiced:{icon:'📄',label:'Job marked invoiced',color:'var(--blue)'},
+  lead_created:{icon:'✚',label:'Lead created',color:'var(--green)'},
+  lead_updated:{icon:'✎',label:'Lead updated',color:'var(--blue)'},
+  lead_deleted:{icon:'✖',label:'Lead deleted',color:'var(--red)'},
+  material_created:{icon:'✚',label:'Material added',color:'var(--green)'},
+  material_updated:{icon:'✎',label:'Material updated',color:'var(--blue)'},
+  material_deleted:{icon:'✖',label:'Material deleted',color:'var(--red)'},
+  crew_created:{icon:'✚',label:'Crew member added',color:'var(--green)'},
+  crew_updated:{icon:'✎',label:'Crew member updated',color:'var(--blue)'},
+  pto_added:{icon:'📅',label:'PTO/appointment added',color:'var(--green)'},
+  pto_updated:{icon:'✎',label:'PTO/appointment updated',color:'var(--blue)'},
+  pto_removed:{icon:'🗑️',label:'PTO/appointment removed',color:'var(--red)'},
+  vehicle_created:{icon:'✚',label:'Vehicle added',color:'var(--green)'},
+  vehicle_updated:{icon:'✎',label:'Vehicle updated',color:'var(--blue)'},
+  vehicle_deleted:{icon:'✖',label:'Vehicle deleted',color:'var(--red)'},
+  maintenance_created:{icon:'✚',label:'Maintenance logged',color:'var(--green)'},
+  maintenance_updated:{icon:'✎',label:'Maintenance updated',color:'var(--blue)'},
+  maintenance_deleted:{icon:'✖',label:'Maintenance deleted',color:'var(--red)'},
+  reference_created:{icon:'✚',label:'Reference entry added',color:'var(--green)'},
+  reference_updated:{icon:'✎',label:'Reference entry updated',color:'var(--blue)'},
+  reference_deleted:{icon:'✖',label:'Reference entry deleted',color:'var(--red)'},
+  settings_changed:{icon:'⚙️',label:'Settings changed',color:'var(--blue)'},
+  pin_changed:{icon:'🔒',label:'PIN/access code changed',color:'var(--blue)'}
 };
 async function renderAuditLog(){
   const el=document.getElementById('al-list'); if(!el) return;
@@ -2415,26 +2444,30 @@ async function loadTodos(){
 
 // ── SUPABASE SYNC FUNCTIONS ────────────────────────────────────────────────────
 async function dbSaveLead(lead){
+  const isNew=!lead.db_id;
   const row={name:lead.name,phone:lead.phone||'',email:lead.email||'',job_type:lead.jobType||'',cust_type:lead.custType||'',sqft:lead.sqft||'',value:lead.value||'',address:lead.address||'',source:lead.source||'',notes:lead.notes||'',stage:lead.stage||'new',detail:lead.detail||'',date_added:lead.date||''};
   if(lead.db_id){const ok=await sb.update('leads',lead.db_id,row);if(!ok){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}}
   else{const res=await sb.insert('leads',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}lead.db_id=res[0].id;}
+  logAudit(isNew?'lead_created':'lead_updated',lead.name||'Lead',lead.stage?('Stage: '+lead.stage):'');
   showSyncStatus('✓ Synced');
   return true;
 }
-async function dbDeleteLead(lead){if(lead.db_id)await sb.delete('leads',lead.db_id);}
+async function dbDeleteLead(lead){if(lead.db_id){await sb.delete('leads',lead.db_id);logAudit('lead_deleted',lead.name||'Lead','');}}
 async function loadLeads(){
   const rows=await sb.get('leads');
   LEADS=rows.map(r=>({db_id:r.id,name:r.name,phone:r.phone,email:r.email,jobType:r.job_type,custType:r.cust_type,sqft:r.sqft,value:r.value,address:r.address,source:r.source,notes:r.notes,stage:r.stage,detail:r.detail,date:r.date_added}));
 }
 
 async function dbSaveJob(jobObj){
+  const isNew=!jobObj.db_id;
   const row={customer:jobObj.customer,job_label:jobObj.jobLabel,value:jobObj.value||'',display_val:jobObj.displayVal||'',detail:jobObj.detail||'',status:jobObj.status||'approved',crew:jobObj.crew||'',notes:jobObj.notes||''};
   if(jobObj.db_id){const ok=await sb.update('jobs',jobObj.db_id,row);if(!ok){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}}
   else{const res=await sb.insert('jobs',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}jobObj.db_id=res[0].id;}
+  logAudit(isNew?'board_job_created':'board_job_updated',jobObj.customer||'Job','Status: '+(jobObj.status||'approved'));
   showSyncStatus('✓ Synced');
   return true;
 }
-async function dbDeleteJob(db_id){if(db_id)await sb.delete('jobs',db_id);}
+async function dbDeleteJob(db_id,customerName){if(db_id){await sb.delete('jobs',db_id);logAudit('board_job_deleted',customerName||'Job','');}}
 // Most recent jobs-table rows, cached by loadJobs so autoAdvanceJobsByDate can reconcile board
 // status against the actual DATA, not the DOM (which can be transiently empty and was spawning
 // duplicate no-Wave rows — e.g. Bob Gerke appearing twice in Complete).
@@ -2591,22 +2624,26 @@ async function autoAdvanceJobsByDate(){
 }
 
 async function dbSaveMaterial(mat,idx){
+  const isNew=!mat.db_id;
   const row={name:mat.name,mfr:mat.mfr||'',cat:mat.cat||'',unit:mat.unit||'',price:parseFloat(mat.price)||0,price_date:mat.date||'',coverage:parseFloat(mat.coverage)||0,coverage_unit:mat.coverageUnit||'',supplier:mat.supplier||'',notes:mat.notes||''};
   if(mat.db_id){const ok=await sb.update('materials',mat.db_id,row);if(!ok){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}}
   else{const res=await sb.insert('materials',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}MATERIALS[idx].db_id=res[0].id;}
+  logAudit(isNew?'material_created':'material_updated',mat.name||'Material','$'+(mat.price||0)+'/'+(mat.unit||''));
   showSyncStatus('✓ Synced');
   return true;
 }
-async function dbDeleteMaterial(db_id){if(db_id)await sb.delete('materials',db_id);}
+async function dbDeleteMaterial(db_id,matName){if(db_id){await sb.delete('materials',db_id);logAudit('material_deleted',matName||'Material','');}}
 async function loadMaterials(){
   const rows=await sb.get('materials');
   if(rows.length>0)MATERIALS=rows.map(r=>({db_id:r.id,name:r.name,mfr:r.mfr,cat:r.cat,unit:r.unit,price:r.price,date:r.price_date,coverage:r.coverage,coverageUnit:r.coverage_unit,supplier:r.supplier,notes:r.notes}));
 }
 
 async function dbSaveCrew(c,idx){
+  const isNew=!c.db_id;
   const row={full_name:c.full,first_name:c.name,last_name:c.full.split(' ').slice(1).join(' '),initials:c.initials,color:c.color,role:c.role||'',phone:c.phone||'',specialties:JSON.stringify(c.specialties||[]),hourly:c.hourly||'',hours:c.hours||'40',ss:c.ss||'6.20',medicare:c.medicare||'1.45',futa:c.futa||'2.70',wc:c.wc||'10.00',gl:c.gl||'0',benefits:c.benefits||'0',pto_days:c.ptoDays||'0',sort_order:idx};
   if(c.db_id){const ok=await sb.update('crew',c.db_id,row);if(!ok){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}}
   else{const res=await sb.insert('crew',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}CREW_DATA[idx].db_id=res[0].id;}
+  logAudit(isNew?'crew_created':'crew_updated',c.full||'Crew member','');
   showSyncStatus('✓ Synced');
   return true;
 }
@@ -2627,6 +2664,7 @@ async function dbSavePTOEntry(crewIdx,wOff,dIdx,label,dateStr,partial,fromTime,t
   let typeVal=dateStr?'pto:'+dateStr:'pto';
   if(partial&&fromTime&&toTime) typeVal+='|'+fromTime+'|'+toTime;
   const res=await sb.insert('pto_blocks',{crew_idx:crewIdx,week_offset:wOff,day_idx:dIdx,label:label,type:typeVal});
+  logAudit('pto_added',label||'PTO',(CREW[crewIdx]?.full||'Crew '+crewIdx)+(dateStr?' — '+dateStr:''));
   return res&&res[0]?res[0].id:null;
 }
 async function loadPTO(){
@@ -2741,6 +2779,7 @@ async function loadScheduledSlots(){
 async function dbSaveSettings(){
   await sb.setKV('enabled_holidays', JSON.stringify([...enabledHolidays]));
   await sb.setKV('custom_holidays', JSON.stringify(CUSTOM_HOLIDAYS));
+  logAudit('settings_changed','Holidays','');
   showSyncStatus('✓ Synced');
 }
 async function loadSettings(){
@@ -3695,6 +3734,7 @@ async function saveSlotEdit(force=false){
     const s=newSlots[ci]?.[w]?.[d];
     if(s){s.l=label;s.t=type;}
     if(s?.db_id) await sb.update('scheduled_slots',s.db_id,{label,job_type:s?.dt?type+':'+s.dt:type});
+    logAudit('schedule_updated',label,CREW[ci]?.full||'Crew '+ci);
   }
 
   // Handle remaining days
@@ -3761,6 +3801,10 @@ function saveJobRecords(){
   return run;
 }
 async function _saveJobRecordsNow(){
+  // Snapshot what THIS device changed since the last save — the merge below can pull in other
+  // devices' edits too, which shouldn't be attributed to this session's actor.
+  const preLocal=_jrClone(JOB_RECORDS);
+  const priorBaseline=_jrBaseline;
   let serverArr=null;
   try{ const sv=await sb.getKV('job_records'); if(sv){ serverArr=JSON.parse(sv); if(!Array.isArray(serverArr)) serverArr=null; } }
   catch(e){ serverArr=null; }
@@ -3769,8 +3813,26 @@ async function _saveJobRecordsNow(){
   // case we just write our own copy, same as the old behavior.
   if(serverArr){ try{ _mergeServerIntoLocal(serverArr); }catch(e){ console.error('job_records merge failed — writing local copy:',e); } }
   await sb.setKV('job_records',JSON.stringify(JOB_RECORDS));
+  _jrLogFieldChanges(priorBaseline,preLocal);
   _jrBaseline=_jrClone(JOB_RECORDS); // our copy is now the synced baseline
   showSyncStatus('✓ Saved');
+}
+// Diff this device's pre-merge JOB_RECORDS against the last synced baseline and log a single
+// job_updated audit entry per changed record, listing which fields moved. Skips records that
+// are new (creation is already logged where the record is created) or gone (deletion is already
+// logged where the record is deleted).
+function _jrLogFieldChanges(baseline,localAfterEdits){
+  const baseById=new Map((baseline||[]).map(r=>[String(r.id),r]));
+  for(const rec of localAfterEdits){
+    const bRec=baseById.get(String(rec.id));
+    if(!bRec) continue;
+    const changed=[];
+    for(const k of new Set([...Object.keys(rec),...Object.keys(bRec)])){
+      if(k==='dayLogs'){ if(!_jrEq(rec.dayLogs,bRec.dayLogs)) changed.push('day log'); continue; }
+      if(!_jrEq(rec[k],bRec[k])) changed.push(k);
+    }
+    if(changed.length) logAudit('job_updated',rec.customer||'Job',changed.slice(0,6).join(', ')+(changed.length>6?'…':''));
+  }
 }
 
 // Merge the latest server records into our in-memory JOB_RECORDS *in place* (so object
@@ -7722,6 +7784,7 @@ async function pinSaveSettings(){
   if(!/^\d+$/.test(na)){ showToast('Manager code must be numbers only.'); return; }
   for(const k in CREW_PINS){ if(String(CREW_PINS[k])===na){ showToast('That matches a crew PIN — pick a different manager code.'); return; } }
   ADMIN_PIN=na; await sb.setKV('admin_pin',na); document.getElementById('pin-new-admin').value='';
+  logAudit('pin_changed','Manager code','');
   showToast('✅ Manager code updated.');
 }
 
@@ -7749,6 +7812,7 @@ async function saveCrewPin(i){
   if(v===''){
     delete CREW_PINS[i];
     await sb.setKV('crew_pins',JSON.stringify(CREW_PINS));
+    logAudit('pin_changed',who,'PIN cleared');
     showToast('PIN cleared for '+who);
     return;
   }
@@ -7757,6 +7821,7 @@ async function saveCrewPin(i){
   for(const k in CREW_PINS){ if(parseInt(k)!==i && String(CREW_PINS[k])===v){ showToast('That PIN is already used by '+((CREW_DATA[k]&&CREW_DATA[k].full)||('crew '+(parseInt(k)+1)))+'.'); return; } }
   CREW_PINS[i]=v;
   await sb.setKV('crew_pins',JSON.stringify(CREW_PINS));
+  logAudit('pin_changed',who,'PIN updated');
   showToast('✅ PIN saved for '+who);
 }
 
@@ -9606,6 +9671,7 @@ async function advanceJobCard(btn, nextStatus){
   if(row){
     await sb.update('jobs', row.id, {status:nextStatus});
     row.status=nextStatus;
+    logAudit('board_status_changed',customer,'→ '+nextStatus);
   }
   await loadJobs();
   if(_jobsListActive()) renderJobsListView();
@@ -9693,7 +9759,7 @@ function deleteJobCard(btn){
   const customer = card.dataset.customer || card.querySelector('.lead-name').textContent.trim();
   if(!confirm('Delete job for "' + customer + '"?\n\nThis cannot be undone.')) return;
   const dbId = card.dataset.dbId || null;
-  if(dbId) dbDeleteJob(dbId);
+  if(dbId) dbDeleteJob(dbId,customer);
   card.remove();
   updateJobCounts();
   showToast('Job deleted.');
@@ -9718,6 +9784,7 @@ async function markJobInvoiced(btn){
   const newDetail=(row.detail?row.detail+' · ':'')+'Invoiced '+today;
   await sb.update('jobs', row.id, {status:'invoiced', value:'', detail:newDetail});
   row.status='invoiced'; row.value=''; row.detail=newDetail;
+  logAudit('job_invoiced',customer,'Invoiced '+today);
 
   await loadJobs();
   if(_jobsListActive()) renderJobsListView();
@@ -9943,8 +10010,10 @@ function saveRef(){
     tags:document.getElementById('ref-tags').value.trim(),
     date:editingRefIdx!==null?REFS[editingRefIdx].date:'Added '+new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}),
   };
+  const wasEditing=editingRefIdx!==null;
   if(editingRefIdx!==null){REFS[editingRefIdx]=entry;editingRefIdx=null;showToast('✓ Reference updated!');}
   else{REFS.push(entry);showToast('✓ Saved to Reference Library!');}
+  logAudit(wasEditing?'reference_updated':'reference_created',title,'');
   closeModal('addref');dbSaveRefs();renderReference();
 }
 
@@ -9964,6 +10033,7 @@ function editRef(idx){
 
 function deleteRef(idx){
   if(!confirm('Delete "'+REFS[idx].title+'"?')) return;
+  logAudit('reference_deleted',REFS[idx].title,'');
   REFS.splice(idx,1);dbSaveRefs();renderReference();showToast('Entry deleted.');
 }
 
@@ -10181,7 +10251,7 @@ function editMaterial(idx){
 
 function deleteMaterial(idx){
   if(!confirm('Delete "'+MATERIALS[idx].name+'"? This cannot be undone.')) return;
-  dbDeleteMaterial(MATERIALS[idx].db_id);
+  dbDeleteMaterial(MATERIALS[idx].db_id,MATERIALS[idx].name);
   MATERIALS.splice(idx,1);
   renderMaterials();
   showToast('Material removed.');
@@ -11805,6 +11875,7 @@ async function savePtoDayEdit(){
   // Remove old entry
   if(pto?.db_id) await sb.delete('pto_blocks',pto.db_id);
   else await sb.deleteWhere('pto_blocks',{crew_idx:_editPtoCrewIdx,week_offset:_editPtoWOff,day_idx:_editPtoDIdx});
+  logAudit('pto_updated',pto?.label||'PTO',(CREW[_editPtoCrewIdx]?.full||'Crew '+_editPtoCrewIdx)+' — moved to '+newDateStr);
   delete ptoSlots[_editPtoCrewIdx][_editPtoWOff][_editPtoDIdx];
   // Insert at new date
   if(!ptoSlots[_editPtoCrewIdx]) ptoSlots[_editPtoCrewIdx]={};
@@ -11823,6 +11894,7 @@ async function deletePtoDayEdit(){
   const pto=ptoSlots[_editPtoCrewIdx]?.[_editPtoWOff]?.[_editPtoDIdx];
   if(pto?.db_id) await sb.delete('pto_blocks',pto.db_id);
   else await sb.deleteWhere('pto_blocks',{crew_idx:_editPtoCrewIdx,week_offset:_editPtoWOff,day_idx:_editPtoDIdx});
+  logAudit('pto_removed',pto?.label||'PTO',CREW[_editPtoCrewIdx]?.full||'Crew '+_editPtoCrewIdx);
   delete ptoSlots[_editPtoCrewIdx][_editPtoWOff][_editPtoDIdx];
   closeModal('ptoday-edit'); renderSchedule(); showToast('PTO removed.');
 }
@@ -12962,24 +13034,29 @@ async function loadVehicleMaintenance(){
   if(rows && rows.length) VEHICLE_MAINT = rows.map(r=>({id:r.id,vehicle_id:r.vehicle_id,date:r.date,description:r.description,cost:parseFloat(r.cost)||0,mileage:r.mileage||null,notes:r.notes||''}));
 }
 async function dbSaveVehicle(obj){
+  const isNew=!obj.id;
   const row={make:obj.make,model:obj.model,year:obj.year,vin:obj.vin||'',purchase_date:obj.purchase_date||null,license_plate:obj.license_plate||'',notes:obj.notes||''};
   if(obj.id){const ok=await sb.update('vehicles',obj.id,row);if(!ok){showSyncStatus('⚠ Save failed','var(--red)');return false;}}
   else{const res=await sb.insert('vehicles',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed','var(--red)');return false;}obj.id=res[0].id;}
+  logAudit(isNew?'vehicle_created':'vehicle_updated',(obj.year||'')+' '+(obj.make||'')+' '+(obj.model||''),'');
   showSyncStatus('✓ Saved','var(--green)');return true;
 }
-async function dbDeleteVehicle(id){
+async function dbDeleteVehicle(id,label){
   // Delete all maintenance records first, then the vehicle
   const mrows = await sb.get('vehicle_maintenance','vehicle_id=eq.'+id);
   if(mrows&&mrows.length) await Promise.all(mrows.map(r=>sb.delete('vehicle_maintenance',r.id)));
   await sb.delete('vehicles',id);
+  logAudit('vehicle_deleted',label||'Vehicle','');
 }
 async function dbSaveMaintEntry(obj){
+  const isNew=!obj.id;
   const row={vehicle_id:obj.vehicle_id,date:obj.date,description:obj.description,cost:obj.cost||0,mileage:obj.mileage||null,notes:obj.notes||''};
   if(obj.id){const ok=await sb.update('vehicle_maintenance',obj.id,row);if(!ok){showSyncStatus('⚠ Save failed','var(--red)');return false;}}
   else{const res=await sb.insert('vehicle_maintenance',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed','var(--red)');return false;}obj.id=res[0].id;}
+  logAudit(isNew?'maintenance_created':'maintenance_updated',obj.description||'Maintenance','$'+(obj.cost||0));
   showSyncStatus('✓ Saved','var(--green)');return true;
 }
-async function dbDeleteMaintEntry(id){await sb.delete('vehicle_maintenance',id);}
+async function dbDeleteMaintEntry(id,label){await sb.delete('vehicle_maintenance',id);logAudit('maintenance_deleted',label||'Maintenance','');}
 
 // ── VEHICLE DOCUMENTS (Supabase Storage + per-vehicle metadata) ────────────────
 async function loadVehicleDocs(){
@@ -14120,7 +14197,7 @@ async function saveVehicle(){
 async function deleteVehicle(id){
   const v=VEHICLES.find(x=>x.id===id);
   if(!confirm(`Delete "${(v?.year||'')+(v?.year?' ':'')+v?.make+' '+v?.model}" and all its service records? This cannot be undone.`)) return;
-  await dbDeleteVehicle(id);
+  await dbDeleteVehicle(id,(v?.year||'')+' '+(v?.make||'')+' '+(v?.model||''));
   VEHICLES=VEHICLES.filter(x=>x.id!==id);
   VEHICLE_MAINT=VEHICLE_MAINT.filter(m=>m.vehicle_id!==id);
   if(_activeVehicleId===id) _activeVehicleId=null;
@@ -14169,7 +14246,8 @@ async function saveMaintEntry(){
 
 async function deleteMaintEntry(id){
   if(!confirm('Delete this service entry?')) return;
-  await dbDeleteMaintEntry(id);
+  const m=VEHICLE_MAINT.find(x=>x.id===id);
+  await dbDeleteMaintEntry(id,m?.description);
   VEHICLE_MAINT=VEHICLE_MAINT.filter(m=>m.id!==id);
   renderVehicles();
   showToast('Entry deleted.');
