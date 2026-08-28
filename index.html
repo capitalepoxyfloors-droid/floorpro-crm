@@ -2068,7 +2068,11 @@ const AUDIT_ACTION_META={
   reference_updated:{icon:'✎',label:'Reference entry updated',color:'var(--blue)'},
   reference_deleted:{icon:'✖',label:'Reference entry deleted',color:'var(--red)'},
   settings_changed:{icon:'⚙️',label:'Settings changed',color:'var(--blue)'},
-  pin_changed:{icon:'🔒',label:'PIN/access code changed',color:'var(--blue)'}
+  pin_changed:{icon:'🔒',label:'PIN/access code changed',color:'var(--blue)'},
+  pto_request_submitted:{icon:'✋',label:'PTO request submitted',color:'var(--green)'},
+  pto_request_updated:{icon:'✎',label:'PTO request updated',color:'var(--blue)'},
+  pto_request_approved:{icon:'✓',label:'PTO request approved',color:'var(--green)'},
+  pto_request_denied:{icon:'✕',label:'PTO request denied',color:'var(--red)'}
 };
 async function renderAuditLog(){
   const el=document.getElementById('al-list'); if(!el) return;
@@ -8417,13 +8421,16 @@ function submitPtoRequest(){
       existing.reason=reason; existing.weekdays=wdCount;
       existing.partial=isPartial; existing.fromTime=fromTime; existing.toTime=toTime;
     }
+    logAudit('pto_request_updated',existing?.crewName||'PTO request',startDate+(endDate!==startDate?' – '+endDate:''));
     savePtoRequests();
     closePtoRequestModal();
     renderPtoRequestsPage();
+    renderMyPtoRequestsList();
     showToast('✓ Request updated.');
     return;
   }
   PTO_REQUESTS.push(req);
+  logAudit('pto_request_submitted',req.crewName,startDate+(endDate!==startDate?' – '+endDate:''));
   savePtoRequests();
   closeModal('ptorequest');
   _updateMyPtoBadge();
@@ -8457,6 +8464,7 @@ async function approvePtoRequest(id){
     cur.setDate(cur.getDate()+1);
   }
   req.status='approved'; req.reviewedDate=new Date().toISOString().split('T')[0];
+  logAudit('pto_request_approved',req.crewName,req.startDate+(req.endDate!==req.startDate?' – '+req.endDate:''));
   await savePtoRequests();
   renderSchedule();
   if(document.getElementById('page-crewview')?.classList.contains('active')) renderCrewView();
@@ -8468,6 +8476,7 @@ async function denyPtoRequest(id){
   const req=PTO_REQUESTS.find(r=>r.id===id); if(!req) return;
   if(!confirm(`Deny ${req.crewName}'s request for ${req.startDate} – ${req.endDate}?`)) return;
   req.status='denied'; req.reviewedDate=new Date().toISOString().split('T')[0];
+  logAudit('pto_request_denied',req.crewName,req.startDate+(req.endDate!==req.startDate?' – '+req.endDate:''));
   await savePtoRequests();
   renderPtoRequestsPage();
   showToast('Request denied.');
@@ -8512,7 +8521,7 @@ function renderPtoRequestsPage(){
     </div>`;}).join('');
 }
 
-// ── CREW-FACING: "My PTO Requests" — read-only status view of THIS crew member's own requests ──
+// ── CREW-FACING: "My PTO Requests" — lets a crew member edit their OWN still-pending requests ──
 function _updateMyPtoBadge(){
   const badge=document.getElementById('cv-mypto-badge'); if(!badge) return;
   const idx=_tcCrewIdentity();
@@ -8523,6 +8532,12 @@ function _updateMyPtoBadge(){
 function openMyPtoRequests(){
   renderMyPtoRequestsList();
   openModal('myptoreqs');
+}
+// Edit a request from the crew member's own list — close this modal first so the shared
+// request modal (also used for "Request PTO") doesn't stack on top of it.
+function myPtoEditRequest(id){
+  closeModal('myptoreqs');
+  editPtoRequest(id);
 }
 function renderMyPtoRequestsList(){
   const el=document.getElementById('mypto-list'); if(!el) return;
@@ -8540,14 +8555,17 @@ function renderMyPtoRequestsList(){
       ? `${fmtD(r.startDate)} <span style="color:var(--accent);font-weight:700;">${fmtT(r.fromTime)}–${fmtT(r.toTime)}</span> <span style="color:var(--text3);font-weight:400;">(partial day)</span>`
       : `${fmtD(r.startDate)}${r.endDate!==r.startDate?' – '+fmtD(r.endDate):''} <span style="color:var(--text3);font-weight:400;">(${r.weekdays} working day${r.weekdays!==1?'s':''})</span>`;
     return `
-    <div style="background:var(--surface);border:1px solid var(--border2);border-left:4px solid ${PTO_STATUS_COLOR[r.status]};border-radius:var(--radius);padding:14px 16px;margin-bottom:10px;">
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:5px;">
-        <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;background:${PTO_STATUS_COLOR[r.status]}22;color:${PTO_STATUS_COLOR[r.status]};text-transform:uppercase;letter-spacing:.4px;">${PTO_STATUS_LABEL[r.status]}</span>
-        ${r.partial?`<span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;background:var(--accent-dim);color:var(--accent);text-transform:uppercase;letter-spacing:.4px;">⏱ Partial</span>`:''}
+    <div style="background:var(--surface);border:1px solid var(--border2);border-left:4px solid ${PTO_STATUS_COLOR[r.status]};border-radius:var(--radius);padding:14px 16px;margin-bottom:10px;display:flex;align-items:flex-start;gap:12px;">
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:5px;">
+          <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;background:${PTO_STATUS_COLOR[r.status]}22;color:${PTO_STATUS_COLOR[r.status]};text-transform:uppercase;letter-spacing:.4px;">${PTO_STATUS_LABEL[r.status]}</span>
+          ${r.partial?`<span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;background:var(--accent-dim);color:var(--accent);text-transform:uppercase;letter-spacing:.4px;">⏱ Partial</span>`:''}
+        </div>
+        <div style="font-size:13.5px;font-weight:600;color:var(--text2);margin-bottom:3px;">${dateRange}</div>
+        ${r.reason&&r.reason!=='PTO'?`<div style="font-size:12px;color:var(--text2);margin-bottom:4px;">💬 ${r.reason}</div>`:''}
+        <div style="font-size:11px;color:var(--text3);">Submitted ${r.submittedDate}${r.reviewedDate?' · Reviewed '+r.reviewedDate:''}</div>
       </div>
-      <div style="font-size:13.5px;font-weight:600;color:var(--text2);margin-bottom:3px;">${dateRange}</div>
-      ${r.reason&&r.reason!=='PTO'?`<div style="font-size:12px;color:var(--text2);margin-bottom:4px;">💬 ${r.reason}</div>`:''}
-      <div style="font-size:11px;color:var(--text3);">Submitted ${r.submittedDate}${r.reviewedDate?' · Reviewed '+r.reviewedDate:''}</div>
+      ${r.status==='pending'?`<button class="btn btn-ghost" style="font-size:11px;padding:5px 12px;white-space:nowrap;flex-shrink:0;" onclick="myPtoEditRequest('${r.id}')">✏️ Edit</button>`:''}
     </div>`;}).join('');
 }
 
