@@ -5706,15 +5706,15 @@ function jcCombineWithJob(otherId){
 }
 function jcUnlinkFromCostGroup(){
   const job=getJobRecord(_jcId); if(!job||!job.costLinkId) return;
-  if(!confirm('Remove this job from its combined cost group? It will show as its own line on the Job Costing page again.')) return;
-  const groupId=job.costLinkId;
-  delete job.costLinkId;
-  // If only one member is left in the old group, it no longer needs a group id either.
-  const remaining=JOB_RECORDS.filter(j=>j.costLinkId===groupId);
-  if(remaining.length===1) delete remaining[0].costLinkId;
+  // Dissolves the WHOLE group, not just this job — a group of 3 doesn't leave 2 still
+  // combined behind your back. If you want a different split, re-combine whichever ones
+  // you want linked afterward.
+  const members=_jcCostGroupMembers(job);
+  if(!confirm('Un-combine this group of '+members.length+' phases? Each will show as its own line on the Job Costing page again.')) return;
+  members.forEach(j=>delete j.costLinkId);
   saveJobRecords();
   renderJobCosting();
-  showToast('Unlinked.');
+  showToast('✓ Un-combined — each phase is its own job again.');
 }
 
 function renderJobCostingPage(){
@@ -6266,7 +6266,7 @@ function renderJobCosting(){
             <span style="font-size:11px;color:var(--text3);">${m.startDate?jcFmtDate(m.startDate):''}${m.endDate&&m.endDate!==m.startDate?' – '+jcFmtDate(m.endDate):''}</span>
           </div>`;
         });
-        html+=`<button class="btn btn-ghost" onclick="jcUnlinkFromCostGroup()" style="width:100%;margin-top:10px;color:var(--red);border-color:var(--red);">Remove this job from the combined group</button>`;
+        html+=`<button class="btn btn-ghost" onclick="jcUnlinkFromCostGroup()" style="width:100%;margin-top:10px;color:var(--red);border-color:var(--red);">Un-combine this group (${groupMembers.length+1} phases)</button>`;
       } else {
         html+=`<div style="font-size:12px;color:var(--text3);margin-bottom:8px;">Combine this with another completed phase so Job Costing shows their totals as one job. The Install Schedule keeps showing them separately.</div>`;
       }
