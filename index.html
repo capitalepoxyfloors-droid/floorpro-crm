@@ -5684,6 +5684,39 @@ async function jcSetTMMaterialMarkup(val){
 }
 
 // ── JOB COSTING PAGE ──────────────────────────────────────────────────────────
+// ── COMBINE PHASES FOR JOB COSTING ──────────────────────────────────────────
+// Non-destructive: links two or more COMPLETED job records (e.g. Phase 1 / Phase 2 of the
+// same GC project) so the Job Costing page totals them as one line. Each record's own
+// dates/crew/day-logs are never touched, so the Install Schedule keeps showing them as
+// separate jobs — combining only affects how costing numbers are rolled up for reporting.
+function _jcCostGroupKey(job){ return job.costLinkId || job.id; }
+function _jcCostGroupMembers(job){
+  const key=_jcCostGroupKey(job);
+  return JOB_RECORDS.filter(j=>_jcCostGroupKey(j)===key);
+}
+function jcCombineWithJob(otherId){
+  const job=getJobRecord(_jcId), other=getJobRecord(otherId);
+  if(!job||!other||job.id===other.id) return;
+  const allIds=new Set([..._jcCostGroupMembers(job).map(j=>j.id),..._jcCostGroupMembers(other).map(j=>j.id)]);
+  const groupId=job.costLinkId||other.costLinkId||job.id;
+  JOB_RECORDS.forEach(j=>{ if(allIds.has(j.id)) j.costLinkId=groupId; });
+  saveJobRecords();
+  renderJobCosting();
+  showToast('✓ Combined for job costing — schedule stays unaffected.');
+}
+function jcUnlinkFromCostGroup(){
+  const job=getJobRecord(_jcId); if(!job||!job.costLinkId) return;
+  if(!confirm('Remove this job from its combined cost group? It will show as its own line on the Job Costing page again.')) return;
+  const groupId=job.costLinkId;
+  delete job.costLinkId;
+  // If only one member is left in the old group, it no longer needs a group id either.
+  const remaining=JOB_RECORDS.filter(j=>j.costLinkId===groupId);
+  if(remaining.length===1) delete remaining[0].costLinkId;
+  saveJobRecords();
+  renderJobCosting();
+  showToast('Unlinked.');
+}
+
 function renderJobCostingPage(){
   const el=document.getElementById('jc-cost-page-content'); if(!el) return;
   const fmt=n=>'$'+Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -5696,7 +5729,7 @@ function renderJobCostingPage(){
   }
 
   // Calculate totals for each job
-  const rows=jobs.map(job=>{
+  const rawRows=jobs.map(job=>{
     const revenue=parseFloat(job.value)||0;
     const logs=job.dayLogs||{};
     const _cpSDow=new Date((job.startDate||'')+'T00:00:00').getDay(),_cpEDow=new Date((job.endDate||'')+'T00:00:00').getDay();
@@ -5764,6 +5797,27 @@ function renderJobCostingPage(){
     return{job,revenue:effRev,laborCost,matCost,consCost,mileCost,commCost,totalCost,profit,margin,totalHrs:Math.round(totalHrs*10)/10,wDays,dailyProfit,finishDate,isTM:!!job.tmJob,missingTimeCount};
   });
 
+  // Roll any combined phases (see jcCombineWithJob) into a single row so the summary totals
+  // below aren't double-counted and the "total picture" the combine feature exists for shows
+  // as one line, not N separate phases.
+  const groups={};
+  rawRows.forEach(r=>{ const key=_jcCostGroupKey(r.job); (groups[key]=groups[key]||[]).push(r); });
+  const rows=Object.values(groups).map(members=>{
+    if(members.length===1) return members[0];
+    const sum=f=>members.reduce((a,m)=>a+(m[f]||0),0);
+    const primary=members.slice().sort((a,b)=>(a.finishDate||'').localeCompare(b.finishDate||''))[0];
+    const revenue=sum('revenue'), laborCost=sum('laborCost'), matCost=sum('matCost'),
+          consCost=sum('consCost'), mileCost=sum('mileCost'), commCost=sum('commCost'),
+          totalCost=sum('totalCost');
+    const profit=Math.round((revenue-totalCost)*100)/100;
+    const margin=revenue>0?Math.round(profit/revenue*1000)/10:null;
+    const wDays=sum('wDays');
+    const dailyProfit=wDays>0&&revenue>0?Math.round(profit/wDays*100)/100:null;
+    const finishDate=members.reduce((mx,m)=>(m.finishDate>mx?m.finishDate:mx),'');
+    const comboJob={...primary.job,customer:(primary.job.customer||'Unnamed')+' (Combined — '+members.length+' phases)',_comboMembers:members.map(m=>m.job)};
+    return{job:comboJob,revenue,laborCost,matCost,consCost,mileCost,commCost,totalCost,profit,margin,totalHrs:Math.round(sum('totalHrs')*10)/10,wDays,dailyProfit,finishDate,isTM:members.some(m=>m.isTM),missingTimeCount:sum('missingTimeCount')};
+  });
+
   // Newest-finished jobs first (was raw record order, which looked random)
   rows.sort((a,b)=>(b.finishDate||'').localeCompare(a.finishDate||''));
 
@@ -5776,13 +5830,10 @@ function renderJobCostingPage(){
   const totComm=rows.reduce((a,r)=>a+(r.commCost||0),0);
   const totProfit=Math.round((totRev-totLab-totMat-totCons-totMile-totComm)*100)/100;
   const totMargin=totRev>0?Math.round(totProfit/totRev*1000)/10:null;
-  const totWorkDays=rows.reduce((a,r)=>{
-    const logs=r.job.dayLogs||{};
-    const _twSDow=new Date((r.job.startDate||'')+'T00:00:00').getDay(),_twEDow=new Date((r.job.endDate||'')+'T00:00:00').getDay();
-    const _twWknd=(_twSDow===0||_twSDow===6||_twEDow===0||_twEDow===6);
-    const allDates=[...(_twWknd?jcAllDays(r.job.startDate||'',r.job.endDate||''):jcWeekdays(r.job.startDate||'',r.job.endDate||'')),...(r.job.extraDays||[])];
-    return a+allDates.filter(ds=>{const l=logs[ds];if(!l)return false;if(jcGetLogHrs(l)>0)return true;return(Array.isArray(l.crewPresent)?l.crewPresent:[]).some(c=>jcGetCrewMemberHrs(c,l)>0);}).length;
-  },0);
+  // Sum each row's already-computed wDays rather than re-deriving from r.job.dayLogs directly —
+  // a combined row's job is a synthetic object carrying only the primary phase's dayLogs, so
+  // re-deriving here would silently undercount every combined job's work days.
+  const totWorkDays=rows.reduce((a,r)=>a+(r.wDays||0),0);
   const profitPerDay=totWorkDays>0?Math.round(totProfit/totWorkDays*100)/100:null;
 
   let html=`
@@ -5807,6 +5858,7 @@ function renderJobCostingPage(){
         <div style="font-size:11px;color:var(--text3);margin-top:2px;">${job.jobTypeLabel||job.jobType||''}${totalHrs>0?' · '+totalHrs+'h logged':''}</div>
         <div style="margin-top:3px;display:flex;gap:5px;flex-wrap:wrap;">
           <span style="font-size:10px;font-family:'DM Mono',monospace;color:${sc};background:${sc}22;padding:1px 7px;border-radius:20px;">${(job.status||'').replace('_',' ').toUpperCase()}</span>
+          ${job._comboMembers?`<span style="font-size:10px;font-family:'DM Mono',monospace;color:var(--accent);background:var(--accent-dim);padding:1px 7px;border-radius:20px;">🔗 ${job._comboMembers.length} phases</span>`:''}
           ${missingTimeCount?`<span title="${missingTimeCount} day${missingTimeCount!==1?'s':''} logged but missing a time — excluded from labor cost" style="font-size:10px;font-family:'DM Mono',monospace;color:var(--red,#e53e3e);background:var(--red-dim,#fff0f0);padding:1px 7px;border-radius:20px;">⚠ ${missingTimeCount} missing time${missingTimeCount!==1?'s':''}</span>`:''}
         </div>
       </div>
@@ -6195,6 +6247,43 @@ function renderJobCosting(){
       <div style="font-size:13px;font-weight:600;color:var(--red,#e53e3e);">⚠ ${missingTimeDates.length} day${missingTimeDates.length!==1?'s':''} logged but missing a time — excluded from labor cost below</div>
       <div style="font-size:11.5px;color:var(--text2);margin-top:3px;">${missingTimeDates.map(fmtD).join(', ')}. Enter a start/end time or check "Full Day" on the Daily Log tab for ${missingTimeDates.length!==1?'these days':'this day'} to include ${missingTimeDates.length!==1?'them':'it'} here.</div>
     </div>`;
+  }
+
+  // ── Combined Phases — link this job with another COMPLETED job (e.g. Phase 2 of the same
+  // GC project) so Job Costing totals them together. Dates/crew/day-logs are never touched, so
+  // this has zero effect on the Install Schedule — each phase keeps its own bar there. ──
+  html+=sec('Combined Phases','var(--accent)');
+  {
+    const groupMembers=_jcCostGroupMembers(job).filter(j=>j.id!==job.id);
+    if(job.status!=='complete'){
+      html+=`<div style="font-size:12px;color:var(--text3);">Mark this job Complete to combine it with another finished phase.</div>`;
+    } else {
+      if(groupMembers.length){
+        html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px;">Combined with:</div>`;
+        groupMembers.forEach(m=>{
+          html+=`<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border2);">
+            <span style="font-size:13px;cursor:pointer;color:var(--accent);" onclick="openJobCard('${m.id}')">${(m.customer||'Unnamed').replace(/</g,'&lt;')}</span>
+            <span style="font-size:11px;color:var(--text3);">${m.startDate?jcFmtDate(m.startDate):''}${m.endDate&&m.endDate!==m.startDate?' – '+jcFmtDate(m.endDate):''}</span>
+          </div>`;
+        });
+        html+=`<button class="btn btn-ghost" onclick="jcUnlinkFromCostGroup()" style="width:100%;margin-top:10px;color:var(--red);border-color:var(--red);">Remove this job from the combined group</button>`;
+      } else {
+        html+=`<div style="font-size:12px;color:var(--text3);margin-bottom:8px;">Combine this with another completed phase so Job Costing shows their totals as one job. The Install Schedule keeps showing them separately.</div>`;
+      }
+      const groupKey=_jcCostGroupKey(job);
+      const candidates=JOB_RECORDS.filter(j=>j.status==='complete'&&_jcCostGroupKey(j)!==groupKey)
+        .sort((a,b)=>(b.endDate||'').localeCompare(a.endDate||''));
+      if(candidates.length){
+        html+=`<div style="display:flex;gap:8px;margin-top:${groupMembers.length?'12px':'0'};">
+          <select id="jc-combine-pick" class="form-select" style="flex:1;font-size:12px;">
+            ${candidates.map(c=>`<option value="${c.id}">${(c.customer||'Unnamed').replace(/</g,'&lt;')}${c.endDate?' — '+jcFmtDate(c.endDate):''}</option>`).join('')}
+          </select>
+          <button class="btn btn-primary" onclick="jcCombineWithJob(document.getElementById('jc-combine-pick').value)" style="font-size:12px;padding:6px 14px;white-space:nowrap;">🔗 Combine</button>
+        </div>`;
+      } else if(!groupMembers.length){
+        html+=`<div style="font-size:12px;color:var(--text3);">No other completed jobs available yet.</div>`;
+      }
+    }
   }
 
   // Prevailing Wage Override
