@@ -2072,8 +2072,42 @@ const AUDIT_ACTION_META={
   pto_request_submitted:{icon:'✋',label:'PTO request submitted',color:'var(--green)'},
   pto_request_updated:{icon:'✎',label:'PTO request updated',color:'var(--blue)'},
   pto_request_approved:{icon:'✓',label:'PTO request approved',color:'var(--green)'},
-  pto_request_denied:{icon:'✕',label:'PTO request denied',color:'var(--red)'}
+  pto_request_denied:{icon:'✕',label:'PTO request denied',color:'var(--red)'},
+  job_photo_added:{icon:'📷',label:'Job photo added',color:'var(--green)'},
+  job_photo_removed:{icon:'🗑️',label:'Job photo removed',color:'var(--red)'}
 };
+// Rows for job_updated / job_photo_* store their details as JSON — {_rich:1, summary, changes:[{label,from,to}], photos:[{name,thumb,url}]}
+// — so the audit log can show a one-line summary plus an expandable full before/after (and photo thumbnails). Older/other
+// action types still store a plain string in details and just render as before.
+function _alParseDetails(d){
+  if(!d||d[0]!=='{') return null;
+  try{ const o=JSON.parse(d); return (o&&o._rich)?o:null; }catch(e){ return null; }
+}
+function _alEsc(s){ return (s===undefined||s===null?'':s).toString().replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+function _alRenderRich(rich){
+  let html='';
+  if(rich.changes&&rich.changes.length){
+    html+='<div style="display:flex;flex-direction:column;gap:6px;">'+rich.changes.map(c=>`
+      <div style="background:var(--surface2);border-radius:8px;padding:8px 10px;">
+        <div style="font-size:10.5px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px;">${_alEsc(c.label)}</div>
+        <div style="font-size:12px;color:var(--red);text-decoration:line-through;opacity:.75;white-space:pre-wrap;word-break:break-word;">${_alEsc(c.from)}</div>
+        <div style="font-size:12px;color:var(--green);white-space:pre-wrap;word-break:break-word;">${_alEsc(c.to)}</div>
+      </div>`).join('')+'</div>';
+  }
+  if(rich.photos&&rich.photos.length){
+    const urls=JSON.stringify(rich.photos.map(p=>p.url||p.thumb));
+    html+='<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:'+(rich.changes&&rich.changes.length?'8px':'0')+';">'+rich.photos.map((p,i)=>`
+      <img src="${_alEsc(p.thumb||p.url)}" loading="lazy" onclick='openLightbox(${urls},${i})' title="${_alEsc(p.name)}" style="width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);cursor:pointer;"/>`).join('')+'</div>';
+  }
+  return html;
+}
+function alToggleDetail(idx){
+  const el=document.getElementById('al-detail-'+idx); if(!el) return;
+  const open=el.style.display!=='none';
+  el.style.display=open?'none':'block';
+  const btn=document.getElementById('al-toggle-'+idx);
+  if(btn) btn.textContent=open?'▸ View details':'▾ Hide details';
+}
 async function renderAuditLog(){
   const el=document.getElementById('al-list'); if(!el) return;
   if(!AUDIT_LOG_CACHE){
@@ -2082,24 +2116,34 @@ async function renderAuditLog(){
     catch(e){ AUDIT_LOG_CACHE=[]; }
   }
   const q=(document.getElementById('al-search')?.value||'').trim().toLowerCase();
-  const rows=(AUDIT_LOG_CACHE||[]).filter(r=>!q||[r.actor,r.action,r.entity,r.details].join(' ').toLowerCase().includes(q));
+  const searchText=r=>{
+    const rich=_alParseDetails(r.details);
+    const detailText=rich?rich.summary+' '+(rich.changes||[]).map(c=>c.label+' '+c.from+' '+c.to).join(' ')+' '+(rich.photos||[]).map(p=>p.name).join(' '):r.details;
+    return [r.actor,r.action,r.entity,detailText].join(' ').toLowerCase();
+  };
+  const rows=(AUDIT_LOG_CACHE||[]).filter(r=>!q||searchText(r).includes(q));
   if(!rows.length){
     el.innerHTML='<div style="padding:60px 20px;text-align:center;color:var(--text3);">'+(q?'No matching entries.':'No activity logged yet.')+'</div>';
     return;
   }
-  el.innerHTML=rows.map(r=>{
+  el.innerHTML=rows.map((r,idx)=>{
     const meta=AUDIT_ACTION_META[r.action]||{icon:'•',label:r.action,color:'var(--text2)'};
     const when=new Date(r.created_at);
     const whenStr=when.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' · '+when.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    const rich=_alParseDetails(r.details);
+    const plainDetails=rich?rich.summary:r.details;
+    const hasExpand=rich&&((rich.changes&&rich.changes.length)||(rich.photos&&rich.photos.length));
     return `<div style="padding:12px 18px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:12px;">
       <div style="font-size:16px;flex-shrink:0;">${meta.icon}</div>
       <div style="flex:1;min-width:0;">
-        <div style="font-size:13px;color:var(--text);"><span style="font-weight:700;color:${meta.color};">${meta.label}</span> — ${(r.entity||'').toString().replace(/</g,'&lt;')}</div>
-        ${r.details?`<div style="font-size:11.5px;color:var(--text2);margin-top:2px;">${r.details.toString().replace(/</g,'&lt;')}</div>`:''}
+        <div style="font-size:13px;color:var(--text);"><span style="font-weight:700;color:${meta.color};">${meta.label}</span> — ${_alEsc(r.entity)}</div>
+        ${plainDetails?`<div style="font-size:11.5px;color:var(--text2);margin-top:2px;">${_alEsc(plainDetails)}</div>`:''}
+        ${hasExpand?`<div id="al-toggle-${idx}" onclick="alToggleDetail(${idx})" style="font-size:11px;color:var(--accent,#4a9eff);cursor:pointer;margin-top:5px;user-select:none;">▸ View details</div>
+        <div id="al-detail-${idx}" style="display:none;margin-top:8px;">${_alRenderRich(rich)}</div>`:''}
       </div>
       <div style="font-size:11px;color:var(--text3);white-space:nowrap;text-align:right;">
         <div>${whenStr}</div>
-        <div>${(r.actor||'').replace(/</g,'&lt;')}</div>
+        <div>${_alEsc(r.actor)}</div>
       </div>
     </div>`;
   }).join('');
@@ -3821,21 +3865,70 @@ async function _saveJobRecordsNow(){
   _jrBaseline=_jrClone(JOB_RECORDS); // our copy is now the synced baseline
   showSyncStatus('✓ Saved');
 }
+// Turn a raw field value into a short, human-readable string for the audit log — arrays of
+// crew/material objects become "Name qty unit" lists, everything else stringifies plainly.
+// Capped so a pasted essay or a huge materials list can't blow up one audit row.
+function _jrValStr(v){
+  let s;
+  if(v===undefined||v===null||v==='') return '(empty)';
+  if(Array.isArray(v)){
+    if(!v.length) return '(empty)';
+    if(v.every(x=>x===null||typeof x!=='object')) s=v.join(', ');
+    else s=v.map(x=>{
+      if(x&&typeof x==='object'){
+        if('qty'in x||'unit'in x) return [x.name,x.qty,x.unit].filter(Boolean).join(' ');
+        if('name'in x||'crewIdx'in x) return x.name||(typeof CREW_DATA!=='undefined'&&CREW_DATA[x.crewIdx]&&CREW_DATA[x.crewIdx].full)||'';
+      }
+      return String(x);
+    }).filter(Boolean).join(', ')||'(empty)';
+  }else if(typeof v==='object') s=JSON.stringify(v);
+  else if(typeof v==='boolean') s=v?'Yes':'No';
+  else s=String(v);
+  return s.length>1500?s.slice(0,1500)+'…':s;
+}
+const _JR_FIELD_LABELS={customer:'Customer',phone:'Phone',address:'Address',jobType:'Job Type',value:'Job Value',crewNames:'Crew',startDate:'Start Date',endDate:'End Date',notes:'Notes',plannedMaterials:'Planned Materials',extraDays:'Extra Days'};
+const _JR_STATUS_LABELS={scheduled:'Scheduled',in_progress:'In Progress',complete:'Complete'};
+const _JR_DAYLOG_FIELD_LABELS={task:'Task',notes:'Notes',startTime:'Start Time',endTime:'End Time',overtimeWage:'OT Wages',cashWages:'Cash Wages'};
+// Per-date, per-field diff of a job's day logs — this is what lets the audit log show the
+// exact note text / task / crew / materials a crew member added on a given day, not just
+// the fact that "day log" changed.
+function _jrDiffDayLogs(oldDL,newDL){
+  const out=[];
+  const dates=new Set([...Object.keys(oldDL||{}),...Object.keys(newDL||{})]);
+  for(const d of dates){
+    const o=oldDL[d]||{}, n=newDL[d]||{};
+    const dLabel=(typeof jcFmtDate==='function')?jcFmtDate(d):d;
+    for(const f of Object.keys(_JR_DAYLOG_FIELD_LABELS)){
+      if(!_jrEq(o[f],n[f])) out.push({label:_JR_DAYLOG_FIELD_LABELS[f]+' — '+dLabel,from:_jrValStr(o[f]),to:_jrValStr(n[f])});
+    }
+    if(!_jrEq(o.crewPresent,n.crewPresent)) out.push({label:'Crew — '+dLabel,from:_jrValStr(o.crewPresent),to:_jrValStr(n.crewPresent)});
+    if(!_jrEq(o.materialsUsed,n.materialsUsed)) out.push({label:'Materials Used — '+dLabel,from:_jrValStr(o.materialsUsed),to:_jrValStr(n.materialsUsed)});
+  }
+  return out;
+}
 // Diff this device's pre-merge JOB_RECORDS against the last synced baseline and log a single
-// job_updated audit entry per changed record, listing which fields moved. Skips records that
-// are new (creation is already logged where the record is created) or gone (deletion is already
-// logged where the record is deleted).
+// job_updated audit entry per changed record. Stores a JSON "rich" payload in the details
+// column (summary + a changes[] list of {label,from,to}) so the audit log UI can expand a
+// row and show the exact text/status/etc. that changed, not just which fields moved. Skips
+// records that are new (creation is already logged where the record is created) or gone
+// (deletion is already logged where the record is deleted).
 function _jrLogFieldChanges(baseline,localAfterEdits){
   const baseById=new Map((baseline||[]).map(r=>[String(r.id),r]));
   for(const rec of localAfterEdits){
     const bRec=baseById.get(String(rec.id));
     if(!bRec) continue;
-    const changed=[];
+    const changes=[];
     for(const k of new Set([...Object.keys(rec),...Object.keys(bRec)])){
-      if(k==='dayLogs'){ if(!_jrEq(rec.dayLogs,bRec.dayLogs)) changed.push('day log'); continue; }
-      if(!_jrEq(rec[k],bRec[k])) changed.push(k);
+      if(k==='id') continue;
+      if(k==='dayLogs'){ changes.push(..._jrDiffDayLogs(bRec.dayLogs||{},rec.dayLogs||{})); continue; }
+      if(_jrEq(rec[k],bRec[k])) continue;
+      if(k==='status'){ changes.push({label:'Status',from:_JR_STATUS_LABELS[bRec[k]]||_jrValStr(bRec[k]),to:_JR_STATUS_LABELS[rec[k]]||_jrValStr(rec[k])}); continue; }
+      changes.push({label:_JR_FIELD_LABELS[k]||k,from:_jrValStr(bRec[k]),to:_jrValStr(rec[k])});
     }
-    if(changed.length) logAudit('job_updated',rec.customer||'Job',changed.slice(0,6).join(', ')+(changed.length>6?'…':''));
+    if(changes.length){
+      const summary=changes.map(c=>c.label).slice(0,6).join(', ')+(changes.length>6?'…':'');
+      logAudit('job_updated',rec.customer||'Job',JSON.stringify({_rich:1,summary,changes}));
+    }
   }
 }
 
@@ -13415,6 +13508,7 @@ async function jcUploadPhotoFiles(ds,files){
   if(!files.length){ showToast('Drop image files only.'); return; }
   showToast(`Uploading ${files.length} photo${files.length!==1?'s':''}...`);
   let ok=0,fail=0,lastErr=null;
+  const added=[];
   try{
     const {author,role}=_matNoteAuthor();
     for(const file of files){
@@ -13424,14 +13518,24 @@ async function jcUploadPhotoFiles(ds,files){
         const {path,url,thumbPath,thumbUrl,size}=await _uploadPhotoWithThumb(file, `jobs/${job.id}/${ds}`, safe, Date.now());
         if(!JOB_PHOTOS[job.id]) JOB_PHOTOS[job.id]={};
         if(!JOB_PHOTOS[job.id][ds]) JOB_PHOTOS[job.id][ds]=[];
-        JOB_PHOTOS[job.id][ds].push({
+        const rec={
           id:(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)),
           name:file.name, path, url, thumbPath, thumbUrl, size, author, role, ts:new Date().toISOString()
-        });
+        };
+        JOB_PHOTOS[job.id][ds].push(rec);
+        added.push(rec);
         ok++;
       }catch(e){ console.error('job photo upload failed:',e); fail++; lastErr=e; }
     }
     if(ok) await saveJobPhotos();
+    if(added.length){
+      const dLabel=(typeof jcFmtDate==='function')?jcFmtDate(ds):ds;
+      logAudit('job_photo_added', job.customer||'Job', JSON.stringify({
+        _rich:1,
+        summary:added.length+' photo'+(added.length!==1?'s':'')+' added — '+dLabel,
+        photos:added.map(p=>({name:p.name,thumb:p.thumbUrl||p.url,url:p.url}))
+      }));
+    }
     jcRenderDayLogs();
     if(ok&&!fail) showToast(`✓ ${ok} photo${ok!==1?'s':''} added.`);
     else if(ok&&fail) showToast(`${ok} added, ${fail} failed` + (lastErr?': '+lastErr.message:'') + '.');
@@ -13476,6 +13580,12 @@ async function jcDeletePhoto(ds,photoId){
   }catch(e){ console.error('job photo storage delete failed',e); }
   JOB_PHOTOS[job.id][ds]=list.filter(p=>p.id!==photoId);
   await saveJobPhotos();
+  const dLabel=(typeof jcFmtDate==='function')?jcFmtDate(ds):ds;
+  logAudit('job_photo_removed', job.customer||'Job', JSON.stringify({
+    _rich:1,
+    summary:'Photo removed — '+dLabel,
+    photos:[{name:photo.name,thumb:photo.thumbUrl||photo.url,url:photo.url}]
+  }));
   jcRenderDayLogs();
   showToast('Photo removed.');
 }
