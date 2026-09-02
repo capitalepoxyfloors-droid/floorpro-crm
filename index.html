@@ -2988,7 +2988,7 @@ async function deduplicateSlotsByJobRecord(){
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
   try{
-    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadLeadDupAcks(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadNavOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs(),loadMaterialDocs(),loadMaterialNotes(),loadJobPhotos(),loadSalesScopePhotos()]);
+    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadLeadDupAcks(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadNavOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs(),loadMaterialDocs(),loadMaterialNotes(),loadJobPhotos(),loadJobDocs(),loadSalesScopePhotos()]);
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
@@ -4056,6 +4056,7 @@ function _kvSnapshotBaselines(){
   _kvBaselines['job_systems']=_jrClone(JOB_SYSTEMS);
   _kvBaselines['overhead']=_jrClone(OVERHEAD);
   _kvBaselines['job_photos']=_jrClone(JOB_PHOTOS);
+  _kvBaselines['job_docs']=_jrClone(JOB_DOCS);
   _kvBaselines['sales_scope_photos']=_jrClone(SALES_SCOPE_PHOTOS);
 }
 async function loadSlotJobMap(){ const v=await sb.getKV('slot_job_map'); if(v){try{SLOT_JOB_MAP=JSON.parse(v)||{};}catch(e){console.error('loadSlotJobMap parse error – slot_job_map may be corrupt:',e);}} }
@@ -4293,7 +4294,7 @@ function openJobCard(jobId){
   jcPopulateMatDatalist(); // keep materials list in sync
   jcRenderSupplierInvoices();
   jcRenderScopePhotos();
-  jcRenderAllPhotos();
+  jcRenderJobDocs();
   jcTab('info');
   openModal('jobcard');
   // Apply lock state after modal is open so elements exist
@@ -13220,7 +13221,9 @@ const VEH_DOCS_BUCKET = 'vehicle-docs';
 let MATERIAL_DOCS = {};  // { materialDbId: [{id,date,name,path,url,size}] } — product TDS/spec sheets
 let MATERIAL_NOTES = {}; // { materialDbId: "field notes / tips text" } — crew-facing application tips
 let JOB_PHOTOS = {};     // { jobId: { 'YYYY-MM-DD': [{id,name,path,url,size,author,role,ts}] } } — per day-log photos
+let JOB_DOCS = {};       // { jobId: [{id,date,name,path,url,size}] } — blueprints/permits/paperwork, shown on Job Info (NOT tied to a day)
 const MAT_DOCS_PREFIX = 'materials'; // path prefix inside VEH_DOCS_BUCKET (reused — no new bucket setup)
+const JOB_DOCS_PREFIX = 'jobdocs';   // path prefix inside VEH_DOCS_BUCKET for job reference documents
 let _editingVehicleId = null;
 let _editingMaintId = null;
 let _activeVehicleId = null;
@@ -13384,6 +13387,16 @@ async function loadJobPhotos(){
 }
 async function saveJobPhotos(){ JOB_PHOTOS = await _saveKVMerged('job_photos', JOB_PHOTOS); }
 
+// ── JOB DOCUMENTS ──────────────────────────────────────────────────────────────
+// Reference material for the job — blueprints, permits, contracts, anything the office wants
+// the crew to have on hand for the whole job. Separate from JOB_PHOTOS (day-by-day progress
+// photos on the Daily Log tab) — this lives on the Job Info tab and isn't tied to any date.
+async function loadJobDocs(){
+  const v=await sb.getKV('job_docs');
+  if(v){ try{ JOB_DOCS=JSON.parse(v)||{}; }catch(e){ console.error('loadJobDocs parse error:',e); } }
+}
+async function saveJobDocs(){ JOB_DOCS = await _saveKVMerged('job_docs', JOB_DOCS); }
+
 // Some Android photo pickers hand back a File with a blank or wrong .type (a known OEM/gallery-
 // app quirk), which made the upload filters below silently reject a real photo with no useful
 // error. Fall back to the filename extension when the MIME type doesn't look like an image.
@@ -13538,7 +13551,6 @@ async function jcUploadPhotoFiles(ds,files){
       }));
     }
     jcRenderDayLogs();
-    if(document.getElementById('jc-photos-grid')) jcRenderAllPhotos();
     if(ok&&!fail) showToast(`✓ ${ok} photo${ok!==1?'s':''} added.`);
     else if(ok&&fail) showToast(`${ok} added, ${fail} failed` + (lastErr?': '+lastErr.message:'') + '.');
     else showToast(lastErr ? ('Upload failed: '+lastErr.message) : 'Upload failed — the storage bucket may not be set up yet.');
@@ -13589,7 +13601,6 @@ async function jcDeletePhoto(ds,photoId){
     photos:[{name:photo.name,thumb:photo.thumbUrl||photo.url,url:photo.url}]
   }));
   jcRenderDayLogs();
-  if(document.getElementById('jc-photos-grid')) jcRenderAllPhotos();
   showToast('Photo removed.');
 }
 
@@ -13777,40 +13788,76 @@ function jcRenderScopePhotos(){
   grid.innerHTML='';
 }
 
-// All-day photo grid on the Job Info tab — flattens JOB_PHOTOS across every date so the crew
-// can see (and add) job photos without digging into the Daily Log tab. Uploads default to
-// today's date; adding/removing here or on a specific Daily Log day keeps both grids in sync
-// via the jcRenderAllPhotos() calls in jcUploadPhotoFiles/jcDeletePhoto below.
-function jcRenderAllPhotos(){
+// Job Documents list on the Job Info tab — blueprints, permits, contracts, whatever the office
+// wants on hand for the whole job. Not tied to a date (unlike JOB_PHOTOS / Daily Log photos).
+// Accepts any file type (PDF, image, etc.) — reuses the same doc-list styling as Material Docs.
+function jcRenderJobDocs(){
   const job=getJobRecord(_jcId); if(!job) return;
-  const grid=document.getElementById('jc-photos-grid'); if(!grid) return;
-  const byDate=JOB_PHOTOS[job.id]||{};
-  const flat=[];
-  Object.keys(byDate).forEach(ds=>{ (byDate[ds]||[]).forEach(p=>flat.push(Object.assign({},p,{ds}))); });
-  flat.sort((a,b)=>(a.ds+(a.ts||'')).localeCompare(b.ds+(b.ts||'')));
-  const urls=JSON.stringify(flat.map(p=>p.url));
-  const today=new Date().toISOString().split('T')[0];
-  const thumbs=flat.map((p,idx)=>`
-    <div style="position:relative;width:74px;height:74px;flex-shrink:0;">
-      <img src="${p.thumbUrl||p.url}" loading="lazy" onclick='openLightbox(${urls},${idx})' style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
-      <div style="position:absolute;bottom:2px;left:2px;right:2px;background:rgba(0,0,0,.55);color:#fff;font-size:8.5px;border-radius:4px;padding:1px 3px;text-align:center;pointer-events:none;">${jcFmtDate(p.ds)}</div>
-      <button onclick="jcDeletePhoto('${p.ds}','${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
-    </div>`).join('');
-  grid.innerHTML=`
-    <div ondragover="jcPhotoDragOver(event)" ondragleave="jcPhotoDragLeave(event)" ondrop="jcPhotoDrop(event,'${today}')" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:6px;margin:-6px;border-radius:10px;border:1.5px dashed transparent;transition:border-color .15s,background .15s;">
-      ${thumbs}
-      <label style="width:74px;height:74px;flex-shrink:0;border:1.5px dashed var(--border2);border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text3);font-size:22px;">
-        +
-        <input type="file" id="jc-photos-file" accept="image/*" multiple style="display:none;" onchange="jcUploadAllPhotos()"/>
-      </label>
-    </div>
-    ${flat.length===0?'<div style="font-size:11px;color:var(--text3);margin-top:4px;">No photos yet — tap + or drag & drop images here.</div>':''}`;
+  const wrap=document.getElementById('jc-docs-list'); if(!wrap) return;
+  const docs=(JOB_DOCS[job.id]||[]).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+  const isCrew=localStorage.getItem('fpRole')==='crew';
+  const fmtD=d=>d?new Date(d+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'';
+  wrap.innerHTML = docs.length===0
+    ? `<div style="font-size:11.5px;color:var(--text3);">No documents yet — upload blueprints, permits, or other paperwork for the crew to reference on site.</div>`
+    : docs.map(d=>`<div style="display:flex;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px solid var(--border);">
+        <span style="font-size:18px;flex-shrink:0;">${_vehDocIcon(d.name||'')}</span>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(d.name||'').replace(/</g,'&lt;')}</div>
+          <div style="font-size:11px;color:var(--text3);">${fmtD(d.date)}${d.size?' · '+_vehFmtBytes(d.size):''}</div>
+        </div>
+        <a class="btn btn-ghost" href="${d.url}" target="_blank" rel="noopener" style="font-size:11px;padding:4px 10px;flex-shrink:0;">View</a>
+        ${isCrew?'':`<button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;color:var(--red);flex-shrink:0;" onclick="jcDeleteJobDoc('${d.id}')">✕</button>`}
+      </div>`).join('');
 }
-async function jcUploadAllPhotos(){
-  const fileInput=document.getElementById('jc-photos-file');
+async function jcUploadJobDocs(){
+  const job=getJobRecord(_jcId); if(!job) return;
+  const fileInput=document.getElementById('jc-doc-file');
+  const btn=document.getElementById('jc-doc-upload-btn');
   const files=fileInput&&fileInput.files?Array.from(fileInput.files):[];
-  await jcUploadPhotoFiles(new Date().toISOString().split('T')[0], files);
+  if(!files.length) return;
+  let ok=0,fail=0;
+  for(const file of files){
+    if(file.size>25*1024*1024){ showToast(`"${file.name}" is over 25 MB — skipped.`); fail++; continue; }
+    if(btn){ btn.textContent='Uploading '+file.name+'…'; btn.disabled=true; }
+    const safe=(file.name||'file').replace(/[^\w.\-]+/g,'_');
+    const path=`${JOB_DOCS_PREFIX}/${job.id}/${Date.now()}_${safe}`;
+    try{
+      const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
+        method:'POST',
+        headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
+        body:file
+      });
+      if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
+      if(!JOB_DOCS[job.id]) JOB_DOCS[job.id]=[];
+      JOB_DOCS[job.id].push({
+        id:(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)),
+        date:new Date().toISOString().split('T')[0],
+        name:file.name, path, url:_vehDocPublicUrl(path), size:file.size
+      });
+      ok++;
+    }catch(e){ console.error('job doc upload failed:',e); fail++; }
+  }
+  if(ok) await saveJobDocs();
+  if(btn){ btn.textContent='📎 Upload Blueprint / Document'; btn.disabled=false; }
   if(fileInput) fileInput.value='';
+  jcRenderJobDocs();
+  if(ok&&!fail) showToast(`✓ ${ok} document${ok!==1?'s':''} uploaded.`);
+  else if(ok&&fail) showToast(`${ok} uploaded, ${fail} failed.`);
+  else showToast('Upload failed — the storage bucket may not be set up yet.');
+}
+async function jcDeleteJobDoc(docId){
+  const job=getJobRecord(_jcId); if(!job) return;
+  const list=JOB_DOCS[job.id]||[]; const doc=list.find(d=>d.id===docId); if(!doc) return;
+  if(!confirm(`Delete "${doc.name}"?`)) return;
+  try{
+    await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(doc.path)}`,{
+      method:'DELETE', headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY }
+    });
+  }catch(e){ console.error('job doc storage delete failed',e); }
+  JOB_DOCS[job.id]=list.filter(d=>d.id!==docId);
+  await saveJobDocs();
+  jcRenderJobDocs();
+  showToast('Document removed.');
 }
 
 async function jcPullInScopePhotos(visitId){
@@ -14734,10 +14781,12 @@ async function deleteMaintEntry(id){
         <label class="form-label">📷 Site Photos (from Sales Visit)</label>
         <div id="jc-scopephotos-grid" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
       </div>
-      <div class="form-group" id="jc-photos-group">
-        <label class="form-label">📷 Job Photos</label>
-        <div id="jc-photos-grid" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
-        <div style="font-size:11px;color:var(--text3);margin-top:7px;">All photos from every day of this job, in one place for quick reference on site.</div>
+      <div class="form-group" id="jc-docs-group">
+        <label class="form-label">📄 Job Documents</label>
+        <div style="font-size:11.5px;color:var(--text3);margin-bottom:8px;">Blueprints, permits, contracts — anything the crew should have on hand for this job.</div>
+        <div id="jc-docs-list"></div>
+        <input type="file" id="jc-doc-file" multiple style="display:none;" onchange="jcUploadJobDocs()"/>
+        <button type="button" class="btn btn-ghost" id="jc-doc-upload-btn" style="margin-top:8px;width:100%;" onclick="document.getElementById('jc-doc-file').click()">📎 Upload Blueprint / Document</button>
       </div>
     </div>
     <!-- Materials Pane -->
