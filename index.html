@@ -4293,6 +4293,7 @@ function openJobCard(jobId){
   jcPopulateMatDatalist(); // keep materials list in sync
   jcRenderSupplierInvoices();
   jcRenderScopePhotos();
+  jcRenderAllPhotos();
   jcTab('info');
   openModal('jobcard');
   // Apply lock state after modal is open so elements exist
@@ -13537,6 +13538,7 @@ async function jcUploadPhotoFiles(ds,files){
       }));
     }
     jcRenderDayLogs();
+    if(document.getElementById('jc-photos-grid')) jcRenderAllPhotos();
     if(ok&&!fail) showToast(`✓ ${ok} photo${ok!==1?'s':''} added.`);
     else if(ok&&fail) showToast(`${ok} added, ${fail} failed` + (lastErr?': '+lastErr.message:'') + '.');
     else showToast(lastErr ? ('Upload failed: '+lastErr.message) : 'Upload failed — the storage bucket may not be set up yet.');
@@ -13587,6 +13589,7 @@ async function jcDeletePhoto(ds,photoId){
     photos:[{name:photo.name,thumb:photo.thumbUrl||photo.url,url:photo.url}]
   }));
   jcRenderDayLogs();
+  if(document.getElementById('jc-photos-grid')) jcRenderAllPhotos();
   showToast('Photo removed.');
 }
 
@@ -13772,6 +13775,42 @@ function jcRenderScopePhotos(){
   }
   group.style.display='none';
   grid.innerHTML='';
+}
+
+// All-day photo grid on the Job Info tab — flattens JOB_PHOTOS across every date so the crew
+// can see (and add) job photos without digging into the Daily Log tab. Uploads default to
+// today's date; adding/removing here or on a specific Daily Log day keeps both grids in sync
+// via the jcRenderAllPhotos() calls in jcUploadPhotoFiles/jcDeletePhoto below.
+function jcRenderAllPhotos(){
+  const job=getJobRecord(_jcId); if(!job) return;
+  const grid=document.getElementById('jc-photos-grid'); if(!grid) return;
+  const byDate=JOB_PHOTOS[job.id]||{};
+  const flat=[];
+  Object.keys(byDate).forEach(ds=>{ (byDate[ds]||[]).forEach(p=>flat.push(Object.assign({},p,{ds}))); });
+  flat.sort((a,b)=>(a.ds+(a.ts||'')).localeCompare(b.ds+(b.ts||'')));
+  const urls=JSON.stringify(flat.map(p=>p.url));
+  const today=new Date().toISOString().split('T')[0];
+  const thumbs=flat.map((p,idx)=>`
+    <div style="position:relative;width:74px;height:74px;flex-shrink:0;">
+      <img src="${p.thumbUrl||p.url}" loading="lazy" onclick='openLightbox(${urls},${idx})' style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
+      <div style="position:absolute;bottom:2px;left:2px;right:2px;background:rgba(0,0,0,.55);color:#fff;font-size:8.5px;border-radius:4px;padding:1px 3px;text-align:center;pointer-events:none;">${jcFmtDate(p.ds)}</div>
+      <button onclick="jcDeletePhoto('${p.ds}','${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
+    </div>`).join('');
+  grid.innerHTML=`
+    <div ondragover="jcPhotoDragOver(event)" ondragleave="jcPhotoDragLeave(event)" ondrop="jcPhotoDrop(event,'${today}')" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:6px;margin:-6px;border-radius:10px;border:1.5px dashed transparent;transition:border-color .15s,background .15s;">
+      ${thumbs}
+      <label style="width:74px;height:74px;flex-shrink:0;border:1.5px dashed var(--border2);border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text3);font-size:22px;">
+        +
+        <input type="file" id="jc-photos-file" accept="image/*" multiple style="display:none;" onchange="jcUploadAllPhotos()"/>
+      </label>
+    </div>
+    ${flat.length===0?'<div style="font-size:11px;color:var(--text3);margin-top:4px;">No photos yet — tap + or drag & drop images here.</div>':''}`;
+}
+async function jcUploadAllPhotos(){
+  const fileInput=document.getElementById('jc-photos-file');
+  const files=fileInput&&fileInput.files?Array.from(fileInput.files):[];
+  await jcUploadPhotoFiles(new Date().toISOString().split('T')[0], files);
+  if(fileInput) fileInput.value='';
 }
 
 async function jcPullInScopePhotos(visitId){
@@ -14694,6 +14733,11 @@ async function deleteMaintEntry(id){
       <div class="form-group" id="jc-scopephotos-group" style="display:none;">
         <label class="form-label">📷 Site Photos (from Sales Visit)</label>
         <div id="jc-scopephotos-grid" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+      </div>
+      <div class="form-group" id="jc-photos-group">
+        <label class="form-label">📷 Job Photos</label>
+        <div id="jc-photos-grid" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+        <div style="font-size:11px;color:var(--text3);margin-top:7px;">All photos from every day of this job, in one place for quick reference on site.</div>
       </div>
     </div>
     <!-- Materials Pane -->
