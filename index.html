@@ -4676,6 +4676,7 @@ function jcRenderDayLogs(){
   days.forEach((ds,idx)=>{
     if(!job.dayLogs[ds]) job.dayLogs[ds]={crewPresent:[],task:'',materialsUsed:[],startTime:'',endTime:'',notes:''};
     const log=job.dayLogs[ds];
+    const _isOwnerView=localStorage.getItem('fpRole')!=='crew'&&!document.getElementById('page-crewview')?.classList.contains('active');
     const _dayOT=(log.overtimeWage!==undefined)?!!log.overtimeWage:!!job.overtimeWage;
     const _dayCash=(log.cashWages!==undefined)?!!log.cashWages:!!job.cashWages;
     _jcMigrateCrewPresent(log);
@@ -4699,7 +4700,7 @@ function jcRenderDayLogs(){
         <div style="display:flex;align-items:center;gap:8px;">
           ${missingTime?`<div class="status-pill" style="font-size:10px;background:var(--red-dim,#fff0f0);color:var(--red,#e53e3e);" title="Logged but no start/end time (or Full Day) entered — this day won't count toward labor cost in Job Costing until a time is entered.">⚠ Missing Time</div>`:''}
           <div class="status-pill ${filled?'pill-active':'pill-complete'}" style="font-size:10px;">${filled?'✓ Logged':'Not yet filled in'}</div>
-          ${(idx===days.length-1||(!_scheduledSet.has(ds)&&job.extraDays.includes(ds)))&&localStorage.getItem('fpRole')!=='crew'?`<button onclick="jcRemoveLastDay('${ds}')" style="background:none;border:1px solid var(--red);color:var(--red);font-size:10px;padding:2px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;">✕ Remove Day</button>`:''}
+          ${(idx===days.length-1||(!_scheduledSet.has(ds)&&job.extraDays.includes(ds)))&&_isOwnerView?`<button onclick="jcRemoveLastDay('${ds}')" style="background:none;border:1px solid var(--red);color:var(--red);font-size:10px;padding:2px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;">✕ Remove Day</button>`:''}
         </div>
       </div>
       <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
@@ -4731,12 +4732,12 @@ function jcRenderDayLogs(){
         </div>
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
           <button id="jcfd-${key}" onclick="jcToggleFullDay('${ds}')" style="font-size:12px;padding:3px 10px;border-radius:6px;border:1px solid var(--primary);cursor:pointer;transition:all .15s;background:${log.fullDay?'var(--primary)':'none'};color:${log.fullDay?'#fff':'var(--primary)'};">${log.fullDay?'✓ Full Day':'Full Day'}</button>
-          ${(localStorage.getItem('fpRole')!=='crew'&&!document.getElementById('page-crewview')?.classList.contains('active'))?`<div style="display:flex;align-items:center;gap:6px;">
+          ${_isOwnerView?`<div style="display:flex;align-items:center;gap:6px;">
             <span style="font-size:12px;color:var(--text3);">Time on site:</span>
             <span id="jch-${key}" style="font-size:13px;font-weight:700;color:var(--accent);">${log.fullDay?'8.0 hrs':(log.startTime&&log.endTime?jcCalcHrs(log.startTime,log.endTime):'—')}</span>
           </div>`:``}
         </div>
-        ${localStorage.getItem('fpRole')!=='crew'?`<div class="form-group" style="margin:0;">
+        ${_isOwnerView?`<div class="form-group" style="margin:0;">
           <label class="form-label">Pay for this day <span style="font-weight:400;color:var(--text3);font-size:10px;">(overrides the job default)</span></label>
           <div style="display:flex;gap:18px;flex-wrap:wrap;padding-top:2px;">
             <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:13px;color:var(--text2);">
