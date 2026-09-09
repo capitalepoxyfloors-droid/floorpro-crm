@@ -4689,22 +4689,26 @@ function jcRenderDayLogs(){
     // the whole day from labor cost with no indication why. Caught in the wild: real logged
     // work days missing from costing purely because the time fields were left blank.
     const _hasTime=log.fullDay||jcGetLogHrs(log)>0||log.crewPresent.some(c=>jcGetCrewMemberHrs(c,log)>0);
-    const missingTime=filled&&!_hasTime;
+    // "No Work Completed" (crew pulled off, not on site) is a deliberate zero-hour day, not
+    // an incomplete log — never flag it as missing time regardless of what else got filled in
+    // (e.g. a Task note explaining why).
+    const missingTime=filled&&!_hasTime&&!log.noWork;
     const key=ds.replace(/-/g,'');
     const sec=document.createElement('div');
     sec.id='jcday-'+key;
-    sec.style.cssText='margin-bottom:16px;background:var(--surface2);border:1px solid '+(missingTime?'var(--red,#e53e3e)':(filled?'var(--green)44':'var(--border2)'))+';border-radius:var(--radius);overflow:hidden;';
+    sec.style.cssText='margin-bottom:16px;background:var(--surface2);border:1px solid '+(missingTime?'var(--red,#e53e3e)':(log.noWork?'var(--border2)':(filled?'var(--green)44':'var(--border2)')))+';border-radius:var(--radius);overflow:hidden;';
     sec.innerHTML=`
       <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--border2);">
         <div style="font-size:13px;font-weight:700;">Day ${idx+1} — ${jcFmtDate(ds)}</div>
         <div style="display:flex;align-items:center;gap:8px;">
           ${missingTime?`<div class="status-pill" style="font-size:10px;background:var(--red-dim,#fff0f0);color:var(--red,#e53e3e);" title="Logged but no start/end time (or Full Day) entered — this day won't count toward labor cost in Job Costing until a time is entered.">⚠ Missing Time</div>`:''}
-          <div class="status-pill ${filled?'pill-active':'pill-complete'}" style="font-size:10px;">${filled?'✓ Logged':'Not yet filled in'}</div>
+          ${log.noWork?`<div class="status-pill" style="font-size:10px;background:var(--surface3,#eee);color:var(--text2);" title="Marked as no work completed — excluded from labor cost and won't be flagged as missing time.">🚫 No Work</div>`:`<div class="status-pill ${filled?'pill-active':'pill-complete'}" style="font-size:10px;">${filled?'✓ Logged':'Not yet filled in'}</div>`}
+          ${_isOwnerView?`<button id="jcnw-${key}" onclick="jcToggleNoWork('${ds}')" title="Crew was pulled off / not on site this day — excludes it from labor cost without flagging it as a missing-time error." style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--text3);cursor:pointer;white-space:nowrap;background:${log.noWork?'var(--text3)':'none'};color:${log.noWork?'#fff':'var(--text3)'};">🚫 ${log.noWork?'No Work Completed':'No Work Completed?'}</button>`:''}
           ${(idx===days.length-1||(!_scheduledSet.has(ds)&&job.extraDays.includes(ds)))&&_isOwnerView?`<button onclick="jcRemoveLastDay('${ds}')" style="background:none;border:1px solid var(--red);color:var(--red);font-size:10px;padding:2px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;">✕ Remove Day</button>`:''}
         </div>
       </div>
       <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
-        <div class="form-group" style="margin:0;">
+        <div id="jccrew-${key}" class="form-group" style="margin:0;${log.noWork?'opacity:0.35;pointer-events:none;':''}">
           <label class="form-label">Crew on Site</label>
           ${jcDayCrewHtml(ds,log)}
         </div>
@@ -4720,6 +4724,7 @@ function jcRenderDayLogs(){
           <label class="form-label">📷 Photos</label>
           ${jcDayPhotosHtml(ds)}
         </div>
+        <div id="jctime-${key}" style="display:flex;flex-direction:column;gap:10px;${log.noWork?'opacity:0.35;pointer-events:none;':''}">
         <div id="jctr-${key}" class="form-row" style="margin:0;${log.fullDay?'opacity:0.35;':''}">
           <div class="form-group" style="margin:0;">
             <label class="form-label">Site Start <span style="font-weight:400;color:var(--text3);font-size:10px;">(default for all crew)</span></label>
@@ -4748,6 +4753,8 @@ function jcRenderDayLogs(){
             </label>
           </div>
         </div>`:``}
+        </div>
+        ${log.noWork?`<div style="font-size:11.5px;color:var(--text3);">Crew/time locked while marked No Work Completed — toggle it off above to log hours for this day.</div>`:''}
         <div class="form-group" style="margin:0;">
           <label class="form-label">Notes</label>
           <textarea class="form-textarea" placeholder="Anything worth noting — issues, decisions, next steps..." oninput="jcLogSet('${ds}','notes',this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'" onblur="jcLogSet('${ds}','notes',this.value)" style="min-height:52px;font-size:13px;overflow-y:auto;resize:none;">${log.notes||''}</textarea>
@@ -5300,6 +5307,17 @@ function jcToggleFullDay(ds){
   saveJobRecords();
 }
 
+// Crew got pulled off / never made it on site — mark the day as a deliberate zero rather than
+// an incomplete log, so Job Costing excludes it from labor cost without flagging "Missing Time".
+function jcToggleNoWork(ds){
+  const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
+  const log=job.dayLogs[ds];
+  log.noWork=!log.noWork;
+  if(log.noWork) log.fullDay=false; // mutually exclusive with Full Day
+  jcRenderDayLogs();
+  saveJobRecords();
+}
+
 function jcSetConsumablesPct(val){
   const job=getJobRecord(_jcId); if(!job) return;
   job.consumablesPct=Math.max(0,parseFloat(val)||0);
@@ -5835,8 +5853,11 @@ function renderJobCostingPage(){
 
     allDates.forEach(ds=>{
       const log=logs[ds]; if(!log) return;
-      // Labor — use per-crew-member hours when individual times are set
-      {
+      // Labor — use per-crew-member hours when individual times are set. Skipped entirely for a
+      // day marked "No Work Completed" (crew pulled off) — a deliberate zero, not a real work day —
+      // even if stray crew/time data lingers from before it was marked. Materials below still count
+      // (materials can still be delivered/used on a no-work day).
+      if(!log.noWork){
         const seenDay=new Set();
         (Array.isArray(log.crewPresent)?log.crewPresent:[]).forEach(c=>{
           const effectiveName=(c.name||(c.crewIdx>=0&&CREW_DATA[c.crewIdx]?CREW_DATA[c.crewIdx].full:'')).trim();
@@ -5869,7 +5890,7 @@ function renderJobCostingPage(){
     const consCost=Math.round(matCost*consPct/100*100)/100;
     const mileOneWay=parseFloat(job.mileageOneWay)||0;
     const mileRate=parseFloat(job.mileageRate!==undefined?job.mileageRate:0.725);
-    const wDays=allDates.filter(ds=>{const l=logs[ds];if(!l)return false;if(jcGetLogHrs(l)>0)return true;return(Array.isArray(l.crewPresent)?l.crewPresent:[]).some(c=>jcGetCrewMemberHrs(c,l)>0);}).length;
+    const wDays=allDates.filter(ds=>{const l=logs[ds];if(!l||l.noWork)return false;if(jcGetLogHrs(l)>0)return true;return(Array.isArray(l.crewPresent)?l.crewPresent:[]).some(c=>jcGetCrewMemberHrs(c,l)>0);}).length;
     const mileCost=Math.round(mileOneWay*2*wDays*mileRate*100)/100;
     // Time & Material: bill = labor +labor-markup% and materials +material-markup% (separate %s).
     const effRev = job.tmJob
@@ -5884,7 +5905,7 @@ function renderJobCostingPage(){
     const finishDate=[...(job.endDate?[job.endDate]:[]),...(job.extraDays||[]),...Object.keys(logs)].reduce((mx,d)=>(d>mx?d:mx),'');
     // Days with real logged info but no time entered — silently contribute $0 above.
     const missingTimeCount=allDates.filter(ds=>{
-      const log=logs[ds]; if(!log) return false;
+      const log=logs[ds]; if(!log||log.noWork) return false;
       const crew=Array.isArray(log.crewPresent)?log.crewPresent:[];
       const filled=!!(crew.some(c=>c.name)||log.task||(Array.isArray(log.materialsUsed)?log.materialsUsed:[]).some(m=>m.name||m.qty));
       if(!filled) return false;
@@ -6017,7 +6038,7 @@ function _payrollCompute(offset){
   JOB_RECORDS.forEach(job=>{
     const logs=job.dayLogs; if(!logs) return;
     dates.forEach(ds=>{
-      const log=logs[ds]; if(!log) return;
+      const log=logs[ds]; if(!log||log.noWork) return; // crew pulled off — deliberate zero, not a real work day
       const ot=(log.overtimeWage!==undefined)?!!log.overtimeWage:!!job.overtimeWage;
       const cash=(log.cashWages!==undefined)?!!log.cashWages:!!job.cashWages;
       const prevailing=!!job.prevailingWage;
@@ -6232,7 +6253,7 @@ function renderJobCosting(){
   // these contribute $0 labor below with no other indication why. Caught in the wild: whole
   // days' worth of real logged work missing from costing purely because times were left blank.
   const missingTimeDates=allDates.filter(ds=>{
-    const log=logs[ds]; if(!log) return false;
+    const log=logs[ds]; if(!log||log.noWork) return false;
     const crew=Array.isArray(log.crewPresent)?log.crewPresent:[];
     const filled=!!(crew.some(c=>c.name)||log.task||(Array.isArray(log.materialsUsed)?log.materialsUsed:[]).some(m=>m.name||m.qty));
     if(!filled) return false;
@@ -6241,7 +6262,7 @@ function renderJobCosting(){
   });
 
   allDates.forEach(ds=>{
-    const log=logs[ds]; if(!log) return;
+    const log=logs[ds]; if(!log||log.noWork) return; // crew pulled off — deliberate zero, not a real work day
     const crew=Array.isArray(log.crewPresent)?log.crewPresent:[];
     const seenThisDay=new Set();
     crew.forEach(c=>{
@@ -6302,7 +6323,7 @@ function renderJobCosting(){
   const consCost=Math.round(totalMatCost*consPct/100*100)/100;
 
   // ── MILEAGE ──
-  const workDays=allDates.filter(ds=>{ const l=logs[ds]; if(!l) return false; if(jcGetLogHrs(l)>0) return true; return (Array.isArray(l.crewPresent)?l.crewPresent:[]).some(c=>jcGetCrewMemberHrs(c,l)>0); }).length;
+  const workDays=allDates.filter(ds=>{ const l=logs[ds]; if(!l||l.noWork) return false; if(jcGetLogHrs(l)>0) return true; return (Array.isArray(l.crewPresent)?l.crewPresent:[]).some(c=>jcGetCrewMemberHrs(c,l)>0); }).length;
   const mileageOneWay=parseFloat(job.mileageOneWay)||0;
   const irsRate=parseFloat(job.mileageRate!==undefined?job.mileageRate:0.725);
   const totalMiles=Math.round(mileageOneWay*2*workDays*10)/10;
