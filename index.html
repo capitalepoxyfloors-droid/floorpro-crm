@@ -6880,7 +6880,12 @@ async function jcRescheduleApply(crewCIs,newDates,duration,job,newStart,force=fa
   const oldEntries=Object.entries(SLOT_JOB_MAP).filter(([,jid])=>jid===_jcId);
   for(const[key]of oldEntries){
     const[ci,w,d]=key.split('_').map(Number);
-    await seRemoveSlot(ci,w,d);
+    // SLOT_JOB_MAP can go stale when double-booking swaps which job is primary for a cell
+    // (same class of bug as jcCleanOrphanedSlots/deduplicateSlotsByJobRecord) — only delete
+    // the actual slot if it still belongs to THIS job by label, so a since-reassigned primary
+    // slot belonging to a different job isn't collaterally deleted; always drop the stale map key.
+    const s=newSlots[ci]?.[w]?.[d];
+    if(!s||s.l===job.customer) await seRemoveSlot(ci,w,d);
     delete SLOT_JOB_MAP[key];
   }
   if(job.startDate&&job.endDate){
