@@ -4467,11 +4467,15 @@ function jcMatPick(i,name){
   const job=getJobRecord(_jcId); if(!job||!job.plannedMaterials[i]) return;
   const mat=MATERIALS.find(m=>(m.name||'').toLowerCase()===name.toLowerCase());
   if(!mat) return;
-  // Map material unit to one of our select options
+  // Map material unit to one of our select options. A material's unit often carries a package-size
+  // prefix (e.g. "15 Gallon", "5 Gallon" kit) — strip it before matching, same as jcLogPickMaterial
+  // does for the Daily Log's material picker, or "15 gallon" never hits the map (keys are the bare
+  // unit word) and the select is left holding a value none of its options match — rendering blank.
   const unitMap={gal:'Gallons',gallon:'Gallons',gallons:'Gallons',lb:'Lbs',lbs:'Lbs',pound:'Lbs',pounds:'Lbs',
     kit:'Kits',kits:'Kits',bag:'Bags',bags:'Bags',sheet:'Sheets',sheets:'Sheets',
     'sq ft':'Sq Ft','sqft':'Sq Ft','sf':'Sq Ft',each:'Each',ea:'Each'};
-  const matched=unitMap[(mat.unit||'').toLowerCase().trim()]||mat.unit||null;
+  const bareUnit=(mat.unit||'').replace(/^\d+\.?\d*\s*/,'').trim();
+  const matched=unitMap[bareUnit.toLowerCase()]||unitMap[(mat.unit||'').toLowerCase().trim()]||null;
   if(matched){
     job.plannedMaterials[i].unit=matched;
     const sel=document.getElementById('jc-mat-unit-'+i);
