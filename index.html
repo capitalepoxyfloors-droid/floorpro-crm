@@ -4712,30 +4712,14 @@ function jcRenderDayLogs(){
         </div>
       </div>
       <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
-        <div id="jccrew-${key}" class="form-group" style="margin:0;${log.noWork?'opacity:0.35;pointer-events:none;':''}">
-          <label class="form-label">Crew on Site</label>
-          ${jcDayCrewHtml(ds,log)}
-        </div>
-        <div class="form-group" style="margin:0;">
-          <label class="form-label">Task Completed</label>
-          <textarea class="form-textarea" placeholder="What was done today" oninput="jcLogSet('${ds}','task',this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'" onblur="jcLogSet('${ds}','task',this.value)" style="font-size:13px;overflow-y:auto;resize:none;min-height:60px;">${(log.task||'').replace(/</g,'&lt;')}</textarea>
-        </div>
-        <div class="form-group" style="margin:0;">
-          <label class="form-label">Materials Actually Used</label>
-          ${jcDayMatsHtml(ds,log)}
-        </div>
-        <div class="form-group" style="margin:0;">
-          <label class="form-label">📷 Photos</label>
-          ${jcDayPhotosHtml(ds)}
-        </div>
         <div id="jctime-${key}" style="display:flex;flex-direction:column;gap:10px;${log.noWork?'opacity:0.35;pointer-events:none;':''}">
         <div id="jctr-${key}" class="form-row" style="margin:0;${log.fullDay?'opacity:0.35;':''}">
           <div class="form-group" style="margin:0;">
-            <label class="form-label">Site Start <span style="font-weight:400;color:var(--text3);font-size:10px;">(default for all crew)</span></label>
+            <label class="form-label">Site Start <span style="font-weight:400;color:var(--text3);font-size:10px;">(whole crew — override below if needed)</span></label>
             <input class="form-input" type="text" inputmode="numeric" placeholder="7:00 AM" value="${log.startTime||''}" oninput="jcLogSet('${ds}','startTime',this.value)" onblur="fmtTimeInput(this,'${ds}','startTime')" style="font-size:13px;"/>
           </div>
           <div class="form-group" style="margin:0;">
-            <label class="form-label">Site End <span style="font-weight:400;color:var(--text3);font-size:10px;">(default for all crew)</span></label>
+            <label class="form-label">Site End <span style="font-weight:400;color:var(--text3);font-size:10px;">(whole crew — override below if needed)</span></label>
             <input class="form-input" type="text" inputmode="numeric" placeholder="3:30 PM" value="${log.endTime||''}" oninput="jcLogSet('${ds}','endTime',this.value)" onblur="fmtTimeInput(this,'${ds}','endTime')" style="font-size:13px;"/>
           </div>
         </div>
@@ -4757,6 +4741,22 @@ function jcRenderDayLogs(){
             </label>
           </div>
         </div>`:``}
+        </div>
+        <div id="jccrew-${key}" class="form-group" style="margin:0;${log.noWork?'opacity:0.35;pointer-events:none;':''}">
+          <label class="form-label">Crew on Site</label>
+          ${jcDayCrewHtml(ds,log)}
+        </div>
+        <div class="form-group" style="margin:0;">
+          <label class="form-label">Task Completed</label>
+          <textarea class="form-textarea" placeholder="What was done today" oninput="jcLogSet('${ds}','task',this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'" onblur="jcLogSet('${ds}','task',this.value)" style="font-size:13px;overflow-y:auto;resize:none;min-height:60px;">${(log.task||'').replace(/</g,'&lt;')}</textarea>
+        </div>
+        <div class="form-group" style="margin:0;">
+          <label class="form-label">Materials Actually Used</label>
+          ${jcDayMatsHtml(ds,log)}
+        </div>
+        <div class="form-group" style="margin:0;">
+          <label class="form-label">📷 Photos</label>
+          ${jcDayPhotosHtml(ds)}
         </div>
         ${log.noWork?`<div style="font-size:11.5px;color:var(--text3);">Crew/time locked while marked No Work Completed — toggle it off above to log hours for this day.</div>`:''}
         <div class="form-group" style="margin:0;">
@@ -4973,9 +4973,9 @@ function jcLogSet(ds,field,val){
   job.dayLogs[ds][field]=val;
   if(field==='startTime'||field==='endTime'){
     jcHours(ds.replace(/-/g,''),ds);
-    // Refresh hours badge for any crew member using the global time as fallback
-    const crew=job.dayLogs[ds].crewPresent||[];
-    crew.forEach((_,i)=>jcUpdateCrewHrs(ds,i));
+    // Re-render crew rows so anyone still inheriting the site time (no override of
+    // their own) shows the new time live.
+    jcRenderDayCrew(ds);
   }
 }
 
@@ -4988,16 +4988,45 @@ function _jcMigrateCrewPresent(log){
   if(!Array.isArray(log.crewPresent)) log.crewPresent=[];
 }
 
+// Rows a crew member's time has been expanded to edit this session, even before they've
+// typed anything (e.g. site time is still blank). Keyed 'ds|idx', in-memory only — not saved.
+const _jcExpandedCrewTime=new Set();
+
 function jcDayCrewHtml(ds,log){
   const crew=log.crewPresent||[];
   const key=ds.replace(/-/g,'');
+  const siteStart=log.startTime||'', siteEnd=log.endTime||'';
+  const isCrew=localStorage.getItem('fpRole')==='crew';
   let rows='';
   crew.forEach((c,i)=>{
     const cStart=c.startTime||'', cEnd=c.endTime||'';
-    const effStart=cStart||log.startTime||'', effEnd=cEnd||log.endTime||'';
     const hasCustom=!!(cStart||cEnd);
+    const expanded=hasCustom||_jcExpandedCrewTime.has(ds+'|'+i);
+    const effStart=cStart||siteStart, effEnd=cEnd||siteEnd;
     const hrsText=log.fullDay?'8.0 hrs':(effStart&&effEnd?jcCalcHrs(effStart,effEnd):'');
     const dimTime=log.fullDay?'opacity:.4;pointer-events:none;':'';
+    const hrsSpan=(!isCrew&&hrsText)?`<span id="jccrh-${key}-${i}" style="font-size:11px;font-weight:700;color:${hasCustom?'var(--accent)':'var(--text3)'};">${hrsText}</span>`:'';
+    const timeRow=expanded
+      ?`<span style="font-size:10px;color:var(--text3);flex-shrink:0;">⏱</span>
+        <input class="form-input" type="text" inputmode="numeric"
+          placeholder="${siteStart||'Start'}"
+          value="${cStart}"
+          oninput="jcLogSetCrew('${ds}',${i},'startTime',this.value);jcUpdateCrewHrs('${ds}',${i})"
+          onblur="jcFmtCrewTime(this,'${ds}',${i},'startTime')"
+          style="font-size:11px;padding:2px 5px;width:70px;flex:none;" />
+        <span style="color:var(--text3);font-size:11px;flex-shrink:0;">–</span>
+        <input class="form-input" type="text" inputmode="numeric"
+          placeholder="${siteEnd||'End'}"
+          value="${cEnd}"
+          oninput="jcLogSetCrew('${ds}',${i},'endTime',this.value);jcUpdateCrewHrs('${ds}',${i})"
+          onblur="jcFmtCrewTime(this,'${ds}',${i},'endTime')"
+          style="font-size:11px;padding:2px 5px;width:70px;flex:none;" />
+        ${hrsSpan}
+        <button onclick="jcClearCrewTime('${ds}',${i})" style="margin-left:auto;background:none;border:none;color:var(--text3);font-size:10.5px;cursor:pointer;text-decoration:underline;flex-shrink:0;white-space:nowrap;" title="Use the site start/end time for this person">Use site time</button>`
+      :`<span style="font-size:10px;color:var(--text3);flex-shrink:0;">⏱</span>
+        <span style="font-size:11.5px;color:var(--text2);">${effStart&&effEnd?effStart+' – '+effEnd:'Set site time above'}</span>
+        ${hrsSpan}
+        <button onclick="jcSetCustomCrewTime('${ds}',${i})" style="margin-left:auto;background:none;border:none;color:var(--accent);font-size:10.5px;cursor:pointer;text-decoration:underline;flex-shrink:0;white-space:nowrap;" title="Give this person a different start/end time">Different time?</button>`;
     rows+=`<div style="margin-bottom:8px;background:var(--surface);border:1px solid var(--border2);border-radius:6px;overflow:hidden;">
       <div style="display:flex;gap:6px;align-items:center;padding:5px 8px;">
         <select class="form-input" style="flex:1;font-size:12px;padding:4px 6px;" onchange="jcLogPickCrewMember('${ds}',${i},this)">
@@ -5008,21 +5037,7 @@ function jcDayCrewHtml(ds,log){
         <button onclick="jcLogRemoveCrewMember('${ds}',${i})" style="background:none;border:none;cursor:pointer;color:var(--red);font-size:16px;line-height:1;width:32px;height:32px;display:flex;align-items:center;justify-content:center;flex-shrink:0;" title="Remove">×</button>
       </div>
       <div style="display:flex;align-items:center;gap:5px;padding:3px 8px 5px;border-top:1px solid var(--border2);background:var(--surface2);${dimTime}">
-        <span style="font-size:10px;color:var(--text3);flex-shrink:0;">⏱</span>
-        <input class="form-input" type="text" inputmode="numeric"
-          placeholder="${log.startTime||'Start'}"
-          value="${cStart}"
-          oninput="jcLogSetCrew('${ds}',${i},'startTime',this.value);jcUpdateCrewHrs('${ds}',${i})"
-          onblur="jcFmtCrewTime(this,'${ds}',${i},'startTime')"
-          style="font-size:11px;padding:2px 5px;width:70px;flex:none;" />
-        <span style="color:var(--text3);font-size:11px;flex-shrink:0;">–</span>
-        <input class="form-input" type="text" inputmode="numeric"
-          placeholder="${log.endTime||'End'}"
-          value="${cEnd}"
-          oninput="jcLogSetCrew('${ds}',${i},'endTime',this.value);jcUpdateCrewHrs('${ds}',${i})"
-          onblur="jcFmtCrewTime(this,'${ds}',${i},'endTime')"
-          style="font-size:11px;padding:2px 5px;width:70px;flex:none;" />
-        ${localStorage.getItem('fpRole')!=='crew'?`<span id="jccrh-${key}-${i}" style="font-size:11px;font-weight:700;color:${hasCustom?'var(--accent)':'var(--text3)'};">${hrsText}</span>`:''}
+        ${timeRow}
       </div>
       ${_tcRowStatus(c)}
     </div>`;
@@ -5031,6 +5046,23 @@ function jcDayCrewHtml(ds,log){
     `<button onclick="jcLogAddCrewMember('${ds}')" style="font-size:12px;color:var(--accent);background:none;border:1px dashed var(--accent);border-radius:6px;padding:3px 10px;cursor:pointer;margin-bottom:6px;">+ Add Crew Member</button>`+
     rows+
   `</div>`;
+}
+
+// Reveal editable time inputs for one crew member (doesn't touch data until they type)
+function jcSetCustomCrewTime(ds,idx){
+  _jcExpandedCrewTime.add(ds+'|'+idx);
+  jcRenderDayCrew(ds);
+}
+
+// Clear a crew member's override so they go back to inheriting the site start/end time
+function jcClearCrewTime(ds,idx){
+  const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
+  _jcMigrateCrewPresent(job.dayLogs[ds]);
+  const c=job.dayLogs[ds].crewPresent[idx]; if(!c) return;
+  c.startTime=''; c.endTime='';
+  _jcExpandedCrewTime.delete(ds+'|'+idx);
+  jcRenderDayCrew(ds);
+  saveJobRecords();
 }
 
 function jcRenderDayCrew(ds){
