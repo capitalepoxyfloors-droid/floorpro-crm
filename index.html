@@ -4996,7 +4996,7 @@ function jcDayCrewHtml(ds,log){
   const crew=log.crewPresent||[];
   const key=ds.replace(/-/g,'');
   const siteStart=log.startTime||'', siteEnd=log.endTime||'';
-  const isCrew=localStorage.getItem('fpRole')==='crew';
+  const isCrew=localStorage.getItem('fpRole')==='crew'||!!document.getElementById('page-crewview')?.classList.contains('active');
   let rows='';
   crew.forEach((c,i)=>{
     const cStart=c.startTime||'', cEnd=c.endTime||'';
