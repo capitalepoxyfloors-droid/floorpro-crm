@@ -9344,8 +9344,13 @@ let LEADS = [];
 let LEAD_QUOTED_DATES = {}; // {lead_db_id: ISO date string} — tracks when each lead entered Estimate Sent
 
 async function loadLeadQuotedDates(){
-  const data=await sb.getKV('lead_quoted_dates');
-  LEAD_QUOTED_DATES=data||{};
+  // Same historical bug as loadLeadDupAcks: saved un-parsed, so each save re-wrapped it in
+  // another layer of JSON.stringify. Unwrap however many layers exist instead of losing the data.
+  let data=await sb.getKV('lead_quoted_dates');
+  for(let i=0;i<10 && typeof data==='string';i++){
+    try{ data=JSON.parse(data); }catch(e){ data=null; break; }
+  }
+  LEAD_QUOTED_DATES=(data && typeof data==='object' && !Array.isArray(data)) ? data : {};
 }
 async function saveLeadQuotedDates(){
   LEAD_QUOTED_DATES = await _saveKVMerged('lead_quoted_dates', LEAD_QUOTED_DATES);
