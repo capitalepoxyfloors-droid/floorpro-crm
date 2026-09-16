@@ -4051,6 +4051,7 @@ function _kvSnapshotBaselines(){
   _kvBaselines['crew_history']=_jrClone(CREW_HISTORY);
   _kvBaselines['crew_attachments']=_jrClone(CREW_ATTACHMENTS);
   _kvBaselines['lead_quoted_dates']=_jrClone(LEAD_QUOTED_DATES);
+  _kvBaselines['lead_dup_acks']=_jrClone(LEAD_DUP_ACKS);
   _kvBaselines['mat_categories']=_jrClone(CUSTOM_MAT_CATS);
   _kvBaselines['custom_job_types']=_jrClone(CUSTOM_JOB_TYPES);
   _kvBaselines['job_systems']=_jrClone(JOB_SYSTEMS);
@@ -9359,7 +9360,8 @@ let LEAD_DUP_ACKS = {};   // {leadKey: true} — matches the user marked as sepa
 let _leadDupMatches = [];
 async function loadLeadDupAcks(){
   const data=await sb.getKV('lead_dup_acks');
-  LEAD_DUP_ACKS=data||{};
+  if(data){ try{ LEAD_DUP_ACKS=JSON.parse(data)||{}; }catch(e){ console.error('loadLeadDupAcks parse error:',e); LEAD_DUP_ACKS={}; } }
+  else LEAD_DUP_ACKS={};
 }
 async function saveLeadDupAcks(){
   LEAD_DUP_ACKS = await _saveKVMerged('lead_dup_acks', LEAD_DUP_ACKS);
