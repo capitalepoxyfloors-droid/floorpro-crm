@@ -9359,9 +9359,14 @@ async function saveLeadQuotedDates(){
 let LEAD_DUP_ACKS = {};   // {leadKey: true} — matches the user marked as separate
 let _leadDupMatches = [];
 async function loadLeadDupAcks(){
-  const data=await sb.getKV('lead_dup_acks');
-  if(data){ try{ LEAD_DUP_ACKS=JSON.parse(data)||{}; }catch(e){ console.error('loadLeadDupAcks parse error:',e); LEAD_DUP_ACKS={}; } }
-  else LEAD_DUP_ACKS={};
+  // Self-healing: an earlier bug saved this value un-parsed, so repeated "Keep" clicks kept
+  // re-wrapping it in another layer of JSON.stringify (string-of-a-string-of-a-string...).
+  // Unwrap however many layers exist so old corrupted data recovers instead of resetting to {}.
+  let data=await sb.getKV('lead_dup_acks');
+  for(let i=0;i<10 && typeof data==='string';i++){
+    try{ data=JSON.parse(data); }catch(e){ data=null; break; }
+  }
+  LEAD_DUP_ACKS=(data && typeof data==='object' && !Array.isArray(data)) ? data : {};
 }
 async function saveLeadDupAcks(){
   LEAD_DUP_ACKS = await _saveKVMerged('lead_dup_acks', LEAD_DUP_ACKS);
