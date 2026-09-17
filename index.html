@@ -11437,6 +11437,16 @@ function populateJobTypeDropdowns(){
     if([...jcSel.options].some(o=>o.value===cur)) jcSel.value=cur;
   }
 
+  // se-type (Edit Scheduled Job quick-edit modal): value = key. Was a hardcoded 4-option
+  // list that never grew with new builtin/custom types, so anything past those 4 showed
+  // blank in the dropdown (and would silently save as '' if you hit Save without noticing).
+  const seSel=document.getElementById('se-type');
+  if(seSel){
+    const cur=seSel.value;
+    seSel.innerHTML=types.map(t=>`<option value="${t.key}">${t.label}</option>`).join('');
+    if([...seSel.options].some(o=>o.value===cur)) seSel.value=cur;
+  }
+
   // lead-jobtype: value = label string
   const leadSel=document.getElementById('lead-jobtype');
   if(leadSel){
