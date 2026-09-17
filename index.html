@@ -605,8 +605,8 @@
           <button class="btn btn-ghost" onclick="schedNav(1)">Next →</button>
           <!-- View toggle -->
           <div style="display:flex;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;">
-            <button id="view-2w" class="btn" style="border-radius:0;border:none;padding:6px 12px;font-size:12px;background:var(--accent);color:#fff;" onclick="setSchedView(2)">2 Weeks</button>
-            <button id="view-4w" class="btn" style="border-radius:0;border:none;padding:6px 12px;font-size:12px;background:transparent;color:var(--text2);" onclick="setSchedView(4)">4 Weeks</button>
+            <button id="view-2w" class="btn" style="border-radius:0;border:none;padding:6px 12px;font-size:12px;background:transparent;color:var(--text2);" onclick="setSchedView(2)">2 Weeks</button>
+            <button id="view-4w" class="btn" style="border-radius:0;border:none;padding:6px 12px;font-size:12px;background:var(--accent);color:#fff;" onclick="setSchedView(4)">4 Weeks</button>
           </div>
           <button class="btn btn-ghost" onclick="openModal('pto')" style="color:var(--red);">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><path d="M9 16l2 2 4-4"/></svg>
@@ -12177,7 +12177,7 @@ async function deletePtoDayEdit(){
 }
 
 // ── SCHEDULE VIEW (1-week / 4-week) ───────────────────────────────────────────
-let schedViewWeeks = 2;
+let schedViewWeeks = 4;
 
 function setSchedView(n){
   schedViewWeeks=n;
