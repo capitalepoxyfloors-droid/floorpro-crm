@@ -3592,9 +3592,15 @@ function openSlotEdit(ci, w, d){
   if(!_seForceOpen){
     const rawJobId = SLOT_JOB_MAP[jcSlotKey(ci,w,d)];
     const rawJr = rawJobId ? JOB_RECORDS.find(j=>j.id===rawJobId) : null;
-    // Verify mapped job matches slot label — stale when a double-book overwrote the map entry
-    const jobId = (rawJr && rawJr.customer===slot.l) ? rawJobId
-      : (JOB_RECORDS.find(j=>j.customer===slot.l)?.id || null);
+    // Verify mapped job matches slot label — stale when a double-book overwrote the map entry.
+    // Match loosely (either name contains the other) so a job renamed after scheduling (e.g.
+    // "Mike McDorman" → "Mike McDorman Garage") still opens its real job card instead of falling
+    // through to the bare slot editor just because the slot's cached label text wasn't an exact
+    // match — a totally different customer name won't satisfy this either way, so a genuinely
+    // stale double-booked map entry still gets rejected same as before.
+    const _seNameLoose=(a,b)=>{a=(a||'').toLowerCase().trim();b=(b||'').toLowerCase().trim();return !!a&&!!b&&(a===b||a.includes(b)||b.includes(a));};
+    const jobId = (rawJr && _seNameLoose(rawJr.customer,slot.l)) ? rawJobId
+      : (JOB_RECORDS.find(j=>_seNameLoose(j.customer,slot.l))?.id || null);
     if(jobId && getJobRecord(jobId)){ openJobCard(jobId); return; }
   }
   _seForceOpen = false;
