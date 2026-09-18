@@ -2927,13 +2927,32 @@ async function deduplicateSlotsByJobRecord(){
   // Remove slots that fall outside their job's valid date range.
   // Catches duplicates whether or not they have a SLOT_JOB_MAP entry —
   // legacy slots are matched by customer name label instead.
+  //
+  // Also repairs SLOT_JOB_MAP entries left stale on slots we're KEEPING: the map is written once
+  // when a slot is created, but loadScheduledSlots() independently re-decides which job "wins"
+  // primary on a double-booked cell every load (deterministic earliest-job-wins tie-break) — if
+  // that recomputation lands on a different job than whichever the map was set for, the map is
+  // now silently pointing at the wrong job while the slot itself still shows the right label.
+  // Confirmed effect: clicking the slot could open the wrong job's card, and the schedule bar's
+  // primary-run-into-extension-day merge/fade (which keys off the resolved job, not just the raw
+  // label text) fails to connect, rendering as a gap + orphaned fragment instead of one bar.
   if(!JOB_RECORDS.length) return;
   const toDeleteIds=[];
   const slotsToRemove=[];
+  const mapFixes={};
 
-  // Quick lookup: customer name → job record
-  const jobByCustomer={};
-  JOB_RECORDS.forEach(j=>{ if(j.customer) jobByCustomer[j.customer]=j; });
+  // Quick lookup: customer name → job record(s). A repeat customer can have several job records
+  // sharing the same name — keep every candidate so we can prefer whichever's own date range
+  // actually contains the slot's date (same approach as resolveJobForDate in the schedule
+  // renderer), instead of grabbing whichever happened to be last in JOB_RECORDS.
+  const jobsByCustomer={};
+  JOB_RECORDS.forEach(j=>{ if(j.customer) (jobsByCustomer[j.customer]=jobsByCustomer[j.customer]||[]).push(j); });
+  const resolveByLabelAndDate=(label,dateStr)=>{
+    const cands=jobsByCustomer[label];
+    if(!cands||!cands.length) return null;
+    if(cands.length===1) return cands[0];
+    return cands.find(j=>j.startDate&&j.endDate&&dateStr>=j.startDate&&dateStr<=j.endDate)||cands[0];
+  };
 
   for(const ci in newSlots){
     for(const w in newSlots[ci]){
@@ -2942,19 +2961,6 @@ async function deduplicateSlotsByJobRecord(){
         if(!slot) continue;
         const ciN=parseInt(ci),wN=parseInt(w),dN=parseInt(d);
         const mapKey=jcSlotKey(ciN,wN,dN);
-
-        // Resolve the job: prefer SLOT_JOB_MAP, fall back to label match. The map entry can go
-        // stale (e.g. a later double-book on the same crew/day overwrote it with a different
-        // job's id) — verify the resolved job's customer actually matches this slot's label
-        // before trusting its date range, or a leftover slot can hide behind an unrelated
-        // job's valid dates and never get swept.
-        const jobId=SLOT_JOB_MAP[mapKey];
-        const mappedJob=jobId ? JOB_RECORDS.find(j=>j.id===jobId) : null;
-        const job=(mappedJob&&mappedJob.customer===slot.l)?mappedJob:jobByCustomer[slot.l];
-        if(!job||!job.startDate) continue;
-
-        const endDate=job.endDate||job.startDate;
-        const validDates=new Set([...jcAllDays(job.startDate,endDate),...(job.extraDays||[])]);
 
         // Use the slot's stored absolute date. Reconstructing from the week-offset position is
         // unreliable when the schedule's base week shifts (it can place a valid slot on the wrong
@@ -2968,20 +2974,36 @@ async function deduplicateSlotsByJobRecord(){
           slotDateStr=slotDate.toISOString().split('T')[0];
         }
 
+        // Resolve the job: prefer SLOT_JOB_MAP, fall back to label+date match. The map entry can go
+        // stale (e.g. a later double-book on the same crew/day overwrote it with a different
+        // job's id) — verify the resolved job's customer actually matches this slot's label
+        // before trusting its date range, or a leftover slot can hide behind an unrelated
+        // job's valid dates and never get swept.
+        const jobId=SLOT_JOB_MAP[mapKey];
+        const mappedJob=jobId ? JOB_RECORDS.find(j=>j.id===jobId) : null;
+        const job=(mappedJob&&mappedJob.customer===slot.l)?mappedJob:resolveByLabelAndDate(slot.l,slotDateStr);
+        if(!job||!job.startDate) continue;
+
+        const endDate=job.endDate||job.startDate;
+        const validDates=new Set([...jcAllDays(job.startDate,endDate),...(job.extraDays||[])]);
+
         if(!validDates.has(slotDateStr)){
           if(slot.db_id) toDeleteIds.push(slot.db_id);
           slotsToRemove.push({ciN,wN,dN,mapKey});
+        } else if(jobId!==job.id){
+          mapFixes[mapKey]=job.id;
         }
       }
     }
   }
 
-  if(!slotsToRemove.length) return;
+  Object.assign(SLOT_JOB_MAP,mapFixes);
+  if(!slotsToRemove.length && !Object.keys(mapFixes).length) return;
   slotsToRemove.forEach(({ciN,wN,dN,mapKey})=>{
     if(newSlots[ciN]?.[wN]) delete newSlots[ciN][wN][dN];
     if(mapKey&&SLOT_JOB_MAP[mapKey]) delete SLOT_JOB_MAP[mapKey];
   });
-  await Promise.all(toDeleteIds.map(id=>sb.delete('scheduled_slots',id)));
+  if(toDeleteIds.length) await Promise.all(toDeleteIds.map(id=>sb.delete('scheduled_slots',id)));
   await saveSlotJobMap();
 }
 
