@@ -378,7 +378,6 @@
   .crew-mode #jc-delete-btn{display:none!important;}
   .crew-mode #jc-reschedule-btn{display:none!important;}
   .crew-mode #jc-crew-picker-group{display:none!important;}
-  .crew-mode #jc-geo-row{display:none!important;}
   /* PIN login */
   @keyframes pin-shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-9px)}40%{transform:translateX(9px)}60%{transform:translateX(-6px)}80%{transform:translateX(6px)}}
   .pin-dot{width:14px;height:14px;border-radius:50%;border:2px solid var(--border2);background:transparent;transition:all .15s;}
@@ -967,18 +966,9 @@
         <div class="jobs-block" style="padding:0;margin-bottom:16px;">
           <div style="padding:14px 18px;border-bottom:1px solid var(--border);">
             <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);">Personal Crew Sign-In PINs</div>
-            <div style="font-size:11.5px;color:var(--text2);margin-top:5px;line-height:1.4;">Give each crew member their own 4-digit PIN. When they sign in with it, the app identifies them automatically and uses that name for GPS clock-in — no need to tap a name. Leave blank to disable.</div>
+            <div style="font-size:11.5px;color:var(--text2);margin-top:5px;line-height:1.4;">Give each crew member their own 4-digit PIN. When they sign in with it, the app identifies them automatically — no need to tap a name. Leave blank to disable.</div>
           </div>
           <div id="pin-crew-list" style="padding:6px 18px 14px;"></div>
-        </div>
-        <div class="jobs-block" style="padding:0;margin-bottom:16px;">
-          <div style="padding:14px 18px;border-bottom:1px solid var(--border);">
-            <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);">GPS Diagnostics</div>
-          </div>
-          <div style="padding:16px 18px;">
-            <p style="font-size:12.5px;color:var(--text2);margin-bottom:12px;line-height:1.45;">Check that this device's location works and see how far you are from today's jobs. To test a crew member's phone, sign in on it with the manager code and run this there.</p>
-            <button class="btn btn-primary" onclick="tcTestGps()">📍 Test GPS</button>
-          </div>
         </div>
         <div class="jobs-block" style="padding:0;">
           <div style="padding:14px 18px;border-bottom:1px solid var(--border);">
@@ -3423,7 +3413,7 @@ document.addEventListener('DOMContentLoaded',()=>{
       document.body.classList.add('crew-mode');
       const ml = document.getElementById('cv-manager-link');
       if(ml) ml.style.display = 'block';
-      loadAllFromSupabase().then(()=>{ showPage('crewview'); tcInit(); });
+      loadAllFromSupabase().then(()=>{ showPage('crewview'); });
     } else {
       localStorage.removeItem('fpRole');
       document.body.classList.remove('crew-mode');
@@ -3440,8 +3430,6 @@ document.addEventListener('DOMContentLoaded',()=>{
   ['click','keydown','touchstart','mousemove'].forEach(ev=>
     document.addEventListener(ev, _resetAutoLockTimer, {passive:true})
   );
-  // When a crew device is brought back to the foreground (e.g. arriving on site), re-check GPS for auto clock-in
-  document.addEventListener('visibilitychange',()=>{ if(!document.hidden) tcAutoClockIn(); });
 });
 
 function goStep3(){
@@ -3867,7 +3855,7 @@ async function loadJobRecords(){
 }
 
 // Saving used to overwrite the entire shared job_records blob with THIS device's copy, so a
-// second tab or a crew phone (e.g. a GPS auto-clock-in) could silently wipe edits made
+// second tab or a crew phone could silently wipe edits made
 // elsewhere ("I saved it and it's gone"). Now every save 3-way MERGES: re-read the server
 // copy and apply only the changes this device actually made since it loaded (vs _jrBaseline),
 // preserving everyone else's changes. Saves are also serialized per-tab via _jrSaveChain.
@@ -4317,7 +4305,6 @@ function openJobCard(jobId){
   document.getElementById('jc-jobtype').value=job.jobType||'epoxy';
   document.getElementById('jc-value').value=job.value||'';
   document.getElementById('jc-map-btn').style.display=job.address?'':'none';
-  jcRenderGeoStatus();
   document.getElementById('jc-dates-row').textContent='📅 '+(job.startDate?jcFmtDate(job.startDate):'—')+' – '+(job.endDate?jcFmtDate(job.endDate):'—');
   jcRenderCrewPicker();
   jcPopulateMatDatalist(); // keep materials list in sync
@@ -5068,7 +5055,6 @@ function jcDayCrewHtml(ds,log){
       <div style="display:flex;align-items:center;gap:5px;padding:3px 8px 5px;border-top:1px solid var(--border2);background:var(--surface2);${dimTime}">
         ${timeRow}
       </div>
-      ${_tcRowStatus(c)}
     </div>`;
   });
   return `<div id="jc-crew-${key}">`+
@@ -5144,7 +5130,6 @@ function jcLogSetCrew(ds,idx,field,val){
   _jcMigrateCrewPresent(job.dayLogs[ds]);
   const c=job.dayLogs[ds].crewPresent[idx]; if(!c) return;
   c[field]=val;
-  if((field==='startTime'||field==='endTime')&&c.clockIn) c.manualEdit=true; // hand override of a GPS time
 }
 
 // Format a crew member's time input (same smart-parse as fmtTimeInput but saves to crewPresent)
@@ -5429,7 +5414,7 @@ function jcSetCommission(i,field,val){
   renderJobCosting();
 }
 
-// Single-address geocode used for mileage calc and GPS auto clock-in (needs one
+// Single-address geocode used for mileage calc (needs one
 // best-guess lat/lng, not a list of suggestions). Prefers Geoapify (accurate,
 // proximity-ranked); falls back to Photon if no key is configured or it fails.
 async function _geocodeAddress(address){
@@ -5505,27 +5490,8 @@ async function jcCalcMileage(){
   }
 }
 
-// ══ GPS TIMECLOCK ═════════════════════════════════════════════════════════════
-// Auto clock-in crew when they open the app at a scheduled job site, and stamp
-// real start/end times instead of relying on hand-typed (often wrong) entries.
-const TC_RADIUS_M = 300;          // arrival radius in meters (~985 ft / 0.19 mi)
-let _tcBusy = false;
-let _tcLastTry = 0;
-let _tcActive = (()=>{ try{ return JSON.parse(localStorage.getItem('fpClockActive')||'null'); }catch(e){ return null; } })();
-
-function _tcDistM(lat1,lng1,lat2,lng2){
-  const R=6371000, toR=Math.PI/180;
-  const dLat=(lat2-lat1)*toR, dLng=(lng2-lng1)*toR;
-  const a=Math.sin(dLat/2)**2+Math.cos(lat1*toR)*Math.cos(lat2*toR)*Math.sin(dLng/2)**2;
-  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
-}
-function _tcGetPosition(opts){
-  return new Promise((resolve,reject)=>{
-    if(!navigator.geolocation){ reject(new Error('This device has no GPS')); return; }
-    navigator.geolocation.getCurrentPosition(resolve,reject,
-      Object.assign({enableHighAccuracy:true,timeout:12000,maximumAge:20000},opts||{}));
-  });
-}
+// Identity of the crew member signed in on this device (personal PIN sign-in, or legacy
+// name picker) — used to scope "my" PTO requests etc. to the right person.
 function _tcCrewIdentity(){
   try{
     const p=localStorage.getItem('fpClockCrew');           // fixed by personal-PIN sign-in
@@ -5533,232 +5499,6 @@ function _tcCrewIdentity(){
     const s=localStorage.getItem('fpCvCrew');              // legacy: whatever name they picked
     return (s!==null&&s!=='')?parseInt(s):-1;
   }catch(e){ return -1; }
-}
-function _tcTimeStr(date){
-  let h=date.getHours(), m=date.getMinutes();
-  const ap=h>=12?'PM':'AM'; h=h%12; if(h===0)h=12;
-  return h+':'+String(m).padStart(2,'0')+' '+ap;
-}
-// Cache a job's coordinates (geocode the saved address once, same helper as mileage calc)
-async function _tcEnsureJobCoords(job){
-  if(!job) return null;
-  if(job.lat!=null && job.lng!=null && job.geoAddr===job.address) return {lat:job.lat,lng:job.lng};
-  if(!job.address) return (job.lat!=null&&job.lng!=null)?{lat:job.lat,lng:job.lng}:null;
-  try{
-    const coords=await _geocodeAddress(job.address);
-    if(!coords) return null;
-    job.lat=coords.lat; job.lng=coords.lng; job.geoAddr=job.address;
-    await saveJobRecords();
-    return coords;
-  }catch(e){ return null; }
-}
-// Jobs whose date range covers today — assignment-agnostic ("they're there for a reason")
-function _tcJobsActiveToday(){
-  const today=new Date().toISOString().slice(0,10);
-  return (JOB_RECORDS||[]).filter(j=>{
-    if(!j.startDate) return false;
-    const end=j.endDate||j.startDate;
-    const inRange = today>=j.startDate && today<=end;
-    const inExtra = Array.isArray(j.extraDays) && j.extraDays.includes(today);
-    return inRange || inExtra;
-  });
-}
-// Nearest active job with known coords (caller checks the radius)
-async function _tcNearestJob(lat,lng){
-  let best=null;
-  for(const j of _tcJobsActiveToday()){
-    const c=await _tcEnsureJobCoords(j);
-    if(!c) continue;
-    const dist=_tcDistM(lat,lng,c.lat,c.lng);
-    if(!best||dist<best.dist) best={job:j,dist};
-  }
-  return best;
-}
-// Find-or-create this crew member's row in a day log
-function _tcCrewEntry(job,ds,crewIdx){
-  if(!job.dayLogs) job.dayLogs={};
-  if(!job.dayLogs[ds]) job.dayLogs[ds]={crewPresent:[],task:'',materialsUsed:[],startTime:'',endTime:'',notes:''};
-  const log=job.dayLogs[ds];
-  if(!Array.isArray(log.crewPresent)) log.crewPresent=[];
-  let c=log.crewPresent.find(x=>x.crewIdx===crewIdx);
-  if(!c){
-    const cd=CREW_DATA[crewIdx];
-    c={crewIdx,name:cd?cd.full:'',burdenedRate:cd?(calcBurdenForCrew(cd)||''):'',startTime:'',endTime:''};
-    log.crewPresent.push(c);
-  }
-  return c;
-}
-async function tcClockIn(jobId,pos,dist){
-  const job=(JOB_RECORDS||[]).find(j=>j.id===jobId); if(!job) return;
-  const crewIdx=_tcCrewIdentity(); if(crewIdx<0) return;
-  const ds=new Date().toISOString().slice(0,10);
-  const now=new Date();
-  const c=_tcCrewEntry(job,ds,crewIdx);
-  if(c.clockIn) return;                 // already on the clock today for this job
-  c.clockIn=now.toISOString();
-  c.startTime=_tcTimeStr(now);
-  c.manualEdit=false;
-  if(pos){ c.clockInLat=pos.coords.latitude; c.clockInLng=pos.coords.longitude; c.clockInAcc=Math.round(pos.coords.accuracy||0); }
-  if(dist!=null) c.clockInDist=Math.round(dist);
-  _tcActive={jobId,ds,crewIdx};
-  try{ localStorage.setItem('fpClockActive',JSON.stringify(_tcActive)); }catch(e){}
-  await saveJobRecords();
-  tcRenderChip();
-  if(_jcId===jobId && document.getElementById('jc-day-logs')) jcRenderDayLogs();
-}
-// Run on app-open / focus for crew devices: detect site by GPS and clock in
-async function tcAutoClockIn(){
-  if(localStorage.getItem('fpRole')!=='crew') return;
-  if(_tcCrewIdentity()<0){ tcRenderChip(); return; }
-  if(_tcActive){ tcRenderChip(); return; }
-  if(_tcBusy) return;
-  if(Date.now()-_tcLastTry < 25000){ tcRenderChip(); return; }   // throttle refocus checks
-  _tcBusy=true; _tcLastTry=Date.now();
-  try{
-    const pos=await _tcGetPosition();
-    const near=await _tcNearestJob(pos.coords.latitude,pos.coords.longitude);
-    if(near && near.dist<=TC_RADIUS_M){
-      await tcClockIn(near.job.id,pos,near.dist);
-      showSaveBadge('Clocked In');
-    }
-  }catch(e){ /* permission denied / no signal — stay silent, manual button remains */ }
-  finally{ _tcBusy=false; tcRenderChip(); }
-}
-// Called once after a crew device finishes loading
-function tcInit(){
-  if(localStorage.getItem('fpRole')!=='crew'){ const el=document.getElementById('tc-chip'); if(el) el.remove(); return; }
-  // Clear an "on the clock" flag left over from a previous day
-  if(_tcActive && _tcActive.ds !== new Date().toISOString().slice(0,10)){
-    _tcActive=null; try{ localStorage.removeItem('fpClockActive'); }catch(e){}
-  }
-  tcRenderChip();
-  tcAutoClockIn();
-}
-// Floating "on the clock" status chip — removed per Will's request (2026-08-08): it sat over
-// the Save/Save Log buttons on crew phones and made the daily log hard to save. Along with it,
-// manual clock-in (tcManualClockIn) and clock-out (tcClockOut) are gone too — they had no other
-// callers, since the chip's buttons were the only way to trigger them. GPS auto clock-in
-// (tcAutoClockIn -> tcClockIn) is untouched and keeps running in the
-// background; crew just no longer see a manual override chip or on-the-clock status readout.
-function tcRenderChip(){
-  const el=document.getElementById('tc-chip');
-  if(el) el.remove();
-}
-// Explicit time-source line on every day-log crew row, so the owner can always tell
-// whether the time came from a GPS clock-in (and was on-site) or was entered by hand.
-function _tcRowStatus(c){
-  const isCrew=localStorage.getItem('fpRole')==='crew';
-  const fmtT=iso=>{ try{ const d=new Date(iso); let h=d.getHours(),m=d.getMinutes(); const ap=h>=12?'PM':'AM'; h=h%12||12; return h+':'+String(m).padStart(2,'0')+' '+ap; }catch(e){ return '?'; } };
-  const base='padding:3px 8px 6px;font-size:10.5px;background:var(--surface2);border-top:1px dashed var(--border2);';
-  if(!c||!c.clockIn){
-    return `<div style="${base}color:var(--text3);">✋ No GPS clock-in — time entered by hand</div>`;
-  }
-  const inT=fmtT(c.clockIn);
-  const outPart = c.clockOut ? (' · out '+fmtT(c.clockOut)) : ' · <span style="color:#e0a106;">not clocked out</span>';
-  let extra='';
-  if(!isCrew){
-    if(c.clockInDist!=null){
-      const onSite=c.clockInDist<=TC_RADIUS_M;
-      const dStr = c.clockInDist<1609 ? Math.round(c.clockInDist*3.28084)+' ft' : (c.clockInDist/1609.344).toFixed(1)+' mi';
-      extra += onSite ? ' · <span style="color:var(--green,#1f9d55);font-weight:700;">✓ on-site</span>'
-                      : ' · <span style="color:#e0a106;font-weight:700;">⚠ '+dStr+' from job</span>';
-    }
-    if(c.clockInAcc!=null) extra += ' <span style="color:var(--text3);">(±'+c.clockInAcc+' m)</span>';
-  }
-  const edited = c.manualEdit ? ' · <span style="color:var(--text3);">edited by hand</span>' : '';
-  return `<div style="${base}color:var(--text2);">🛰️ GPS clock-in ${inT}${outPart}${extra}${edited}</div>`;
-}
-// Owner: show whether this job has a GPS location set (for auto clock-in)
-function jcRenderGeoStatus(){
-  const el=document.getElementById('jc-geo-status'); if(!el) return;
-  const job=getJobRecord(_jcId);
-  if(job&&job.lat!=null&&job.lng!=null){
-    el.innerHTML='📍 Location set ✓';
-    el.style.color='var(--green,#1f9d55)';
-  } else if(job&&job.address){
-    el.innerHTML='📍 Will locate from address on save';
-    el.style.color='var(--text3)';
-  } else {
-    el.innerHTML='⚠ No location — crew auto clock-in won’t work';
-    el.style.color='#e0a106';
-  }
-}
-// Owner: pin this job's site to the device's current GPS reading (for jobs without a clean address)
-async function jcPinLocation(){
-  const job=getJobRecord(_jcId); if(!job){ showToast('Open a job first.'); return; }
-  showToast('Reading GPS…');
-  try{
-    const pos=await _tcGetPosition({maximumAge:0});
-    job.lat=pos.coords.latitude; job.lng=pos.coords.longitude; job.geoAddr=job.address||'(pinned)';
-    await saveJobRecords();
-    jcRenderGeoStatus();
-    showToast('📍 Job location pinned to your current spot ✓');
-  }catch(e){ showToast('Could not read GPS — allow location access and try again.'); }
-}
-
-// Diagnostic: read this device's GPS and show distance to today's jobs (owner-facing test tool)
-async function tcTestGps(){
-  let ov=document.getElementById('gps-test-ov'); if(ov) ov.remove();
-  ov=document.createElement('div');
-  ov.id='gps-test-ov';
-  ov.style.cssText='position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px;';
-  ov.innerHTML=`<div style="background:var(--surface,#141414);border:1px solid var(--border2,#333);border-radius:16px;max-width:440px;width:100%;max-height:86vh;overflow-y:auto;box-shadow:0 20px 70px rgba(0,0,0,.6);">
-     <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--border);">
-       <div style="font-size:16px;font-weight:700;color:var(--text);">📍 GPS Test</div>
-       <button onclick="document.getElementById('gps-test-ov').remove()" style="background:none;border:none;color:var(--text2);font-size:22px;cursor:pointer;line-height:1;">×</button>
-     </div>
-     <div id="gps-test-body" style="padding:18px;font-size:13px;color:var(--text2);line-height:1.5;">
-       <div style="text-align:center;padding:24px;">Reading GPS…<br><span style="opacity:.6;font-size:12px;">tap “Allow” if your phone asks for location</span></div>
-     </div>
-   </div>`;
-  document.body.appendChild(ov);
-  const body=document.getElementById('gps-test-body');
-  if(!navigator.geolocation){ body.innerHTML='<div style="color:#e0a106;font-weight:600;">⚠ This device/browser has no location support.</div>'; return; }
-  const t0=Date.now();
-  let pos;
-  try{ pos=await _tcGetPosition({maximumAge:0}); }
-  catch(e){
-    const msg = (e&&e.code===1) ? 'Permission denied — location is blocked or off. Enable location for this site in your browser/phone settings, then try again.'
-             : (e&&e.code===2) ? 'Position unavailable — no GPS fix right now. Step outside and try again.'
-             : (e&&e.code===3) ? 'Timed out getting a fix. Try again.'
-             : ('Error: '+((e&&e.message)||'unknown'));
-    body.innerHTML='<div style="color:#e0454e;font-weight:700;margin-bottom:6px;">✗ Could not read GPS</div><div>'+msg+'</div>';
-    return;
-  }
-  const lat=pos.coords.latitude, lng=pos.coords.longitude, acc=Math.round(pos.coords.accuracy||0);
-  const secs=((Date.now()-t0)/1000).toFixed(1);
-  const accNote = acc<=50?'excellent — real GPS':acc<=150?'good':acc<=600?'rough — likely WiFi/desktop':'poor';
-  const idIdx=_tcCrewIdentity();
-  const idLine = idIdx>=0 ? ('👤 '+(((CREW||[])[idIdx]||{}).name||('Crew '+idIdx)))
-                          : '<span style="color:#e0a106;">none (owner/manager — won’t auto clock-in)</span>';
-  const jobs=_tcJobsActiveToday();
-  let jobRows='';
-  if(!jobs.length){ jobRows='<div style="color:var(--text3);padding:6px 0;">No jobs scheduled for today.</div>'; }
-  else{
-    for(const j of jobs){
-      const c=await _tcEnsureJobCoords(j);
-      const nm=(j.customer||'Job').replace(/</g,'&lt;');
-      if(!c){ jobRows+=`<div style="padding:7px 0;border-top:1px solid var(--border);"><b style="color:var(--text);">${nm}</b> — <span style="color:#e0a106;">no location set</span></div>`; continue; }
-      const dist=_tcDistM(lat,lng,c.lat,c.lng);
-      const inRange=dist<=TC_RADIUS_M;
-      const distStr = dist<1609 ? Math.round(dist)+' m' : (dist/1609.344).toFixed(1)+' mi';
-      jobRows+=`<div style="padding:7px 0;border-top:1px solid var(--border);display:flex;justify-content:space-between;gap:8px;">
-        <b style="color:var(--text);">${nm}</b>
-        <span style="color:${inRange?'var(--green,#1f9d55)':'var(--text2)'};font-weight:700;white-space:nowrap;">${distStr}${inRange?' ✓ in range':''}</span></div>`;
-    }
-  }
-  body.innerHTML=`
-    <div style="color:var(--green,#1f9d55);font-weight:700;font-size:15px;margin-bottom:12px;">✓ GPS is working</div>
-    <div style="display:grid;grid-template-columns:auto 1fr;gap:5px 12px;margin-bottom:14px;">
-      <span style="color:var(--text3);">Coordinates</span><span style="color:var(--text);font-family:'DM Mono',monospace;">${lat.toFixed(5)}, ${lng.toFixed(5)}</span>
-      <span style="color:var(--text3);">Accuracy</span><span style="color:var(--text);">±${acc} m <span style="color:var(--text3);">(${accNote})</span></span>
-      <span style="color:var(--text3);">Fix time</span><span style="color:var(--text);">${secs}s</span>
-      <span style="color:var(--text3);">Signed in as</span><span style="color:var(--text);">${idLine}</span>
-      <span style="color:var(--text3);">Clock-in radius</span><span style="color:var(--text);">${TC_RADIUS_M} m (~${Math.round(TC_RADIUS_M*3.28084)} ft)</span>
-    </div>
-    <a href="https://maps.google.com/?q=${lat},${lng}" target="_blank" rel="noopener" style="color:var(--accent,#1a73e8);font-size:12px;">Open this spot in Google Maps →</a>
-    <div style="margin-top:16px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);font-family:'DM Mono',monospace;">Today's jobs — distance from here</div>
-    <div style="margin-top:4px;">${jobRows}</div>`;
 }
 
 function jcHours(key,ds){
@@ -5790,8 +5530,8 @@ function jcGetBurdenedRate(c, job, log){
     }
     return 0;
   }
-  // Use the rate STORED on this day's crew entry — it's locked in when the work is logged (day log
-  // pick or GPS clock-in), so changing a crew member's wage later does NOT retroactively re-cost
+  // Use the rate STORED on this day's crew entry — it's locked in when the work is logged, so
+  // changing a crew member's wage later does NOT retroactively re-cost
   // past jobs; days logged after the change pick up the new rate. Fall back to the live CREW_DATA
   // calc only when there's no stored rate (a brand-new entry / before any rate was captured).
   const stored=parseFloat(c.burdenedRate);
@@ -6792,7 +6532,6 @@ async function saveJobCard(){
     if(dbId) dbSaveJob({customer:job.customer,jobLabel,value:card.dataset.value,displayVal:cleanDisplay,detail,status,notes,db_id:dbId});
   });
   await jcSyncCrewSlots(job);   // heal any missing slots after date/crew changes
-  if(job.address && (job.lat==null || job.geoAddr!==job.address)) _tcEnsureJobCoords(job); // refresh GPS coords for clock-in (non-blocking)
   showSaveBadge('Saved');
   closeModal('jobcard');
   renderSchedule();
@@ -7037,7 +6776,6 @@ function cvLockDevice(){
   const ml=document.getElementById('cv-manager-link');
   if(ml) ml.style.display='block';
   showPage('crewview');
-  tcInit();
 }
 
 function cvUnlock(){
@@ -8025,7 +7763,7 @@ function _pinSuccess(role, crewIdx){
     document.body.classList.add('crew-mode');
     const ml=document.getElementById('cv-manager-link');
     if(ml) ml.style.display='block';
-    loadAllFromSupabase().then(()=>{ showPage('crewview'); tcInit(); });
+    loadAllFromSupabase().then(()=>{ showPage('crewview'); });
   } else {
     localStorage.removeItem('fpRole');
     document.body.classList.remove('crew-mode');
@@ -14876,11 +14614,6 @@ async function deleteMaintEntry(id){
             <div id="jc-addr-drop" class="addr-drop" style="display:none;"></div>
           </div>
           <button class="btn btn-ghost" id="jc-map-btn" onclick="jcOpenMaps()" style="white-space:nowrap;display:none;flex-shrink:0;">📍 Maps</button>
-        </div>
-        <div id="jc-geo-row" style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap;">
-          <span id="jc-geo-status" style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;"></span>
-          <button class="btn btn-ghost" onclick="jcPinLocation()" style="font-size:11px;padding:3px 9px;">📍 Pin to my GPS</button>
-          <span style="font-size:10.5px;color:var(--text3);">Used for crew auto clock-in</span>
         </div>
       </div>
       <div class="form-group">
