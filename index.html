@@ -6510,27 +6510,22 @@ async function saveJobCard(){
   document.getElementById('jc-name').textContent=job.customer||'Unnamed Job';
   await saveJobRecords();
   // ── Sync value back to the board card ────────────────────────────────────
+  // Reconciles against the loaded data cache (_lastJobRows), NOT the DOM — matching by raw
+  // `.lead-name` textContent breaks whenever the board customer field carries a baked-in
+  // "#NNN" badge (e.g. "Haslag Chicken Barn #557" vs job.customer "Haslag Chicken Barn"), so
+  // the value update silently never applied and the board kept showing the old $ amount
+  // forever (confirmed: Haslag Chicken Barn stuck at $3,056 on the board after Job Value was
+  // corrected to $6675.50 on the Job Info tab). Same bug class as syncBoardCardStatus.
   const numVal=parseFloat(job.value)||0;
   const cleanDisplay=numVal>0?'$'+numVal.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'—';
-  document.querySelectorAll('.lead-card').forEach(card=>{
-    const cardCust=card.querySelector('.lead-name')?.textContent.trim();
-    if(cardCust!==job.customer) return;
-    // Update or insert the value element
-    let valEl=card.querySelector('.lead-value');
-    if(valEl){ valEl.textContent=cleanDisplay; }
-    else if(numVal>0){
-      valEl=document.createElement('div'); valEl.className='lead-value'; valEl.textContent=cleanDisplay;
-      card.querySelector('.lead-name')?.insertAdjacentElement('afterend',valEl);
-    }
-    card.dataset.value=numVal>0?numVal.toString():(card.dataset.value||'');
-    // Push updated value to Supabase jobs table
-    const dbId=card.dataset.dbId||null;
-    const jobLabel=card.querySelector('.lead-detail')?.textContent.trim()||'';
-    const detail=card.querySelectorAll('.lead-detail')[1]?.textContent.trim()||'';
-    const status=card.dataset.status||'scheduled';
-    const notes=[card.dataset.address||'',card.dataset.notes||''].filter(Boolean).join('\n');
-    if(dbId) dbSaveJob({customer:job.customer,jobLabel,value:card.dataset.value,displayVal:cleanDisplay,detail,status,notes,db_id:dbId});
-  });
+  const _jcKey=_jobMatchKey(job.customer);
+  const _jcRows=(_lastJobRows||[]).filter(r=>r && r.status!=='invoiced' && _jobMatchKey(r.customer||'')===_jcKey);
+  for(const row of _jcRows){
+    await dbSaveJob({customer:job.customer,jobLabel:row.job_label||'',value:numVal>0?numVal.toString():'',displayVal:cleanDisplay,detail:row.detail||'',status:row.status||'scheduled',notes:row.notes||'',db_id:row.id});
+    row.value=numVal>0?numVal.toString():'';
+    row.display_val=cleanDisplay;
+  }
+  if(_jcRows.length){ await loadJobs(); if(_jobsListActive()) renderJobsListView(); }
   await jcSyncCrewSlots(job);   // heal any missing slots after date/crew changes
   showSaveBadge('Saved');
   closeModal('jobcard');
