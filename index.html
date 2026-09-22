@@ -5389,6 +5389,21 @@ function jcSetMileageRate(val){
   renderJobCosting();
 }
 
+// IRS standard mileage rate schedule. The IRS raised the rate to $0.76/mi effective 7/1/2026
+// (from $0.725/mi). Mileage cost is calculated per WORK DAY using whichever rate was in effect
+// on that day, so a job spanning the cutover bills each day correctly instead of picking one
+// flat rate for the whole job. A job's mileageRate field is only treated as a deliberate manual
+// override when it differs from the old default (0.725) — jobs that were just riding the
+// default (the vast majority, including everything auto-seeded by jcCalcMileage before this
+// change) automatically pick up the new rate for any day on/after the cutover, retroactively.
+const IRS_MILEAGE_RATE_CUTOVER='2026-07-01';
+function irsMileageRateForDate(ds){
+  return (ds && ds>=IRS_MILEAGE_RATE_CUTOVER) ? 0.76 : 0.725;
+}
+function _jcMileageCustomRate(job){
+  return (job.mileageRate!==undefined && Math.abs(parseFloat(job.mileageRate)-0.725)>0.0001) ? parseFloat(job.mileageRate) : null;
+}
+
 // Commission row cost — 'pct' rows are a % of the job's revenue basis (effective/billed revenue); 'flat' rows are a plain $ amount.
 function _commRowCost(c,revenueBasis){
   const amt=parseFloat(c.amount)||0;
@@ -5479,7 +5494,6 @@ async function jcCalcMileage(){
     }
 
     job.mileageOneWay=miles;
-    if(job.mileageRate===undefined) job.mileageRate=0.725;
     await saveJobRecords();
     renderJobCosting();
   } catch(e){
@@ -5694,9 +5708,10 @@ function renderJobCostingPage(){
     const consPct=parseFloat(job.consumablesPct===undefined?10:job.consumablesPct)||0;
     const consCost=Math.round(matCost*consPct/100*100)/100;
     const mileOneWay=parseFloat(job.mileageOneWay)||0;
-    const mileRate=parseFloat(job.mileageRate!==undefined?job.mileageRate:0.725);
-    const wDays=allDates.filter(ds=>{const l=logs[ds];if(!l||l.noWork)return false;if(jcGetLogHrs(l)>0)return true;return(Array.isArray(l.crewPresent)?l.crewPresent:[]).some(c=>jcGetCrewMemberHrs(c,l)>0);}).length;
-    const mileCost=Math.round(mileOneWay*2*wDays*mileRate*100)/100;
+    const wDates=allDates.filter(ds=>{const l=logs[ds];if(!l||l.noWork)return false;if(jcGetLogHrs(l)>0)return true;return(Array.isArray(l.crewPresent)?l.crewPresent:[]).some(c=>jcGetCrewMemberHrs(c,l)>0);});
+    const wDays=wDates.length;
+    const _mileCustomRate=_jcMileageCustomRate(job);
+    const mileCost=Math.round((_mileCustomRate!==null ? mileOneWay*2*wDays*_mileCustomRate : wDates.reduce((s,ds)=>s+mileOneWay*2*irsMileageRateForDate(ds),0))*100)/100;
     // Time & Material: bill = labor +labor-markup% and materials +material-markup% (separate %s).
     const effRev = job.tmJob
       ? Math.round((laborCost*(1+(parseFloat(job.tmLaborMarkup)||0)/100) + matCost*(1+(parseFloat(job.tmMaterialMarkup)||0)/100) + consCost + mileCost)*100)/100
@@ -6128,11 +6143,16 @@ function renderJobCosting(){
   const consCost=Math.round(totalMatCost*consPct/100*100)/100;
 
   // ── MILEAGE ──
-  const workDays=allDates.filter(ds=>{ const l=logs[ds]; if(!l||l.noWork) return false; if(jcGetLogHrs(l)>0) return true; return (Array.isArray(l.crewPresent)?l.crewPresent:[]).some(c=>jcGetCrewMemberHrs(c,l)>0); }).length;
+  const workDates=allDates.filter(ds=>{ const l=logs[ds]; if(!l||l.noWork) return false; if(jcGetLogHrs(l)>0) return true; return (Array.isArray(l.crewPresent)?l.crewPresent:[]).some(c=>jcGetCrewMemberHrs(c,l)>0); });
+  const workDays=workDates.length;
   const mileageOneWay=parseFloat(job.mileageOneWay)||0;
-  const irsRate=parseFloat(job.mileageRate!==undefined?job.mileageRate:0.725);
+  const _mileCustomRate=_jcMileageCustomRate(job);
   const totalMiles=Math.round(mileageOneWay*2*workDays*10)/10;
-  const mileageCost=Math.round(totalMiles*irsRate*100)/100;
+  const mileageCost=Math.round((_mileCustomRate!==null ? totalMiles*_mileCustomRate : workDates.reduce((s,ds)=>s+mileageOneWay*2*irsMileageRateForDate(ds),0))*100)/100;
+  // Display rate: the manual override if one is set, else the blended $/mi implied by the
+  // per-day calculation above (a single number for a job whose days actually straddle the
+  // cutover is necessarily an average — the line item below still totals correctly either way).
+  const irsRate=_mileCustomRate!==null ? _mileCustomRate : (totalMiles>0 ? Math.round((mileageCost/totalMiles)*10000)/10000 : irsMileageRateForDate(job.endDate||job.startDate||new Date().toISOString().slice(0,10)));
 
   // ── TIME & MATERIAL / EFFECTIVE REVENUE (computed before Commission — % commissions are based on this) ──
   // Time & Material: invoice = labor cost + labor-markup%, plus materials + material-markup%.
