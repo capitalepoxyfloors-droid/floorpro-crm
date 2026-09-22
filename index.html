@@ -514,6 +514,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21.21 15.89A10 10 0 118 2.83"/><path d="M22 12A10 10 0 0012 2v10z"/></svg>
         <span>Overhead</span>
       </button>
+      <button class="nav-item" onclick="showPage('mileagerate')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="1" y="9" width="22" height="11" rx="2"/><path d="M5 9V7a2 2 0 012-2h10a2 2 0 012 2v2"/><circle cx="7" cy="20" r="2"/><circle cx="17" cy="20" r="2"/><path d="M9 9V6M15 9V6"/></svg>
+        <span>Mileage Rate</span>
+      </button>
       <button class="nav-item" onclick="showPage('vehicles')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="1" y="9" width="22" height="11" rx="2"/><path d="M5 9V7a2 2 0 012-2h10a2 2 0 012 2v2"/><circle cx="7" cy="20" r="2"/><circle cx="17" cy="20" r="2"/><path d="M5 14h14"/></svg>
         <span>Vehicles</span>
@@ -892,6 +896,17 @@
         </div>
       </div>
       <div class="content" id="overhead-content"></div>
+    </div>
+
+    <!-- MILEAGE RATE SETTINGS PAGE -->
+    <div class="page" id="page-mileagerate">
+      <div class="topbar">
+        <div class="page-title">Mileage Rate</div>
+        <div class="topbar-actions">
+          <button class="btn btn-primary" onclick="mrAddTier()">+ Add Rate</button>
+        </div>
+      </div>
+      <div class="content" id="mileagerate-content"></div>
     </div>
 
     <!-- JOB TYPES SETTINGS PAGE -->
@@ -3000,7 +3015,7 @@ async function deduplicateSlotsByJobRecord(){
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
   try{
-    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadLeadDupAcks(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadNavOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs(),loadMaterialDocs(),loadMaterialNotes(),loadJobPhotos(),loadJobDocs(),loadSalesScopePhotos()]);
+    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadLeadDupAcks(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadNavOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadMileageRates(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs(),loadMaterialDocs(),loadMaterialNotes(),loadJobPhotos(),loadJobDocs(),loadSalesScopePhotos()]);
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
@@ -5389,19 +5404,41 @@ function jcSetMileageRate(val){
   renderJobCosting();
 }
 
-// IRS standard mileage rate schedule. The IRS raised the rate to $0.76/mi effective 7/1/2026
-// (from $0.725/mi). Mileage cost is calculated per WORK DAY using whichever rate was in effect
-// on that day, so a job spanning the cutover bills each day correctly instead of picking one
-// flat rate for the whole job. A job's mileageRate field is only treated as a deliberate manual
-// override when it differs from the old default (0.725) — jobs that were just riding the
-// default (the vast majority, including everything auto-seeded by jcCalcMileage before this
-// change) automatically pick up the new rate for any day on/after the cutover, retroactively.
-const IRS_MILEAGE_RATE_CUTOVER='2026-07-01';
+// ══ MILEAGE RATE SCHEDULE (Settings → Mileage Rate) ═══════════════════════
+// Owner-editable history of the IRS standard mileage rate, stored in KV 'mileage_rates' as
+// {tiers:[{id,rate,effective}]}. Mileage cost is calculated per WORK DAY using whichever tier
+// was effective on that calendar date, so a job spanning a rate change bills each day correctly
+// instead of picking one flat rate for the whole job. A job's own mileageRate field is only
+// treated as a deliberate per-job override when it doesn't match ANY configured tier rate — a
+// stored value equal to some historical tier just means the job was riding the schedule at the
+// time, and it stays on the live schedule (picking up future tiers automatically) going forward.
+let MILEAGE_RATES={tiers:[]};
+async function loadMileageRates(){
+  const v=await sb.getKV('mileage_rates');
+  if(v){ try{ const o=JSON.parse(v); if(o&&typeof o==='object'&&Array.isArray(o.tiers)) MILEAGE_RATES={tiers:o.tiers}; }catch(e){ console.error('loadMileageRates parse error:',e); } }
+  if(!MILEAGE_RATES.tiers.length){
+    // First run after this feature shipped — seed the two tiers that were previously hardcoded
+    // so behavior is unchanged until the owner edits the schedule themselves.
+    MILEAGE_RATES.tiers=[{id:'mr_seed1',rate:'0.725',effective:'2000-01-01'},{id:'mr_seed2',rate:'0.76',effective:'2026-07-01'}];
+    await saveMileageRates();
+  }
+}
+async function saveMileageRates(){ MILEAGE_RATES=await _saveKVMerged('mileage_rates',MILEAGE_RATES); }
+function _mrSortedTiers(){
+  return (MILEAGE_RATES.tiers||[]).filter(t=>t.effective).slice().sort((a,b)=>a.effective.localeCompare(b.effective));
+}
 function irsMileageRateForDate(ds){
-  return (ds && ds>=IRS_MILEAGE_RATE_CUTOVER) ? 0.76 : 0.725;
+  const tiers=_mrSortedTiers();
+  if(!tiers.length) return 0.725;
+  let rate=parseFloat(tiers[0].rate)||0;
+  for(const t of tiers){ if(!ds||t.effective<=ds) rate=parseFloat(t.rate)||rate; else break; }
+  return rate;
 }
 function _jcMileageCustomRate(job){
-  return (job.mileageRate!==undefined && Math.abs(parseFloat(job.mileageRate)-0.725)>0.0001) ? parseFloat(job.mileageRate) : null;
+  if(job.mileageRate===undefined) return null;
+  const r=parseFloat(job.mileageRate);
+  const matchesTier=(MILEAGE_RATES.tiers||[]).some(t=>Math.abs((parseFloat(t.rate)||0)-r)<0.0005);
+  return matchesTier ? null : r;
 }
 
 // Commission row cost — 'pct' rows are a % of the job's revenue basis (effective/billed revenue); 'flat' rows are a plain $ amount.
@@ -7878,6 +7915,7 @@ function showPage(id){
   if(id==='vehicles'){ _activeVehicleId=null; renderVehicles(); }
   if(id==='materials') renderMaterials();
   if(id==='overhead') renderOverhead();
+  if(id==='mileagerate') renderMileageRates();
   if(id==='reference') renderReference();
   if(id==='pipeline') renderPipeline();
   if(id==='crewview') renderCrewView();
@@ -10632,6 +10670,73 @@ async function overheadMoveGL(){
   showToast('✓ GL moved to overhead for '+n+' installer'+(n>1?'s':'')+'.');
   renderOverhead();
   renderCrewCards();
+}
+
+// ══ MILEAGE RATE SETTINGS PAGE ═════════════════════════════════════════════
+// UI for MILEAGE_RATES (state + load/save + irsMileageRateForDate live near jcSetMileageRate).
+function _mrFmtRate(r){
+  let s=(parseFloat(r)||0).toFixed(3);
+  s=s.replace(/0+$/,'').replace(/\.$/,'');
+  return s||'0';
+}
+function renderMileageRates(){
+  const el=document.getElementById('mileagerate-content'); if(!el) return;
+  const tiers=_mrSortedTiers();
+  const today=new Date().toISOString().slice(0,10);
+  const currentRate=irsMileageRateForDate(today);
+
+  let html=`<div style="max-width:760px;margin:0 auto;">`;
+  html+=`<div style="background:var(--accent-dim);border:1px solid var(--accent2);border-radius:var(--radius);padding:16px 20px;margin-bottom:18px;text-align:center;">
+    <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--accent);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Current Rate (as of today)</div>
+    <div style="font-size:26px;font-weight:800;font-family:'DM Mono',monospace;color:var(--accent);">$${_mrFmtRate(currentRate)}/mi</div>
+  </div>`;
+  html+=`<div style="font-size:12px;color:var(--text3);margin-bottom:14px;line-height:1.6;">Job Costing mileage is calculated per work day using whichever rate below was effective on that day — a job whose days span a rate change bills each day correctly instead of one flat rate for the whole job. Add a row whenever the IRS updates the standard mileage rate; it applies automatically from its effective date forward, retroactively to any already-logged day on or after that date, across every job.</div>`;
+
+  if(!tiers.length){
+    html+=`<div style="padding:30px;text-align:center;color:var(--text3);font-size:13px;border:1px dashed var(--border2);border-radius:var(--radius);">No rates configured yet. Click “+ Add Rate” to set one.</div>`;
+  } else {
+    html+=`<div style="display:grid;grid-template-columns:1fr 1fr 74px 40px;gap:10px;padding:0 12px 6px;font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;">
+      <div>Effective Date</div><div>Rate ($/mi)</div><div></div><div></div></div>`;
+    html+=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;">`;
+    html+=tiers.map((t,i)=>{
+      const isCurrent=t.effective<=today && (i===tiers.length-1||tiers[i+1].effective>today);
+      return `<div style="display:grid;grid-template-columns:1fr 1fr 74px 40px;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border);${isCurrent?'background:var(--accent-dim);':''}">
+        <input class="form-input" type="date" id="mr-date-${t.id}" value="${t.effective||''}" onchange="mrSetDate('${t.id}',this.value)" style="font-size:13px;padding:6px 10px;"/>
+        <div style="position:relative;"><span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--text3);font-size:12px;">$</span><input class="form-input" id="mr-rate-${t.id}" type="number" min="0" step="0.001" value="${t.rate||''}" placeholder="0.000" oninput="mrSetField('${t.id}','rate',this.value)" onblur="mrCommit()" style="font-size:13px;padding:6px 10px 6px 20px;text-align:right;font-family:'DM Mono',monospace;"/></div>
+        <div style="font-size:11px;color:var(--accent);font-weight:700;text-align:center;">${isCurrent?'Current':''}</div>
+        <button class="btn btn-ghost" style="font-size:12px;padding:4px 8px;color:var(--red);" onclick="mrDeleteTier('${t.id}')" ${tiers.length<=1?'disabled title="At least one rate is required"':''}>✕</button>
+      </div>`;
+    }).join('');
+    html+=`</div>`;
+  }
+  html+=`</div>`;
+  el.innerHTML=html;
+}
+function mrSetField(id,field,val){
+  const t=(MILEAGE_RATES.tiers||[]).find(x=>x.id===id); if(!t) return;
+  t[field]=val;
+}
+function mrCommit(){ saveMileageRates(); }
+function mrSetDate(id,val){
+  const t=(MILEAGE_RATES.tiers||[]).find(x=>x.id===id); if(!t) return;
+  t.effective=val;
+  saveMileageRates();
+  renderMileageRates();
+}
+function mrAddTier(){
+  if(!MILEAGE_RATES.tiers) MILEAGE_RATES.tiers=[];
+  const id='mr_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+  MILEAGE_RATES.tiers.push({id,rate:'',effective:new Date().toISOString().slice(0,10)});
+  saveMileageRates();
+  renderMileageRates();
+  setTimeout(()=>{ const f=document.getElementById('mr-rate-'+id); if(f) f.focus(); },30);
+}
+function mrDeleteTier(id){
+  if((MILEAGE_RATES.tiers||[]).length<=1) return;
+  if(!confirm('Remove this mileage rate? Any dates that relied on it will fall back to the next applicable rate.')) return;
+  MILEAGE_RATES.tiers=(MILEAGE_RATES.tiers||[]).filter(x=>x.id!==id);
+  saveMileageRates();
+  renderMileageRates();
 }
 
 function calcBurdenForCrew(c){
