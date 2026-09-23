@@ -1072,6 +1072,7 @@
       <button class="modal-close" onclick="closePtoRequestModal()">×</button>
     </div>
     <div class="modal-body">
+      <div id="ptoreq-question" style="display:none;background:var(--orange-dim);border:1px solid var(--orange);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:14px;"></div>
       <div class="form-group">
         <label class="form-label">Your Name</label>
         <select class="form-select" id="ptoreq-crew">
@@ -1119,11 +1120,38 @@
         <label class="form-label">Reason <span style="color:var(--text3);font-weight:400;">(optional)</span></label>
         <input class="form-input" id="ptoreq-reason" placeholder="Vacation, appointment, personal..."/>
       </div>
+      <!-- Reply box — only shown when answering a request Will sent back (myPtoReplyRequest) -->
+      <div id="ptoreq-reply-grp" class="form-group" style="display:none;">
+        <label class="form-label">Your Reply</label>
+        <textarea class="form-input" id="ptoreq-reply" rows="3" style="resize:vertical;font-family:inherit;" placeholder="Answer Will's question — and fix the dates above if needed."></textarea>
+      </div>
       <div id="ptoreq-note" style="font-size:12px;color:var(--text3);margin-top:4px;line-height:1.5;">Your request will be sent to Will for approval. You'll see it on the calendar once approved.</div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closePtoRequestModal()">Cancel</button>
       <button class="btn btn-primary" id="ptoreq-submit-btn" onclick="submitPtoRequest()">Send Request</button>
+    </div>
+  </div>
+</div>
+
+<!-- SEND PTO REQUEST BACK FOR CLARIFICATION (manager) -->
+<div class="modal-overlay" id="modal-ptoclarify">
+  <div class="modal" style="max-width:460px;">
+    <div class="modal-header">
+      <div class="modal-title">↩ Send Back for Info</div>
+      <button class="modal-close" onclick="closeModal('ptoclarify')">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="ptoclarify-summary" style="font-size:13px;color:var(--text2);margin-bottom:12px;line-height:1.5;"></div>
+      <div class="form-group">
+        <label class="form-label">What do you need to know?</label>
+        <textarea class="form-input" id="ptoclarify-note" rows="3" style="resize:vertical;font-family:inherit;" placeholder="e.g. Is this the whole day or just the morning? What time is the meeting?"></textarea>
+      </div>
+      <div style="font-size:12px;color:var(--text3);line-height:1.5;">They'll see your question in My PTO Requests and can reply or fix the request. It comes back to Pending when they do.</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('ptoclarify')">Cancel</button>
+      <button class="btn btn-primary" style="background:var(--orange);border-color:var(--orange);" onclick="sendBackPtoRequest()">↩ Send Back</button>
     </div>
   </div>
 </div>
@@ -1200,6 +1228,7 @@
       <div style="display:flex;gap:8px;align-items:center;">
         <select id="ptoreq-filter" class="form-select" style="font-size:12px;padding:5px 10px;" onchange="renderPtoRequestsPage()">
           <option value="pending">Pending</option>
+          <option value="clarify">Needs Info</option>
           <option value="approved">Approved</option>
           <option value="denied">Denied</option>
           <option value="all">All</option>
@@ -2078,6 +2107,8 @@ const AUDIT_ACTION_META={
   pto_request_updated:{icon:'✎',label:'PTO request updated',color:'var(--blue)'},
   pto_request_approved:{icon:'✓',label:'PTO request approved',color:'var(--green)'},
   pto_request_denied:{icon:'✕',label:'PTO request denied',color:'var(--red)'},
+  pto_request_sent_back:{icon:'↩',label:'PTO request sent back for info',color:'var(--orange)'},
+  pto_request_replied:{icon:'💬',label:'PTO request clarified & resubmitted',color:'var(--blue)'},
   job_photo_added:{icon:'📷',label:'Job photo added',color:'var(--green)'},
   job_photo_removed:{icon:'🗑️',label:'Job photo removed',color:'var(--red)'}
 };
@@ -8367,8 +8398,9 @@ function mrClearReceived(){
 
 // ── PTO REQUESTS ───────────────────────────────────────────────────────────────
 let PTO_REQUESTS = [];
-const PTO_STATUS_COLOR={pending:'var(--accent)',approved:'var(--green)',denied:'var(--red)'};
-const PTO_STATUS_LABEL={pending:'Pending',approved:'Approved',denied:'Denied'};
+// 'clarify' = Will sent it back to the requester with a question; it returns to 'pending' when they reply.
+const PTO_STATUS_COLOR={pending:'var(--accent)',clarify:'var(--orange)',approved:'var(--green)',denied:'var(--red)'};
+const PTO_STATUS_LABEL={pending:'Pending',clarify:'Needs Info',approved:'Approved',denied:'Denied'};
 
 async function loadPtoRequests(){
   try{const v=await sb.getKV('pto_requests');if(v){try{PTO_REQUESTS=JSON.parse(v)||[];}catch(e){PTO_REQUESTS=[];}}}catch(e){}
@@ -8418,20 +8450,40 @@ function openPtoRequestModal(){
   document.getElementById('ptoreq-from').value='07:00';
   document.getElementById('ptoreq-to').value='12:00';
   ptoreqSetType('full'); // reset to full day
+  _ptoReqSetReplyUi(null);
   openModal('ptorequest');
 }
 
 let _editingPtoReqId=null;
+let _ptoReplyMode=false;   // true while the requester is answering a "Needs Info" send-back
+
+// Show/hide the "Will asked…" box + reply textarea in the shared request modal. Pass the request to
+// enter reply mode, or null to reset to the plain new/edit layout.
+function _ptoReqSetReplyUi(req){
+  const qBox=document.getElementById('ptoreq-question');
+  const grp=document.getElementById('ptoreq-reply-grp');
+  const last=req&&Array.isArray(req.clarify)?req.clarify[req.clarify.length-1]:null;
+  _ptoReplyMode=!!last;
+  if(qBox){
+    qBox.style.display=last?'':'none';
+    qBox.innerHTML=last?`<div style="font-size:10.5px;font-weight:700;color:var(--orange);text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px;">Will asked · ${last.askedDate||''}</div><div style="font-size:13px;color:var(--text);white-space:pre-wrap;word-break:break-word;">${_alEsc(last.q)}</div>`:'';
+  }
+  if(grp) grp.style.display=last?'':'none';
+  const ta=document.getElementById('ptoreq-reply'); if(ta) ta.value='';
+}
 
 function closePtoRequestModal(){
   _editingPtoReqId=null;
+  _ptoReqSetReplyUi(null);
   document.querySelector('#modal-ptorequest .modal-title').textContent='✋ Request Time Off';
   document.getElementById('ptoreq-submit-btn').textContent='Send Request';
   document.getElementById('ptoreq-note').style.display='';
   closeModal('ptorequest');
 }
 
-function editPtoRequest(id){
+// replyMode: the requester is answering Will's send-back (myPtoReplyRequest) — shows his question +
+// a required reply box, and saving flips the request back to 'pending'. Manager edits never pass it.
+function editPtoRequest(id, replyMode){
   const req=PTO_REQUESTS.find(r=>r.id===id); if(!req) return;
   _editingPtoReqId=id;
   // Pre-fill crew
@@ -8446,10 +8498,13 @@ function editPtoRequest(id){
   document.getElementById('ptoreq-reason').value=req.reason||'';
   ptoreqSetType(req.partial?'partial':'full');
   // Update modal chrome
-  document.querySelector('#modal-ptorequest .modal-title').textContent='✏️ Edit PTO Request';
-  document.getElementById('ptoreq-submit-btn').textContent='Save Changes';
+  const replying=!!replyMode&&req.status==='clarify';
+  _ptoReqSetReplyUi(replying?req:null);
+  document.querySelector('#modal-ptorequest .modal-title').textContent=replying?'↩ Reply to Will':'✏️ Edit PTO Request';
+  document.getElementById('ptoreq-submit-btn').textContent=replying?'Resubmit Request':'Save Changes';
   document.getElementById('ptoreq-note').style.display='none';
   openModal('ptorequest');
+  if(replying) setTimeout(()=>document.getElementById('ptoreq-reply')?.focus(),50);
 }
 
 function submitPtoRequest(){
@@ -8482,18 +8537,29 @@ function submitPtoRequest(){
   if(_editingPtoReqId){
     // Edit mode — update existing request in place
     const existing=PTO_REQUESTS.find(r=>r.id===_editingPtoReqId);
+    const replyText=_ptoReplyMode?document.getElementById('ptoreq-reply').value.trim():'';
+    if(_ptoReplyMode&&!replyText){showToast('Please type a reply to Will\'s question.');return;}
+    const wasReply=_ptoReplyMode&&existing?.status==='clarify';
     if(existing){
       existing.crewIdx=crewIdx; existing.crewName=CREW[crewIdx]?.full||'Unknown';
       existing.startDate=startDate; existing.endDate=endDate;
       existing.reason=reason; existing.weekdays=wdCount;
       existing.partial=isPartial; existing.fromTime=fromTime; existing.toTime=toTime;
+      if(wasReply){
+        const last=existing.clarify[existing.clarify.length-1];
+        last.a=replyText; last.answeredDate=new Date().toISOString().split('T')[0];
+        existing.status='pending';   // back in Will's queue
+      }
     }
-    logAudit('pto_request_updated',existing?.crewName||'PTO request',startDate+(endDate!==startDate?' – '+endDate:''));
+    const range=startDate+(endDate!==startDate?' – '+endDate:'');
+    if(wasReply) logAudit('pto_request_replied',existing.crewName,range+' — '+replyText);
+    else logAudit('pto_request_updated',existing?.crewName||'PTO request',range);
     savePtoRequests();
     closePtoRequestModal();
     renderPtoRequestsPage();
     renderMyPtoRequestsList();
-    showToast('✓ Request updated.');
+    _updateMyPtoBadge();
+    showToast(wasReply?'✓ Reply sent — your request is back with Will.':'✓ Request updated.');
     return;
   }
   PTO_REQUESTS.push(req);
@@ -8549,11 +8615,51 @@ async function denyPtoRequest(id){
   showToast('Request denied.');
 }
 
+// ── Send a request back to the requester with a question ("Needs Info") ──
+// Each round is kept in req.clarify[] as {q, askedDate, a, answeredDate} so both sides see the back-and-forth.
+let _ptoClarifyId=null;
+function openPtoClarify(id){
+  const req=PTO_REQUESTS.find(r=>r.id===id); if(!req) return;
+  _ptoClarifyId=id;
+  const range=req.startDate+(req.endDate!==req.startDate?' – '+req.endDate:'');
+  document.getElementById('ptoclarify-summary').innerHTML=`<b>${_alEsc(req.crewName)}</b> · ${range}${req.reason&&req.reason!=='PTO'?' · 💬 '+_alEsc(req.reason):''}`;
+  document.getElementById('ptoclarify-note').value='';
+  openModal('ptoclarify');
+  setTimeout(()=>document.getElementById('ptoclarify-note')?.focus(),50);
+}
+async function sendBackPtoRequest(){
+  const req=PTO_REQUESTS.find(r=>r.id===_ptoClarifyId); if(!req){closeModal('ptoclarify');return;}
+  const q=document.getElementById('ptoclarify-note').value.trim();
+  if(!q){showToast('Type your question first.');return;}
+  if(!Array.isArray(req.clarify)) req.clarify=[];
+  req.clarify.push({q,askedDate:new Date().toISOString().split('T')[0]});
+  req.status='clarify';
+  logAudit('pto_request_sent_back',req.crewName,req.startDate+(req.endDate!==req.startDate?' – '+req.endDate:'')+' — '+q);
+  closeModal('ptoclarify');
+  _ptoClarifyId=null;
+  await savePtoRequests();
+  renderPtoRequestsPage();
+  showToast(`↩ Sent back to ${req.crewName} for more info.`);
+}
+
+// Q&A history for a request that's been sent back at least once. viewer: 'manager' | 'crew'.
+function _ptoClarifyThreadHtml(r, viewer){
+  if(!Array.isArray(r.clarify)||!r.clarify.length) return '';
+  const first=(r.crewName||'').split(' ')[0]||'Crew';
+  const askLbl=viewer==='crew'?'Will asked':'You asked';
+  const ansLbl=viewer==='crew'?'You replied':first+' replied';
+  const line=(lbl,date,txt,color)=>`<div style="margin-top:6px;"><div style="font-size:10.5px;font-weight:700;color:${color};text-transform:uppercase;letter-spacing:.4px;">${lbl}${date?' · '+date:''}</div><div style="font-size:12.5px;color:var(--text);white-space:pre-wrap;word-break:break-word;">${_alEsc(txt)}</div></div>`;
+  return `<div style="background:var(--orange-dim);border-left:3px solid var(--orange);border-radius:6px;padding:4px 10px 8px;margin:6px 0;">${
+    r.clarify.map(c=>line('↩ '+askLbl,c.askedDate,c.q,'var(--orange)')+(c.a?line('💬 '+ansLbl,c.answeredDate,c.a,'var(--accent)'):'')).join('')
+  }</div>`;
+}
+
 function renderPtoRequestsPage(){
   const el=document.getElementById('ptoreq-page-list'); if(!el) return;
   const filter=document.getElementById('ptoreq-filter')?.value||'pending';
-  const list=filter==='all'?[...PTO_REQUESTS]:PTO_REQUESTS.filter(r=>r.status===filter);
-  list.sort((a,b)=>{const sp={pending:0,approved:1,denied:2};return (sp[a.status]??3)-(sp[b.status]??3)||b.submittedDate.localeCompare(a.submittedDate);});
+  // "Pending" also lists requests waiting on the crew member's reply, so a sent-back request doesn't vanish
+  const list=filter==='all'?[...PTO_REQUESTS]:PTO_REQUESTS.filter(r=>r.status===filter||(filter==='pending'&&r.status==='clarify'));
+  list.sort((a,b)=>{const sp={pending:0,clarify:1,approved:2,denied:3};return (sp[a.status]??4)-(sp[b.status]??4)||b.submittedDate.localeCompare(a.submittedDate);});
   if(!list.length){
     el.innerHTML=`<div style="text-align:center;padding:60px 20px;color:var(--text3);font-size:14px;">${filter==='pending'?'✅ No pending PTO requests.':'No requests found.'}</div>`;
     return;
@@ -8574,12 +8680,16 @@ function renderPtoRequestsPage(){
         </div>
         <div style="font-size:13px;font-weight:600;color:var(--text2);margin-bottom:3px;">${dateRange}</div>
         ${r.reason&&r.reason!=='PTO'?`<div style="font-size:12px;color:var(--text2);margin-bottom:4px;">💬 ${r.reason}</div>`:''}
+        ${_ptoClarifyThreadHtml(r,'manager')}
         <div style="font-size:11px;color:var(--text3);">Submitted ${r.submittedDate}${r.reviewedDate?' · Reviewed '+r.reviewedDate:''}</div>
       </div>
       <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;flex-shrink:0;">
-        ${r.status==='pending'?`
+        ${r.status==='pending'||r.status==='clarify'?`
           <button class="btn btn-primary" style="font-size:11px;padding:5px 14px;white-space:nowrap;background:var(--green);border-color:var(--green);" onclick="approvePtoRequest('${r.id}')">✓ Approve</button>
           <button class="btn btn-ghost" style="font-size:11px;padding:5px 14px;white-space:nowrap;color:var(--red);border-color:var(--red);" onclick="denyPtoRequest('${r.id}')">✕ Deny</button>
+          ${r.status==='pending'
+            ?`<button class="btn btn-ghost" style="font-size:11px;padding:5px 14px;white-space:nowrap;color:var(--orange);border-color:var(--orange);" onclick="openPtoClarify('${r.id}')">↩ Send Back</button>`
+            :`<span style="font-size:11px;color:var(--orange);font-weight:600;white-space:nowrap;">⏳ Waiting on ${_alEsc((r.crewName||'').split(' ')[0])}</span>`}
           <button class="btn btn-ghost" style="font-size:11px;padding:5px 14px;white-space:nowrap;" onclick="editPtoRequest('${r.id}')">✏️ Edit</button>
         `:''}
         ${r.status==='approved'?`<span style="font-size:11px;color:var(--green);font-weight:600;">✓ On calendar</span>`:''}
@@ -8589,12 +8699,22 @@ function renderPtoRequestsPage(){
 }
 
 // ── CREW-FACING: "My PTO Requests" — lets a crew member edit their OWN still-pending requests ──
+// Badge: orange count of requests Will sent back (they need to act) takes priority over the blue pending count.
+let _ptoClarifyToastShown=false;
 function _updateMyPtoBadge(){
   const badge=document.getElementById('cv-mypto-badge'); if(!badge) return;
   const idx=_tcCrewIdentity();
-  const count=idx<0?0:PTO_REQUESTS.filter(r=>r.crewIdx===idx&&r.status==='pending').length;
+  const mine=idx<0?[]:PTO_REQUESTS.filter(r=>r.crewIdx===idx);
+  const needInfo=mine.filter(r=>r.status==='clarify').length;
+  const count=needInfo||mine.filter(r=>r.status==='pending').length;
   badge.style.display=count?'inline-block':'none';
+  badge.style.background=needInfo?'var(--orange)':'var(--accent)';
   badge.textContent=count>9?'9+':count;
+  // One heads-up per session when a crew member signs in with a question waiting on them
+  if(needInfo&&!_ptoClarifyToastShown&&document.body.classList.contains('crew-mode')){
+    _ptoClarifyToastShown=true;
+    showToast(`↩ Will has a question about your PTO request — tap 📋 My PTO Requests to reply.`);
+  }
 }
 function openMyPtoRequests(){
   renderMyPtoRequestsList();
@@ -8606,11 +8726,16 @@ function myPtoEditRequest(id){
   closeModal('myptoreqs');
   editPtoRequest(id);
 }
+// Answer Will's "Needs Info" question — same shared modal, in reply mode.
+function myPtoReplyRequest(id){
+  closeModal('myptoreqs');
+  editPtoRequest(id, true);
+}
 function renderMyPtoRequestsList(){
   const el=document.getElementById('mypto-list'); if(!el) return;
   const idx=_tcCrewIdentity();
   const list=(idx<0?[]:PTO_REQUESTS.filter(r=>r.crewIdx===idx))
-    .slice().sort((a,b)=>b.submittedDate.localeCompare(a.submittedDate));
+    .slice().sort((a,b)=>(b.status==='clarify')-(a.status==='clarify')||b.submittedDate.localeCompare(a.submittedDate));  // ones waiting on their reply first
   if(!list.length){
     el.innerHTML=`<div style="text-align:center;padding:40px 20px;color:var(--text3);font-size:14px;">You haven't submitted any PTO requests yet.</div>`;
     return;
@@ -8630,9 +8755,11 @@ function renderMyPtoRequestsList(){
         </div>
         <div style="font-size:13.5px;font-weight:600;color:var(--text2);margin-bottom:3px;">${dateRange}</div>
         ${r.reason&&r.reason!=='PTO'?`<div style="font-size:12px;color:var(--text2);margin-bottom:4px;">💬 ${r.reason}</div>`:''}
+        ${_ptoClarifyThreadHtml(r,'crew')}
         <div style="font-size:11px;color:var(--text3);">Submitted ${r.submittedDate}${r.reviewedDate?' · Reviewed '+r.reviewedDate:''}</div>
       </div>
       ${r.status==='pending'?`<button class="btn btn-ghost" style="font-size:11px;padding:5px 12px;white-space:nowrap;flex-shrink:0;" onclick="myPtoEditRequest('${r.id}')">✏️ Edit</button>`:''}
+      ${r.status==='clarify'?`<button class="btn btn-primary" style="font-size:11px;padding:5px 12px;white-space:nowrap;flex-shrink:0;background:var(--orange);border-color:var(--orange);" onclick="myPtoReplyRequest('${r.id}')">↩ Reply</button>`:''}
     </div>`;}).join('');
 }
 
