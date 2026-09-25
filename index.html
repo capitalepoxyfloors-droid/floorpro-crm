@@ -4625,7 +4625,7 @@ async function _addrAutocomplete(val){
         const j=await r.json();
         const seen=new Set();
         const out=(j.results||[])
-          .filter(p=>p.state==='Missouri'&&(p.housenumber||p.street||p.address_line1))
+          .filter(p=>p.state==='Missouri'&&(p.housenumber||p.street)) // drop city/county-only hits ("Lake Ozark, MO") — never what's being typed
           .map(p=>{
             const line1=[p.housenumber,p.street].filter(Boolean).join(' ')||p.address_line1||'';
             const city=p.city||p.county||'';
@@ -4667,6 +4667,26 @@ async function _photonSearch(val){
     .filter(a=>{ if(!a.full||seen.has(a.full))return false; seen.add(a.full); return true; });
 }
 
+// Every address suggestion dropdown (input id → dropdown id). They close on Escape,
+// on a click anywhere outside the field, and when results come back after the
+// field has already lost focus — onblur alone missed that last case, leaving a
+// suggestion stuck open with no way to dismiss it.
+const _ADDR_DROPS={'jc-address':'jc-addr-drop','sv-address':'sv-addr-drop','lead-address':'lead-address-suggestions','wpdf-address':'wpdf-address-suggestions'};
+function _addrFieldFocused(inputId){ return document.activeElement===document.getElementById(inputId); }
+function _addrOpenDrops(){
+  return Object.entries(_ADDR_DROPS).map(([i,d])=>({inp:document.getElementById(i),drop:document.getElementById(d)}))
+    .filter(x=>x.drop&&x.drop.style.display!=='none');
+}
+document.addEventListener('mousedown',e=>{
+  _addrOpenDrops().forEach(({inp,drop})=>{ if(e.target!==inp&&!drop.contains(e.target)) drop.style.display='none'; });
+},true);
+document.addEventListener('keydown',e=>{
+  if(e.key!=='Escape') return;
+  const open=_addrOpenDrops(); if(!open.length) return;
+  open.forEach(({drop})=>drop.style.display='none');
+  e.stopPropagation(); // close just the suggestions, not the whole modal
+},true);
+
 function jcAddrInput(val){
   document.getElementById('jc-map-btn').style.display=val.trim()?'':'none';
   const drop=document.getElementById('jc-addr-drop');
@@ -4675,7 +4695,8 @@ function jcAddrInput(val){
   _addrTimer=setTimeout(async()=>{
     try{
       const results=await _addrAutocomplete(val);
-      if(!results.length){drop.style.display='none';return;}
+      if(document.getElementById('jc-address').value!==val) return; // stale reply — a newer query owns the dropdown
+      if(!results.length||!_addrFieldFocused('jc-address')){drop.style.display='none';return;}
       _jcAddrResults=results;
       drop.innerHTML=results.map((a,i)=>`<div class="addr-opt" data-idx="${i}" onmousedown="event.preventDefault()"><div class="addr-main">${a.line1.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div><div class="addr-sub">${[a.city,a.state,a.zip].filter(Boolean).join(', ').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div></div>`).join('');
       drop.querySelectorAll('[data-idx]').forEach(el=>el.addEventListener('click',()=>jcPickAddr(_jcAddrResults[+el.dataset.idx].full)));
@@ -4708,7 +4729,8 @@ function svAddrInput(val){
   _svAddrTimer=setTimeout(async()=>{
     try{
       const results=await _addrAutocomplete(val);
-      if(!results.length){drop.style.display='none';return;}
+      if(document.getElementById('sv-address').value!==val) return; // stale reply — a newer query owns the dropdown
+      if(!results.length||!_addrFieldFocused('sv-address')){drop.style.display='none';return;}
       _svAddrResults=results;
       drop.innerHTML=results.map((a,i)=>`<div class="addr-opt" data-idx="${i}" onmousedown="event.preventDefault()"><div class="addr-main">${a.line1.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div><div class="addr-sub">${[a.city,a.state,a.zip].filter(Boolean).join(', ').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div></div>`).join('');
       drop.querySelectorAll('[data-idx]').forEach(el=>el.addEventListener('click',()=>svPickAddr(_svAddrResults[+el.dataset.idx].full)));
@@ -9261,8 +9283,9 @@ function leadAddressSearch(val){
   leadAddrTimer=setTimeout(async()=>{
     try{
       const results=await _addrAutocomplete(val);
+      if(document.getElementById('lead-address').value!==val) return; // stale reply — a newer query owns the dropdown
       sugg.innerHTML='';
-      if(!results.length){sugg.style.display='none';return;}
+      if(!results.length||!_addrFieldFocused('lead-address')){sugg.style.display='none';return;}
       results.forEach((a,i)=>{
         const opt=document.createElement('div');
         opt.style.cssText='padding:10px 14px;cursor:pointer;font-size:13px;border-bottom:'+(i<results.length-1?'1px solid var(--border)':'none')+';transition:background .1s;';
@@ -11840,8 +11863,9 @@ function addressSearch(val){
   addressTimer=setTimeout(async()=>{
     try{
       const results=await _addrAutocomplete(val);
+      if(document.getElementById('wpdf-address').value!==val) return; // stale reply — a newer query owns the dropdown
       sugg.innerHTML='';
-      if(!results.length){sugg.style.display='none';return;}
+      if(!results.length||!_addrFieldFocused('wpdf-address')){sugg.style.display='none';return;}
       results.forEach((a,i)=>{
         const opt=document.createElement('div');
         opt.style.cssText='padding:10px 14px;cursor:pointer;font-size:13px;border-bottom:'+(i<results.length-1?'1px solid var(--border)':'none')+';transition:background .1s;';
