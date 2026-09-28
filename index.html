@@ -6617,6 +6617,40 @@ async function saveJobCard(){
       });
     });
   }
+  // Sync the job type onto this job's calendar slots. Bars are colored by each slot's OWN stored
+  // type (scheduled_slots.job_type), not the job record's, so changing Job Type here used to
+  // leave every existing bar in the old color (confirmed: Helias Polishing - Phase 3 set to
+  // Polished Concrete still showed Epoxy Flake blue). Scoped to this job's crew + own dates +
+  // current label, primary and double-booked extras alike, so a same-named repeat job on other
+  // dates is untouched. Idempotent — only slots whose type actually differs are patched.
+  {
+    const _tType=job.jobType||'epoxy';
+    const _tCrew=(job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean)
+      .map(n=>CREW.findIndex(c=>c.full===n)).filter(ix=>ix!==-1);
+    const _tDates=new Set([
+      ...((job.startDate&&job.endDate)?jcAllDays(job.startDate,job.endDate):[]),
+      ...(job.extraDays||[])
+    ]);
+    const _tPatches=[];
+    const _tFix=(s,dt)=>{
+      if(!s||s.l!==job.customer||s.t===_tType||!dt||!_tDates.has(dt)) return;
+      s.t=_tType;
+      if(s.db_id) _tPatches.push(sb.update('scheduled_slots',s.db_id,{job_type:s.dt?_tType+':'+s.dt:_tType}));
+    };
+    _tCrew.forEach(ci=>{
+      Object.entries(newSlots[ci]||{}).forEach(([w,days])=>{
+        Object.entries(days||{}).forEach(([d,s])=>{
+          _tFix(s,s?.dt||seSlotToDate(parseInt(w),parseInt(d)).toISOString().split('T')[0]);
+        });
+      });
+      Object.keys(multiSlots).forEach(k=>{
+        if(!k.startsWith(ci+'_')) return;
+        const[,w,d]=k.split('_').map(Number);
+        (multiSlots[k]||[]).forEach(e=>_tFix(e,e.dt||seSlotToDate(w,d).toISOString().split('T')[0]));
+      });
+    });
+    if(_tPatches.length) await Promise.all(_tPatches);
+  }
   document.getElementById('jc-name').textContent=job.customer||'Unnamed Job';
   await saveJobRecords();
   // ── Sync value back to the board card ────────────────────────────────────
