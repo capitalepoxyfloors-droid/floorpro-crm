@@ -2733,8 +2733,15 @@ async function dbSaveCrew(c,idx){
   showSyncStatus('✓ Synced');
   return true;
 }
+// True once CREW/CREW_DATA hold the live crew table (not the hardcoded seed). Background slot
+// maintenance that runs on its own (openJobCard's sync/cleanup) waits for this, so it can never
+// add or delete a slot using a stale name→position mapping.
+let _crewLoaded=false;
 async function loadCrew(){
-  const rows=await sb.get('crew','order=sort_order.asc');
+  let rows=await sb.get('crew','order=sort_order.asc');
+  if(!rows.length) rows=await sb.get('crew','order=sort_order.asc'); // one retry on a failed/empty read
+  if(!rows.length) console.error('loadCrew: crew table did not load — schedule auto-sync paused until it does');
+  _crewLoaded=rows.length>0;
   if(rows.length>0){rows.forEach((r,i)=>{if(CREW_DATA[i]){Object.assign(CREW_DATA[i],{db_id:r.id,full:r.full_name,name:r.first_name,initials:r.initials,color:r.color,role:r.role,phone:r.phone,specialties:JSON.parse(r.specialties||'[]'),hourly:r.hourly,hours:r.hours,ss:r.ss,medicare:r.medicare,futa:r.futa,wc:r.wc,gl:r.gl,benefits:r.benefits,ptoDays:r.pto_days});CREW[i].name=r.first_name;CREW[i].full=r.full_name;CREW[i].color=r.color;}});}
 }
 
@@ -4336,9 +4343,13 @@ function openJobCard(jobId){
   const job=getJobRecord(jobId); if(!job) return;
   _jcId=jobId;
   _jcConflicts=[];  // clear any stale conflicts from previous card
-  jcBackfillSlotMap(job);    // heal legacy slots missing from SLOT_JOB_MAP
-  jcSyncCrewSlots(job);      // create any missing slots for crew listed in crewNames
-  jcCleanOrphanedSlots(job); // remove slots for crew members no longer on this job
+  // These three silently write to the schedule just from opening the card — only run them once
+  // the real crew list is loaded (see _crewLoaded), or a crew name resolves to the wrong row.
+  if(_crewLoaded){
+    jcBackfillSlotMap(job);    // heal legacy slots missing from SLOT_JOB_MAP
+    jcSyncCrewSlots(job);      // create any missing slots for crew listed in crewNames
+    jcCleanOrphanedSlots(job); // remove slots for crew members no longer on this job
+  }
   // Hide pricing + costing tab when opened from crew view page OR in locked crew mode
   const hideValue = document.getElementById('page-crewview')?.classList.contains('active') || localStorage.getItem('fpRole')==='crew';
   document.getElementById('jc-value-group').style.display = hideValue ? 'none' : '';
@@ -6783,6 +6794,22 @@ function jcReschedulePreview(){
   el.textContent=sameDayStr+' · '+duration+' day'+(duration!==1?'s':'')+(includeWeekends?' (weekends included)':'');
 }
 
+// Crew indices holding a double-booked EXTRA slot for THIS job — matched by label AND by the job's
+// own dates (start–end + extraDays). Matching by label alone swept in a repeat customer's OTHER
+// same-named job: rescheduling Thomas Construction (Brendon) from Sep to Oct also placed Seth,
+// because Seth had a double-booked extra on the unrelated August "Thomas Construction" job.
+function _jobOwnExtraCIs(job){
+  const own=new Set([...((job.startDate&&job.endDate)?jcAllDays(job.startDate,job.endDate):[]),...(job.extraDays||[])]);
+  return Object.entries(multiSlots)
+    .filter(([key,arr])=>(arr||[]).some(x=>{
+      if(x.l!==job.customer) return false;
+      let dt=x.dt;
+      if(!dt){ const[,w,d]=key.split('_').map(Number); dt=seSlotToDate(w,d).toISOString().split('T')[0]; }
+      return own.has(dt);
+    }))
+    .map(([key])=>+key.split('_')[0]);
+}
+
 async function jcRescheduleConfirm(){
   const job=getJobRecord(_jcId); if(!job) return;
   const newStart=document.getElementById('rs-new-start').value;
@@ -6799,9 +6826,7 @@ async function jcRescheduleConfirm(){
   const primaryCIs=Object.entries(SLOT_JOB_MAP)
     .filter(([,jid])=>jid===_jcId)
     .map(([key])=>+key.split('_')[0]);
-  const extraCIs=Object.entries(multiSlots)
-    .filter(([,arr])=>(arr||[]).some(x=>x.l===job.customer))
-    .map(([key])=>+key.split('_')[0]);
+  const extraCIs=_jobOwnExtraCIs(job);
   const crewCIs=[...new Set([...primaryCIs,...extraCIs])];
   if(!crewCIs.length){showToast('No schedule slots found for this job.');closeModal('reschedule');return;}
 
@@ -10629,15 +10654,20 @@ function openModal(id){
     document.getElementById('mat-cost-sqft').style.display='none';
   }
 }
+// ORDER MATTERS — must match the live `crew` table's sort_order (Seth 0, Brendon 1, Will 2, Cody 3,
+// Hunter 4). Every per-person record (scheduled_slots/pto_blocks crew_idx, crew_pins, SLOT_JOB_MAP
+// keys) is keyed by POSITION, and this seed is what CREW holds until loadCrew() replaces it. It used
+// to list Will first, so any slot written before the crew load finished landed on the wrong person
+// (confirmed: "Brendon" slots for Marino Garage and George Belchik were saved on Will's row).
 const CREW_DATA = [
-  { name:'Will',    full:'Will Bradford',   initials:'WB', color:'#f5d020', role:'Owner / Installer', phone:'',
-    specialties:['Epoxy Coating','Polished Concrete','Concrete Overlay'],
-    hourly:'', hours:'40', ss:'6.20', medicare:'1.45', futa:'2.70', wc:'10.00', gl:'3.00', benefits:'0', ptoDays:'0' },
   { name:'Seth',    full:'Seth West',       initials:'SW', color:'#6aabff', role:'Installer', phone:'',
     specialties:['Concrete Overlay','Polished Concrete'],
     hourly:'', hours:'40', ss:'6.20', medicare:'1.45', futa:'2.70', wc:'10.00', gl:'3.00', benefits:'0', ptoDays:'0' },
   { name:'Brendon', full:'Brendon Bennett', initials:'BB', color:'#3ddc84', role:'Installer', phone:'',
     specialties:['Epoxy Coating','Concrete Overlay'],
+    hourly:'', hours:'40', ss:'6.20', medicare:'1.45', futa:'2.70', wc:'10.00', gl:'3.00', benefits:'0', ptoDays:'0' },
+  { name:'Will',    full:'Will Bradford',   initials:'WB', color:'#f5d020', role:'Owner / Installer', phone:'',
+    specialties:['Epoxy Coating','Polished Concrete','Concrete Overlay'],
     hourly:'', hours:'40', ss:'6.20', medicare:'1.45', futa:'2.70', wc:'10.00', gl:'3.00', benefits:'0', ptoDays:'0' },
   { name:'Cody',    full:'Cody Faulkner',   initials:'CF', color:'#ff9f4a', role:'Installer', phone:'',
     specialties:['Polished Concrete','Epoxy Coating'],
@@ -10747,7 +10777,7 @@ function renderCrewCards(){
             <div class="avatar" style="background:${c.color}22;border-color:${c.color};color:${c.color};width:38px;height:38px;font-size:12px;flex-shrink:0;">${c.initials}</div>
             <div>
               <div style="font-weight:600;font-size:14px;">${c.full}${_inact?` <span style="font-size:9.5px;font-weight:700;color:var(--text3);background:var(--surface3);padding:2px 7px;border-radius:20px;vertical-align:middle;">INACTIVE</span>`:''}</div>
-              <div style="font-size:11px;color:${i===0?'var(--accent)':'var(--text3)'};">${c.role}</div>
+              <div style="font-size:11px;color:${(c.full||'').trim().toLowerCase()==='will bradford'?'var(--accent)':'var(--text3)'};">${c.role}</div>
             </div>
           </div>
           <button onclick="openCrewEdit(${i})" class="btn btn-ghost" style="font-size:11px;padding:4px 10px;">Edit</button>
@@ -11308,7 +11338,7 @@ function renderCrewShareList(){
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
         <div style="width:10px;height:10px;border-radius:50%;background:${cr.color};flex-shrink:0;"></div>
         <div style="font-weight:600;font-size:14px;">${cr.full}</div>
-        ${i===0?'<span style="font-size:10px;background:var(--accent-dim);color:var(--accent);padding:2px 8px;border-radius:20px;font-family:\'DM Mono\',monospace;">Owner</span>':''}
+        ${(cr.full||'').trim().toLowerCase()==='will bradford'?'<span style="font-size:10px;background:var(--accent-dim);color:var(--accent);padding:2px 8px;border-radius:20px;font-family:\'DM Mono\',monospace;">Owner</span>':''}
       </div>
       <div style="display:flex;gap:8px;align-items:center;">
         <input readonly value="${crewUrl}" id="crew-url-${i}"
@@ -12390,7 +12420,7 @@ async function schedHandleDrop(ci, targetSw, targetSd, dragData){
   // double-booked extras matched by customer label, since multiSlots can't carry a jobId
   // across a reload).
   const primaryCIs=Object.entries(SLOT_JOB_MAP).filter(([,jid])=>jid===dragData.jobId).map(([key])=>+key.split('_')[0]);
-  const extraCIs=Object.entries(multiSlots).filter(([,arr])=>(arr||[]).some(x=>x.l===job.customer)).map(([key])=>+key.split('_')[0]);
+  const extraCIs=_jobOwnExtraCIs(job);
   const crewCIs=[...new Set([...primaryCIs,...extraCIs])];
   if(!crewCIs.length){ showToast('No schedule slots found for this job.'); return; }
 
