@@ -4458,15 +4458,25 @@ async function jcToggleCrew(i){
   const allDates=job.startDate&&job.endDate?[...(_tsWknd?jcAllDays(job.startDate,job.endDate):jcWeekdays(job.startDate,job.endDate))]:[];
   (job.extraDays||[]).forEach(d=>{if(!allDates.includes(d))allDates.push(d);});
 
-  let skipped=0;
+  let doubled=0;
   for(const ds of allDates){
     const pos=cvDateToSlot(new Date(ds+'T00:00:00')); if(!pos) continue;
     const{w,d}=pos;
     const key=jcSlotKey(i,w,d);
     if(adding){
-      // Skip days where this person already has a different job
-      const existingJobId=SLOT_JOB_MAP[key];
-      if(newSlots[i]?.[w]?.[d]&&existingJobId&&existingJobId!==job.id){skipped++;continue;}
+      const cur=newSlots[i]?.[w]?.[d];
+      // Already on this job that day (primary or double-booked) — nothing to add
+      if(cur&&(cur.l===job.customer||String(SLOT_JOB_MAP[key])===String(job.id))) continue;
+      if(getExtraSlots(i,w,d).some(x=>x.l===job.customer)) continue;
+      if(cur){
+        // Booked on a different job that day → double-book, NEVER skip. Skipping used to leave the
+        // person with no calendar entry for this job (only a toast said so): adding Hunter while he
+        // was on Helias, then removing Brendon, left Complete Custom Homes with nothing on the
+        // schedule at all. The other job's slot is left exactly as it is.
+        await dbAddExtraSlot(i,w,d,job.customer,job.jobType||'epoxy',job.id,ds);
+        doubled++;
+        continue;
+      }
       await sePlaceSlot(i,w,d,job.customer,job.jobType||'epoxy');
       SLOT_JOB_MAP[key]=job.id;
     } else {
@@ -4492,8 +4502,8 @@ async function jcToggleCrew(i){
   if(document.getElementById('page-schedule')?.classList.contains('active')) renderSchedule();
   if(document.getElementById('page-crewview')?.classList.contains('active')) renderCrewView();
   const verb=adding?'Added to':'Removed from';
-  showToast(skipped
-    ?name+' added ('+skipped+' day'+(skipped!==1?'s':'')+' skipped — already booked)'
+  showToast(doubled
+    ?name+' added — double-booked on '+doubled+' day'+(doubled!==1?'s':'')+' (also on another job)'
     :name+' '+verb+' job.');
 }
 
