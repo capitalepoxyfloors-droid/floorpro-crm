@@ -1622,6 +1622,8 @@
         <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="ce-phone" type="tel" placeholder="(314) 555-..."/></div>
         <div class="form-group"><label class="form-label">Role</label><input class="form-input" id="ce-role" placeholder="e.g. Lead Installer"/></div>
       </div>
+      <!-- Active / Inactive (see toggleCrewInactive) -->
+      <div id="ce-status" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;margin-bottom:14px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);"></div>
 
       <!-- Specialties -->
       <div class="form-group">
@@ -3046,7 +3048,7 @@ async function deduplicateSlotsByJobRecord(){
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
   try{
-    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadLeadDupAcks(),loadMaterials(),loadCrew(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadNavOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadMileageRates(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs(),loadMaterialDocs(),loadMaterialNotes(),loadJobPhotos(),loadJobDocs(),loadSalesScopePhotos()]);
+    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadLeadDupAcks(),loadMaterials(),loadCrew(),loadCrewInactive(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadNavOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadMileageRates(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs(),loadMaterialDocs(),loadMaterialNotes(),loadJobPhotos(),loadJobDocs(),loadSalesScopePhotos()]);
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
@@ -3120,6 +3122,7 @@ function sjLoadStep2(){
 
     list.innerHTML='';
     CREW.forEach((cr,ci)=>{
+      if(isCrewInactive(ci)) return; // inactive crew can't be scheduled (always "free", so auto-find would pick them)
       const card=document.createElement('div');
       card.className='crew-option'+(CREW[ci].full==='Will Bradford'?' owner-badge':'');
       card.id='co'+ci;
@@ -3260,6 +3263,7 @@ function sjBuildExcludeChips(){
   if(!wrap) return;
   wrap.innerHTML='';
   CREW.forEach((cr,ci)=>{
+    if(isCrewInactive(ci)) return;
     const chip=document.createElement('button');
     chip.type='button';
     chip.dataset.ci=ci;
@@ -3288,7 +3292,7 @@ function sjAutoFind(){
   document.querySelectorAll('#sj-exclude-chips button').forEach(chip=>{
     if(chip.dataset.excluded==='1') excluded.add(parseInt(chip.dataset.ci));
   });
-  const eligible=CREW.map((_,i)=>i).filter(i=>!excluded.has(i));
+  const eligible=CREW.map((_,i)=>i).filter(i=>!excluded.has(i)&&!isCrewInactive(i));
 
   if(count<1||count>eligible.length){
     showToast('Need at least '+count+' non-excluded crew members.');return;
@@ -3459,7 +3463,18 @@ document.addEventListener('DOMContentLoaded',()=>{
       document.body.classList.add('crew-mode');
       const ml = document.getElementById('cv-manager-link');
       if(ml) ml.style.display = 'block';
-      loadAllFromSupabase().then(()=>{ showPage('crewview'); });
+      loadAllFromSupabase().then(()=>{
+        // A still-open session for a crew member who's since been marked inactive → sign them out
+        let _cid=NaN; try{ _cid=parseInt(localStorage.getItem('fpClockCrew')); }catch(e){}
+        if(!isNaN(_cid) && isCrewInactive(_cid)){
+          _sessionAuthed=false;
+          try{ localStorage.removeItem(_pinAuthKey()); localStorage.removeItem('fpRole'); localStorage.removeItem('fpClockCrew'); }catch(e){}
+          document.body.classList.remove('crew-mode');
+          showLoginScreen();
+          return;
+        }
+        showPage('crewview');
+      });
     } else {
       localStorage.removeItem('fpRole');
       document.body.classList.remove('crew-mode');
@@ -3671,7 +3686,7 @@ function openSlotEdit(ci, w, d){
 
   // Crew dropdown
   const crewSel=document.getElementById('se-crew');
-  crewSel.innerHTML=CREW.map((c,i)=>`<option value="${i}"${i===ci?' selected':''}>${c.full}</option>`).join('');
+  crewSel.innerHTML=CREW.map((c,i)=>(isCrewInactive(i)&&i!==ci)?'':`<option value="${i}"${i===ci?' selected':''}>${c.full}</option>`).join('');
 
   // Info bar
   const dNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
@@ -4406,6 +4421,7 @@ function jcRenderCrewPicker(){
   const current=new Set((job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean));
   el.innerHTML=CREW.map((c,i)=>{
     const on=current.has(c.full);
+    if(isCrewInactive(i)&&!on) return ''; // inactive: only listed on jobs they're already on
     const col=c.color||'var(--accent)';
     return `<button onclick="jcToggleCrew(${i})" style="padding:6px 15px;border-radius:20px;font-size:12.5px;font-weight:600;cursor:pointer;border:2px solid ${on?col:'var(--border2)'};background:${on?col+'33':'var(--surface2)'};color:${on?col:'var(--text3)'};font-family:'DM Sans',sans-serif;transition:all .15s;">${c.full}</button>`;
   }).join('');
@@ -5115,7 +5131,7 @@ function jcDayCrewHtml(ds,log){
       <div style="display:flex;gap:6px;align-items:center;padding:5px 8px;">
         <select class="form-input" style="flex:1;font-size:12px;padding:4px 6px;" onchange="jcLogPickCrewMember('${ds}',${i},this)">
           <option value="custom"${c.crewIdx===-1?' selected':''}>— Custom —</option>
-          ${CREW_DATA.map((cd,ci)=>`<option value="${ci}"${c.crewIdx===ci?' selected':''}>${cd.full}</option>`).join('')}
+          ${CREW_DATA.map((cd,ci)=>(isCrewInactive(ci)&&c.crewIdx!==ci)?'':`<option value="${ci}"${c.crewIdx===ci?' selected':''}>${cd.full}</option>`).join('')}
         </select>
         ${c.crewIdx===-1?`<input class="form-input" placeholder="Name" value="${(c.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetCrew('${ds}',${i},'name',this.value)" onblur="jcLogSetCrew('${ds}',${i},'name',this.value)" style="flex:1;font-size:12px;padding:4px 6px;"/>`:``}
         <button onclick="jcLogRemoveCrewMember('${ds}',${i})" style="background:none;border:none;cursor:pointer;color:var(--red);font-size:16px;line-height:1;width:32px;height:32px;display:flex;align-items:center;justify-content:center;flex-shrink:0;" title="Remove">×</button>
@@ -6031,6 +6047,9 @@ function _payrollCompute(offset){
     CREW_DATA.forEach((cd,ci)=>{
       const key='c'+ci;
       if(ptoDates.has(key+'|'+ds)) return;
+      // Inactive crew stop earning Holiday Pay from the day they were marked inactive (earlier
+      // holidays in past periods still count, so old payroll periods don't change).
+      if(isCrewInactive(ci)&&ds>=(crewInactiveSince(ci)||'0000-00-00')) return;
       const b=bucket(key,cd.full);
       const baseRate=parseFloat(cd.hourly)||0;
       b.holHrs+=8; b.holPay+=8*baseRate;
@@ -7235,6 +7254,7 @@ function renderCrewView(){
   const allSel=cvCrewIdx===-1;
   let chips=`<button class="cv-crew-chip" onclick="cvSelectCrew(-1)" style="color:var(--text2);background:${allSel?'var(--surface3)':'var(--surface2)'};border-color:${allSel?'var(--border2)':'transparent'};">All</button>`;
   chips+=CREW.map((c,i)=>{
+    if(isCrewInactive(i)&&cvCrewIdx!==i) return '';
     const sel=cvCrewIdx===i, col=c.color||'var(--accent)';
     return `<button class="cv-crew-chip" onclick="cvSelectCrew(${i})" style="color:${col};background:${sel?col+'33':'var(--surface2)'};border-color:${sel?col:'transparent'};">${c.name}</button>`;
   }).join('');
@@ -7852,6 +7872,7 @@ async function showLoginScreen(){
     if(ap) ADMIN_PIN=String(ap).trim();
     const cpins=await sb.getKV('crew_pins');
     if(cpins){ try{ CREW_PINS=JSON.parse(cpins)||{}; }catch(e){} }
+    await loadCrewInactive();
   }catch(e){}
 }
 
@@ -7882,6 +7903,7 @@ function pinSubmit(){
   if(!_pinBuf) return;
   if(_pinBuf===ADMIN_PIN){ _pinSuccess('admin'); return; }
   const ci=_crewPinMatch(_pinBuf);
+  if(ci!==-1 && isCrewInactive(ci)){ _pinFail(); return; } // inactive crew — PIN kept but sign-in blocked
   if(ci!==-1){ _pinSuccess('crew', ci); return; }   // personal PIN → crew identity auto-set
   _pinFail();                                        // shared crew code retired — personal PIN required
 }
@@ -7956,7 +7978,7 @@ async function renderCrewPins(){
     const col=cd.color||'var(--accent)';
     return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);">
       <span style="width:9px;height:9px;border-radius:50%;background:${col};flex-shrink:0;"></span>
-      <span style="flex:1;font-size:13px;color:var(--text);">${(cd.full||('Crew '+(i+1))).replace(/</g,'&lt;')}</span>
+      <span style="flex:1;font-size:13px;color:var(--text);">${(cd.full||('Crew '+(i+1))).replace(/</g,'&lt;')}${isCrewInactive(i)?' <span style="font-size:11px;color:var(--text3);">(inactive — sign-in blocked)</span>':''}</span>
       <input class="form-input" id="cpin-${i}" type="text" inputmode="numeric" maxlength="6" value="${pin}" placeholder="— set —" style="width:104px;font-size:16px;letter-spacing:3px;text-align:center;font-family:'DM Mono',monospace;"/>
       <button class="btn btn-ghost" onclick="saveCrewPin(${i})" style="font-size:12px;padding:6px 12px;">Save</button>
     </div>`;
@@ -8356,8 +8378,8 @@ function _mrGenId(){ return Date.now().toString(36)+'_'+Math.random().toString(3
 // Material requests are submitted from the Crew View top bar (not inside a job).
 function openMatRequestModal(){
   const sel=document.getElementById('mrq-crew');
-  sel.innerHTML=CREW.map((c,i)=>`<option value="${i}">${c.full}</option>`).join('');
-  if(typeof cvCrewIdx==='number'&&cvCrewIdx>=0&&cvCrewIdx<CREW.length) sel.value=cvCrewIdx;
+  sel.innerHTML=CREW.map((c,i)=>isCrewInactive(i)?'':`<option value="${i}">${c.full}</option>`).join('');
+  if(typeof cvCrewIdx==='number'&&cvCrewIdx>=0&&cvCrewIdx<CREW.length&&!isCrewInactive(cvCrewIdx)) sel.value=cvCrewIdx;
   const jobSel=document.getElementById('mrq-job');
   const jobs=(JOB_RECORDS||[]).filter(j=>j.customer).slice().sort((a,b)=>(a.customer||'').localeCompare(b.customer||''));
   jobSel.innerHTML='<option value="">— No specific job —</option>'+jobs.map(j=>`<option value="${j.id}">${(j.customer||'').replace(/</g,'&lt;')}</option>`).join('');
@@ -8494,8 +8516,8 @@ function ptoreqSetType(type){
 function openPtoRequestModal(){
   // Populate crew dropdown — pre-select based on active crew view filter
   const sel=document.getElementById('ptoreq-crew');
-  sel.innerHTML=CREW.map((c,i)=>`<option value="${i}">${c.full}</option>`).join('');
-  if(cvCrewIdx>=0&&cvCrewIdx<CREW.length) sel.value=cvCrewIdx;
+  sel.innerHTML=CREW.map((c,i)=>isCrewInactive(i)?'':`<option value="${i}">${c.full}</option>`).join('');
+  if(cvCrewIdx>=0&&cvCrewIdx<CREW.length&&!isCrewInactive(cvCrewIdx)) sel.value=cvCrewIdx;
   // Default dates: next weekday
   const today=new Date(); today.setHours(0,0,0,0);
   const next=new Date(today); do{next.setDate(next.getDate()+1);}while(next.getDay()===0||next.getDay()===6);
@@ -8544,7 +8566,7 @@ function editPtoRequest(id, replyMode){
   _editingPtoReqId=id;
   // Pre-fill crew
   const sel=document.getElementById('ptoreq-crew');
-  sel.innerHTML=CREW.map((c,i)=>`<option value="${i}">${c.full}</option>`).join('');
+  sel.innerHTML=CREW.map((c,i)=>(isCrewInactive(i)&&i!==req.crewIdx)?'':`<option value="${i}">${c.full}</option>`).join('');
   sel.value=req.crewIdx;
   // Pre-fill dates & times
   document.getElementById('ptoreq-start').value=req.startDate;
@@ -10571,7 +10593,7 @@ function openModal(id){
   document.getElementById('modal-'+id).classList.add('open');
   if(id==='pto'){
     const sel=document.getElementById('pto-crew');
-    sel.innerHTML=CREW.map((c,i)=>`<option value="${i}">${c.full}</option>`).join('');
+    sel.innerHTML=CREW.map((c,i)=>isCrewInactive(i)?'':`<option value="${i}">${c.full}</option>`).join('');
   }
   if(id==='crewshare') renderCrewShareList();
   if(id==='salesvisit' && editingSvIdx===null){
@@ -10628,6 +10650,71 @@ const CREW_DATA = [
 // Keep CREW in sync (used by scheduler)
 const CREW = CREW_DATA.map(c=>({name:c.name, full:c.full, color:c.color}));
 
+// ── INACTIVE CREW ─────────────────────────────────────────────────────────────
+// A crew member who's gone (quit, long leave) is marked INACTIVE rather than deleted: every
+// per-person record (scheduled_slots, pto_blocks, crew_pins, SLOT_JOB_MAP keys, day-log crewIdx)
+// is keyed by POSITION in CREW, so removing someone would shift everyone after them onto the
+// wrong person's schedule. Inactive = hidden from the schedule rows and every "pick a crew
+// member" list for new work, can't sign in, no Holiday Pay, and their hours stop absorbing
+// overhead — while all their history (past weeks, job costing, payroll) stays intact.
+// KV 'crew_inactive' = { crewIdx: {since:'YYYY-MM-DD', name:'Full Name'} } — keyed by index
+// like crew_pins (loaded pre-login too, so the PIN check can see it).
+let CREW_INACTIVE = {};
+function isCrewInactive(ci){ return !!(CREW_INACTIVE && CREW_INACTIVE[ci]); }
+function crewInactiveSince(ci){ return (CREW_INACTIVE && CREW_INACTIVE[ci] && CREW_INACTIVE[ci].since) || ''; }
+async function loadCrewInactive(){
+  const v=await sb.getKV('crew_inactive');
+  if(v){ try{ const o=JSON.parse(v); CREW_INACTIVE=(o&&typeof o==='object'&&!Array.isArray(o))?o:{}; }catch(e){ console.error('loadCrewInactive parse error:',e); } }
+}
+// Does crew ci have anything on their row in this display week? An inactive member's row still
+// shows on a week that has their bookings/PTO (past history, or a stray future booking) so
+// nothing on the calendar ever silently disappears — only their empty weeks are hidden.
+function _crewHasWeekActivity(ci,cells){
+  return cells.some(({sw,sd})=>!!(getSlot(ci,sw,sd)||getNew(ci,sw,sd)||getExtraSlots(ci,sw,sd).length||ptoSlots[ci]?.[sw]?.[sd]));
+}
+async function toggleCrewInactive(idx){
+  const c=CREW_DATA[idx]; if(!c) return;
+  const who=c.full||('Crew '+(idx+1));
+  if(isCrewInactive(idx)){
+    if(!confirm('Reactivate '+who+'?\n\nThey\'ll show on the Install Schedule and in crew pickers again, and their PIN will work.')) return;
+    delete CREW_INACTIVE[idx];
+  } else {
+    // Warn about anything still booked from today on — those stay on the calendar (their row
+    // keeps showing on those weeks) until they're reassigned.
+    const todayStr=new Date().toISOString().split('T')[0];
+    let fut=0;
+    Object.values(newSlots[idx]||{}).forEach(days=>Object.values(days||{}).forEach(s=>{ if(s?.dt&&s.dt>=todayStr) fut++; }));
+    Object.entries(multiSlots).forEach(([k,list])=>{ if(k.startsWith(idx+'_')) (list||[]).forEach(e=>{ if(e.dt&&e.dt>=todayStr) fut++; }); });
+    const openJobs=(JOB_RECORDS||[]).filter(j=>j.status!=='complete'&&(j.crewNames||'').split(',').map(n=>n.trim()).includes(c.full));
+    let msg='Mark '+who+' as INACTIVE?\n\n• Removed from the Install Schedule and crew pickers\n• Their PIN stops working\n• No Holiday Pay, and their hours stop counting toward the overhead $/hr\n• All past jobs, hours and payroll history are kept\n\nYou can reactivate them any time.';
+    if(fut||openJobs.length) msg+='\n\n⚠ Still booked: '+(fut?fut+' scheduled day'+(fut!==1?'s':'')+' from today on':'')+(fut&&openJobs.length?', ':'')+(openJobs.length?'on '+openJobs.map(j=>j.customer).join(', '):'')+'. Those will keep showing until you reassign them.';
+    if(!confirm(msg)) return;
+    CREW_INACTIVE[idx]={since:todayStr,name:who};
+  }
+  const ok=await sb.setKV('crew_inactive',JSON.stringify(CREW_INACTIVE));
+  if(!ok){ showSyncStatus('⚠ Save failed – check connection','var(--red)'); return; }
+  logAudit('crew_updated',who,isCrewInactive(idx)?'Marked inactive':'Reactivated');
+  if(editingCrewIdx===idx){ _ceRenderStatus(); calcBurden(); } // modal stays open — unsaved edits there aren't lost
+  renderCrewCards();
+  if(document.getElementById('page-schedule')?.classList.contains('active')) renderSchedule();
+  showToast(isCrewInactive(idx)?(who+' marked inactive'):('✓ '+who+' reactivated'));
+}
+function _ceRenderStatus(){
+  const el=document.getElementById('ce-status'); if(!el||editingCrewIdx===null) return;
+  const i=editingCrewIdx;
+  if(isCrewInactive(i)){
+    const since=crewInactiveSince(i);
+    const sinceTxt=since?new Date(since+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'';
+    el.innerHTML=`<span style="font-size:12px;font-weight:700;color:var(--text3);background:var(--surface3);padding:3px 10px;border-radius:20px;">INACTIVE${sinceTxt?' since '+sinceTxt:''}</span>
+      <span style="flex:1;min-width:160px;font-size:11.5px;color:var(--text3);">Hidden from the schedule &amp; crew pickers, can't sign in. History kept.</span>
+      <button class="btn btn-ghost" onclick="toggleCrewInactive(${i})" style="font-size:12px;padding:5px 12px;color:var(--green);border-color:var(--green);">↺ Reactivate</button>`;
+  } else {
+    el.innerHTML=`<span style="font-size:12px;font-weight:700;color:var(--green);background:var(--green-dim);padding:3px 10px;border-radius:20px;">ACTIVE</span>
+      <span style="flex:1;min-width:160px;font-size:11.5px;color:var(--text3);">Gone for a while or for good? Remove them from the schedule without losing their history.</span>
+      <button class="btn btn-ghost" onclick="toggleCrewInactive(${i})" style="font-size:12px;padding:5px 12px;color:var(--red);border-color:var(--red-dim);">Mark Inactive</button>`;
+  }
+}
+
 const SPECIALTY_TAGS = {
   'Epoxy Coating':    '<span class="tag tag-epoxy">Epoxy</span>',
   'Polished Concrete':'<span class="tag tag-concrete">Polished</span>',
@@ -10653,12 +10740,13 @@ function renderCrewCards(){
            </div>`
         : `<div style="margin-top:10px;font-size:11.5px;color:var(--text3);">Tap Edit to enter pay info</div>`;
 
-      return `<div class="stat-card" style="border-left:3px solid ${c.color};cursor:default;">
+      const _inact=isCrewInactive(i);
+      return `<div class="stat-card" style="border-left:3px solid ${_inact?'var(--border2)':c.color};cursor:default;${_inact?'opacity:.6;':''}">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
           <div style="display:flex;align-items:center;gap:10px;">
             <div class="avatar" style="background:${c.color}22;border-color:${c.color};color:${c.color};width:38px;height:38px;font-size:12px;flex-shrink:0;">${c.initials}</div>
             <div>
-              <div style="font-weight:600;font-size:14px;">${c.full}</div>
+              <div style="font-weight:600;font-size:14px;">${c.full}${_inact?` <span style="font-size:9.5px;font-weight:700;color:var(--text3);background:var(--surface3);padding:2px 7px;border-radius:20px;vertical-align:middle;">INACTIVE</span>`:''}</div>
               <div style="font-size:11px;color:${i===0?'var(--accent)':'var(--text3)'};">${c.role}</div>
             </div>
           </div>
@@ -10709,6 +10797,7 @@ function openCrewEdit(idx){
   document.getElementById('ce-at-name').value='';
   document.getElementById('ce-at-url').value='';
   openModal('crewedit');
+  _ceRenderStatus();
   calcBurden();
   renderEmpLog();
   renderAttachmentList();
@@ -10735,10 +10824,12 @@ function overheadAnnualTotal(){
     return s + (it.period==='mo' ? amt*12 : amt);
   },0);
 }
-// Σ over crew (with a real wage) of weekly hours × 52 — the hours that absorb overhead.
+// Σ over ACTIVE crew (with a real wage) of weekly hours × 52 — the hours that absorb overhead.
+// Inactive crew aren't working, so counting their hours would spread overhead too thin and
+// understate everyone's burdened rate.
+function _overheadCrew(){ return (CREW_DATA||[]).filter((c,i)=>(parseFloat(c.hourly)||0)>0&&!isCrewInactive(i)); }
 function overheadAnnualLaborHours(){
-  return (CREW_DATA||[]).reduce((s,c)=>{
-    if((parseFloat(c.hourly)||0)<=0) return s;
+  return _overheadCrew().reduce((s,c)=>{
     return s + (parseFloat(c.hours)||40)*52;
   },0);
 }
@@ -10756,7 +10847,7 @@ function overheadBreakdownText(){
 function renderOverhead(){
   const el=document.getElementById('overhead-content'); if(!el) return;
   const items=OVERHEAD.items||[];
-  const crewWithWage=(CREW_DATA||[]).filter(c=>(parseFloat(c.hourly)||0)>0);
+  const crewWithWage=_overheadCrew();
   let html=`<div style="max-width:920px;margin:0 auto;">`;
 
   // Summary card
@@ -11206,6 +11297,7 @@ function renderCrewShareList(){
   const wrap = document.getElementById('crew-share-list');
   wrap.innerHTML = '';
   CREW.forEach((cr,i)=>{
+    if(isCrewInactive(i)) return;
     // Build a crew view URL — points to crew.html with crew index as param
     const baseUrl = 'https://fantastic-cascaron-6d7ded.netlify.app';
     const crewUrl = baseUrl + '/crew.html?crew=' + i + '&name=' + encodeURIComponent(cr.full);
@@ -12538,11 +12630,15 @@ function buildWeekGrid(wOff,mon,dNames){
   };
 
   CREW.forEach((cr,i)=>{
+    // Inactive crew: no row on weeks where they have nothing (see _crewHasWeekActivity)
+    const _inactive=isCrewInactive(i);
+    if(_inactive&&!_crewHasWeekActivity(i,Array.from({length:TOTAL_DAYS},(_,d)=>({sw:colSW(d),sd:colSD(d)})))) return;
     const rowDiv=mk('div','sch-row');
 
     // Name cell
     const nameCell=mk('div','sch-installer');
-    nameCell.innerHTML=`<div class="installer-dot" style="background:${cr.color}"></div>${cr.name}`;
+    nameCell.innerHTML=`<div class="installer-dot" style="background:${cr.color}"></div>${cr.name}`
+      +(_inactive?`<span style="font-size:9px;color:var(--text3);font-weight:500;margin-left:4px;" title="Inactive — shown only on weeks with bookings">(inactive)</span>`:'');
     rowDiv.appendChild(nameCell);
 
     // Gather slot data for all 7 display days (Sun..Sat)
@@ -13210,7 +13306,7 @@ function openConflictModal(crewIdx, wOff, dIdx, ptoLabel, conflicts){
 
   // Build replacement crew options (exclude the person on PTO)
   const replacementOptions = CREW.map((cr,i)=>{
-    if(i===crewIdx) return '';
+    if(i===crewIdx||isCrewInactive(i)) return '';
     return `<div class="crew-option" id="replace-opt-${i}" onclick="toggleReplacement(${i})" style="padding:10px 12px;">
       <div class="crew-dot" style="background:${cr.color}"></div>
       <div><div class="crew-option-name">${cr.full}</div></div>
