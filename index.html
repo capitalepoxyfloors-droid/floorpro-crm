@@ -7141,7 +7141,10 @@ function cvGetWeekSpanEvents(weekSun){
     for(const ci of crewList){
       const pto=ptoSlots[ci]?.[w]?.[d]; if(!pto) continue;
       if(!ptoByCI[ci]) ptoByCI[ci]=[];
-      ptoByCI[ci].push({col,label:pto.label||'Off'});
+      // Crew View is shared by everyone — never show the PTO reason (private), just "PTO" + time range if partial
+      const _fmtT=t=>{if(!t)return '';const[h,m]=t.split(':');const hr=parseInt(h);return(hr%12||12)+':'+m+(hr<12?'am':'pm');};
+      const _pubLabel=pto.partial&&pto.from&&pto.to?'PTO ('+_fmtT(pto.from)+'–'+_fmtT(pto.to)+')':'PTO';
+      ptoByCI[ci].push({col,label:_pubLabel});
     }
   }
   for(const [ciStr,days] of Object.entries(ptoByCI)){
