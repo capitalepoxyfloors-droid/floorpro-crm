@@ -1172,6 +1172,18 @@
   </div>
 </div>
 
+<!-- FULL-SCREEN "WILL HAS A QUESTION" ALERT (crew) — a badge dot alone was too easy to miss -->
+<div id="pto-clarify-alert" style="display:none;position:fixed;inset:0;z-index:3000;background:rgba(0,0,0,.88);align-items:center;justify-content:center;padding:20px;">
+  <div style="background:var(--surface);border:3px solid var(--orange);border-radius:18px;width:100%;max-width:440px;max-height:92vh;overflow-y:auto;padding:28px 24px 22px;text-align:center;box-shadow:0 0 0 8px rgba(227,116,0,.18);">
+    <div style="font-size:52px;line-height:1;margin-bottom:10px;">✋</div>
+    <div style="font-size:21px;font-weight:700;color:var(--orange);margin-bottom:6px;">Will needs more info</div>
+    <div style="font-size:14px;color:var(--text2);margin-bottom:16px;line-height:1.45;">Your PTO request was sent back with a question. It won't be approved until you reply.</div>
+    <div id="pto-clarify-alert-body" style="text-align:left;"></div>
+    <button class="btn btn-primary" style="width:100%;justify-content:center;font-size:16px;padding:14px;margin-top:18px;background:var(--orange);border-color:var(--orange);" onclick="ptoClarifyAlertReply()">↩ Reply Now</button>
+    <button class="btn btn-ghost" style="width:100%;justify-content:center;font-size:13px;margin-top:8px;" onclick="ptoClarifyAlertLater()">Remind me later</button>
+  </div>
+</div>
+
 <!-- MATERIAL REQUEST MODAL (crew) -->
 <div class="modal-overlay" id="modal-matrequest">
   <div class="modal" style="max-width:480px;">
@@ -8816,7 +8828,6 @@ function renderPtoRequestsPage(){
 
 // ── CREW-FACING: "My PTO Requests" — lets a crew member edit their OWN still-pending requests ──
 // Badge: orange count of requests Will sent back (they need to act) takes priority over the blue pending count.
-let _ptoClarifyToastShown=false;
 function _updateMyPtoBadge(){
   const badge=document.getElementById('cv-mypto-badge'); if(!badge) return;
   const idx=_tcCrewIdentity();
@@ -8826,12 +8837,65 @@ function _updateMyPtoBadge(){
   badge.style.display=count?'inline-block':'none';
   badge.style.background=needInfo?'var(--orange)':'var(--accent)';
   badge.textContent=count>9?'9+':count;
-  // One heads-up per session when a crew member signs in with a question waiting on them
-  if(needInfo&&!_ptoClarifyToastShown&&document.body.classList.contains('crew-mode')){
-    _ptoClarifyToastShown=true;
-    showToast(`↩ Will has a question about your PTO request — tap 📋 My PTO Requests to reply.`);
-  }
+  if(document.body.classList.contains('crew-mode')) _showPtoClarifyAlert(mine.filter(r=>r.status==='clarify'));
 }
+
+// ── Full-screen "Will needs more info" alert (crew-mode only) ──
+// Shows whenever a sent-back request is waiting on them. "Remind me later" snoozes that question
+// for an hour; a NEW question (another send-back round) shows right away. Keyed by id + round count.
+const _PTO_CLARIFY_SNOOZE_MS=60*60*1000;
+let _ptoClarifyAlertId=null;
+function _ptoClarifyKey(r){ return r.id+':'+((r.clarify||[]).length); }
+function _ptoClarifySnoozed(r){
+  try{ const t=parseInt(localStorage.getItem('fpPtoClarifySnooze:'+_ptoClarifyKey(r))||'0'); return Date.now()-t<_PTO_CLARIFY_SNOOZE_MS; }catch(e){ return false; }
+}
+function _showPtoClarifyAlert(waiting){
+  const el=document.getElementById('pto-clarify-alert'); if(!el) return;
+  // Already answering one in the request modal — don't cover it
+  if(document.getElementById('modal-ptorequest')?.classList.contains('open')) return;
+  const due=(waiting||[]).filter(r=>!_ptoClarifySnoozed(r));
+  if(!due.length){ el.style.display='none'; _ptoClarifyAlertId=null; return; }
+  const r=due[0];
+  _ptoClarifyAlertId=r.id;
+  const last=(r.clarify||[])[r.clarify.length-1]||{};
+  const fmtD=ds=>{const d=new Date(ds+'T00:00:00');return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});};
+  const fmtT=t=>{if(!t)return '';const[h,m]=t.split(':');const hr=parseInt(h);return(hr%12||12)+':'+m+(hr<12?'am':'pm');};
+  const range=r.partial
+    ? `${fmtD(r.startDate)} · ${fmtT(r.fromTime)}–${fmtT(r.toTime)}`
+    : `${fmtD(r.startDate)}${r.endDate!==r.startDate?' – '+fmtD(r.endDate):''}`;
+  const more=due.length-1;
+  document.getElementById('pto-clarify-alert-body').innerHTML=`
+    <div style="font-size:11px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Your request</div>
+    <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:14px;">📅 ${range}</div>
+    <div style="background:rgba(227,116,0,.1);border-left:4px solid var(--orange);border-radius:8px;padding:12px 14px;">
+      <div style="font-size:11px;font-weight:700;color:var(--orange);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px;">Will asked${last.askedDate?' · '+last.askedDate:''}</div>
+      <div style="font-size:15px;color:var(--text);white-space:pre-wrap;word-break:break-word;line-height:1.45;">${_alEsc(last.q||'')}</div>
+    </div>
+    ${more>0?`<div style="font-size:12.5px;color:var(--text3);margin-top:10px;text-align:center;">+ ${more} more request${more!==1?'s':''} need${more===1?'s':''} your reply</div>`:''}`;
+  el.style.display='flex';
+}
+function ptoClarifyAlertReply(){
+  const id=_ptoClarifyAlertId;
+  document.getElementById('pto-clarify-alert').style.display='none';
+  _ptoClarifyAlertId=null;
+  if(id) myPtoReplyRequest(id);
+}
+function ptoClarifyAlertLater(){
+  const r=PTO_REQUESTS.find(x=>x.id===_ptoClarifyAlertId);
+  if(r){ try{ localStorage.setItem('fpPtoClarifySnooze:'+_ptoClarifyKey(r),String(Date.now())); }catch(e){} }
+  _updateMyPtoBadge(); // shows the next waiting request, or hides the alert
+}
+// Crew phones keep the app open for days — re-check for send-backs every 2 min and whenever
+// the app comes back to the foreground, so the alert reaches them without a reload.
+async function _ptoClarifyPoll(){
+  if(!document.body.classList.contains('crew-mode')||document.hidden) return;
+  if(document.getElementById('modal-ptorequest')?.classList.contains('open')) return; // mid-edit — don't swap data under them
+  await loadPtoRequests();
+  if(document.getElementById('modal-myptoreqs')?.classList.contains('open')) renderMyPtoRequestsList();
+  _updateMyPtoBadge();
+}
+setInterval(_ptoClarifyPoll,120000);
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden) _ptoClarifyPoll(); });
 function openMyPtoRequests(){
   renderMyPtoRequestsList();
   openModal('myptoreqs');
