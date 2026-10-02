@@ -2649,6 +2649,45 @@ function _jobMatchKey(name){
   return (name||'').replace(/#\d+/g,'').replace(/\s+/g,' ').trim().toLowerCase();
 }
 
+// ── Board row ⇄ job record link ──────────────────────────────────────────────
+// The Jobs board (jobs table) and the schedule's JOB_RECORDS are separate lists. They used to be
+// tied together ONLY by exact customer name, so any naming difference ("Mike McDorman" vs
+// "Mike McDorman Garage", "Phase 2" vs "Phase 2 - Bathrooms") broke the link: the board card
+// wouldn't open the job, its status never moved, and autoAdvance spawned a duplicate row.
+// Now a record stores its board row's id (rec.boardRowId). Lookups use that first, then fall
+// back to name matching — exact key, or one name containing the other WITH the same $ value.
+function _sameJobValue(a,b){ const x=parseFloat(a)||0,y=parseFloat(b)||0; return x>0&&y>0&&Math.abs(x-y)<0.01; }
+function _looseNameMatch(a,b){ const ka=_jobMatchKey(a),kb=_jobMatchKey(b); return !!ka&&!!kb&&ka!==kb&&(ka.startsWith(kb)||kb.startsWith(ka)); }
+function _recordForBoardRow(dbId, customer, value){
+  if(dbId){ const linked=JOB_RECORDS.find(j=>j.boardRowId===dbId); if(linked) return linked; }
+  const free=JOB_RECORDS.filter(j=>!j.boardRowId||j.boardRowId===dbId); // records linked to ANOTHER row are off-limits
+  const key=_jobMatchKey(customer);
+  const exact=free.filter(j=>_jobMatchKey(j.customer)===key);
+  if(exact.length){
+    const rank=j=>(_sameJobValue(j.value,value)?0:2)+(j.status==='complete'?1:0);
+    return exact.slice().sort((a,b)=>rank(a)-rank(b)||(b.startDate||'').localeCompare(a.startDate||''))[0];
+  }
+  const loose=free.filter(j=>_looseNameMatch(j.customer,customer)&&_sameJobValue(j.value,value));
+  return loose.length===1?loose[0]:null;
+}
+// rows = candidate jobs-table rows. Returns the board row for this record (may be invoiced — callers decide).
+function _boardRowForRecord(rec, rows){
+  rows=rows||_lastJobRows||[];
+  if(rec.boardRowId){ const linked=rows.find(r=>r&&r.id===rec.boardRowId); if(linked) return linked; }
+  const takenByOther=id=>JOB_RECORDS.some(j=>j!==rec&&j.boardRowId===id);
+  const free=rows.filter(r=>r&&r.status!=='invoiced'&&!takenByOther(r.id));
+  const key=_jobMatchKey(rec.customer);
+  const exact=free.filter(r=>_jobMatchKey(r.customer||'')===key);
+  if(exact.length){
+    const byVal=exact.find(r=>_sameJobValue(r.value,rec.value)); if(byVal) return byVal;
+    // Same-named jobs (e.g. two "Thomas Construction" records): don't grab a row whose $ matches a DIFFERENT record
+    const others=JOB_RECORDS.filter(j=>j!==rec&&_jobMatchKey(j.customer)===key);
+    return exact.find(r=>!others.some(j=>_sameJobValue(j.value,r.value)))||null;
+  }
+  const loose=free.filter(r=>_looseNameMatch(r.customer||'',rec.customer)&&_sameJobValue(r.value,rec.value));
+  return loose.length===1?loose[0]:null;
+}
+
 async function autoAdvanceJobsByDate(){
   // Automatically move jobs based on today's date:
   //   Scheduled  → In Progress  when start date has arrived
@@ -2686,15 +2725,16 @@ async function autoAdvanceJobsByDate(){
     // customer name against the LOADED rows (_lastJobRows) — NOT the DOM. The DOM can be
     // transiently empty, which made the old code spawn duplicate no-Wave rows (Bob Gerke ×2).
     // We update the row that already exists and never create a second row for the same job.
-    const wantKey = _jobMatchKey(job.customer);
-    const rowsForJob = _lastJobRows.filter(r => r && r.status!=='invoiced' && _jobMatchKey(r.customer||'') === wantKey);
-    if(rowsForJob.some(r => r.status === newBoardStatus)){
-      // A row already sits at the destination status — nothing to do.
+    // Linked row first (rec.boardRowId), then name match — see _boardRowForRecord.
+    const row = _boardRowForRecord(job);
+    if(row && (row.status === newBoardStatus || row.status === 'invoiced')){
+      // Already at the destination (or invoiced, which never moves backward) — nothing to do.
+      if(!job.boardRowId) job.boardRowId = row.id;
     } else {
-      const row = rowsForJob.find(r => r.status !== newBoardStatus);
       if(row){
         await sb.update('jobs', row.id, {status: newBoardStatus});
         row.status = newBoardStatus;   // keep the cache coherent for the rest of this pass
+        if(!job.boardRowId) job.boardRowId = row.id;
         boardChanged = true;
       } else {
         // No jobs-table row exists for this record at all — create one (a job that only ever
@@ -2707,7 +2747,9 @@ async function autoAdvanceJobsByDate(){
         if(job.startDate) parts.push(job.endDate && job.endDate !== job.startDate
           ? jcFmtDate(job.startDate)+' – '+jcFmtDate(job.endDate)
           : jcFmtDate(job.startDate));
-        await dbSaveJob({customer: job.customer, jobLabel, value: job.value||'', displayVal: dispVal, detail: parts.join(' · '), status: newBoardStatus, notes:'', db_id:null});
+        const _newRow={customer: job.customer, jobLabel, value: job.value||'', displayVal: dispVal, detail: parts.join(' · '), status: newBoardStatus, notes:'', db_id:null};
+        await dbSaveJob(_newRow);
+        if(_newRow.db_id) job.boardRowId = _newRow.db_id;   // link it so it can't drift or duplicate later
         boardChanged = true;
       }
     }
@@ -3601,7 +3643,10 @@ function sjConfirm(){
   if(window._pendingApprovedCard){
     const card=window._pendingApprovedCard;
     const dbId=card.dataset.dbId||null;
-    const customer=card.querySelector('.lead-name')?.textContent||'';
+    // dataset.customer, NOT .lead-name text — that includes the "#638" Wave badge, which got baked
+    // into the board row's name ("Rick Zimmerman #638") and broke its link to the job record.
+    const customer=card.dataset.customer||card.querySelector('.lead-name')?.textContent||'';
+    if(dbId){ jobRecord.boardRowId=dbId; saveJobRecords(); }
     const jobLabel=card.querySelector('.lead-detail')?.textContent||'';
     const valEl=card.querySelector('.lead-value');
     const displayVal=valEl?valEl.textContent:'—';
@@ -4410,7 +4455,7 @@ function jcStyleStatus(s){
 function jcSetStatus(val){
   const job=getJobRecord(_jcId); if(!job) return;
   job.status=val; jcStyleStatus(val); saveJobRecords();
-  syncBoardCardStatus(job.customer, val);   // keep the Jobs board card in lockstep with the schedule
+  syncBoardCardStatus(job, val);   // keep the Jobs board card in lockstep with the schedule
 }
 
 // Move this job's Jobs-board card to match a status set elsewhere (the job-card status
@@ -4421,15 +4466,15 @@ function jcSetStatus(val){
 // transiently empty/stale (or not even rendered, since this fires from the Job Card modal),
 // and matching against it is what spawned duplicate no-Wave board rows for the same job
 // (George Belchik ×2, 2026-07-13) — see the identical fix already applied to autoAdvanceJobsByDate.
-async function syncBoardCardStatus(customer, recordStatus){
+// Takes the job RECORD (older callers passed just the customer name — still accepted).
+async function syncBoardCardStatus(job, recordStatus){
   const want={scheduled:'scheduled', in_progress:'inprogress', complete:'complete'}[recordStatus];
   if(!want) return;
-  const key=_jobMatchKey(customer);
-  const rows=(_lastJobRows||[]).filter(r=>r && r.status!=='invoiced' && _jobMatchKey(r.customer||'')===key);
-  if(!rows.length) return;                     // no board row for this job — nothing to sync
-  if(rows.some(r=>r.status===want)) return;     // already in the right column
-  const row=rows.find(r=>r.status!==want);
-  if(!row) return;
+  const rec=typeof job==='string'?(JOB_RECORDS.find(j=>j.customer===job)||{customer:job}):job;
+  const row=_boardRowForRecord(rec);           // linked row first, then name match
+  if(!row) return;                             // no board row for this job — nothing to sync
+  if(rec.id&&!rec.boardRowId){ rec.boardRowId=row.id; saveJobRecords(); }
+  if(row.status===want||row.status==='invoiced') return;   // already there / never pull invoiced backward
   await sb.update('jobs', row.id, {status:want});
   row.status=want;                              // keep the cache coherent
   await loadJobs();
@@ -5037,7 +5082,7 @@ async function jcMarkComplete(){
   const ss=document.getElementById('jc-status-sel');
   if(ss){ss.value='complete'; jcStyleStatus('complete');}
 
-  await syncBoardCardStatus(job.customer, 'complete');
+  await syncBoardCardStatus(job, 'complete');
 
   showToast('✓ '+job.customer+' marked complete!');
 }
@@ -6893,11 +6938,11 @@ function jcSyncStatusToDate(job,effectiveStartStr){
   if(job.status==='in_progress' && _newStartDate>_today){
     job.status='scheduled';
     if(document.getElementById('jc-status-sel')){ document.getElementById('jc-status-sel').value='scheduled'; jcStyleStatus('scheduled'); }
-    syncBoardCardStatus(job.customer,'scheduled');
+    syncBoardCardStatus(job, 'scheduled');
   }else if(job.status==='scheduled' && _newStartDate<=_today){
     job.status='in_progress';
     if(document.getElementById('jc-status-sel')){ document.getElementById('jc-status-sel').value='in_progress'; jcStyleStatus('in_progress'); }
-    syncBoardCardStatus(job.customer,'in_progress');
+    syncBoardCardStatus(job, 'in_progress');
   }
 }
 
@@ -9959,9 +10004,9 @@ function renderJobsListView(){
 
 // List view action helpers — find the hidden kanban card and delegate to existing functions
 function listJobOpen(dbId,customer){
-  const match=JOB_RECORDS.find(j=>j.customer===customer);
-  if(match){ openJobCard(match.id); return; }
   const card=[...document.querySelectorAll('#jobs-board .lead-card')].find(c=>c.dataset.dbId===dbId);
+  const match=_recordForBoardRow(dbId, customer, card?.dataset.value);
+  if(match){ openJobCard(match.id); return; }
   if(card) openJobEdit(card.querySelector('button[title="Edit job"]'));
 }
 function listJobAdvance(dbId){
@@ -10031,7 +10076,7 @@ function addJobCard(customer, jobLabel, value, displayVal, detail, status, exist
   card.onclick = function(e){
     if(e.target.closest('button')) return;
     const name=(this.dataset.customer||this.querySelector('.lead-name').textContent).trim();
-    const match=JOB_RECORDS.find(j=>j.customer===name);
+    const match=_recordForBoardRow(this.dataset.dbId, name, this.dataset.value);
     if(match){ openJobCard(match.id); }
     else { openJobEdit(this); }
   };
@@ -10071,7 +10116,9 @@ async function advanceJobCard(btn, nextStatus){
   const customer=card.dataset.customer||card.querySelector('.lead-name').textContent.trim();
   const key=_jobMatchKey(customer);
   const rows=(_lastJobRows||[]).filter(r=>r && r.status!=='invoiced' && _jobMatchKey(r.customer||'')===key);
-  const row=rows.find(r=>r.status!==nextStatus)||rows[0];
+  // The clicked card's own row first — matching by name alone moved the WRONG row when two
+  // board rows share a name (e.g. two "Thomas Construction" jobs).
+  const row=rows.find(r=>r.id===card.dataset.dbId)||rows.find(r=>r.status!==nextStatus)||rows[0];
   if(row){
     await sb.update('jobs', row.id, {status:nextStatus});
     row.status=nextStatus;
@@ -10082,7 +10129,7 @@ async function advanceJobCard(btn, nextStatus){
   // Keep the install-schedule record in lockstep (reverse of syncBoardCardStatus). Only an
   // EXISTING record is updated — no record is created here (the Schedule wizard owns that, since
   // a record needs dates/crew). Records have no 'invoiced' state, so that move is left to the board.
-  const rec=JOB_RECORDS.find(j=>_jobMatchKey(j.customer)===_jobMatchKey(customer));
+  const rec=_recordForBoardRow(row?.id||card.dataset.dbId, customer, row?.value||card.dataset.value);
   if(rec){
     const rs={scheduled:'scheduled', inprogress:'in_progress', complete:'complete'}[nextStatus];
     if(rs && rec.status!==rs){ rec.status=rs; saveJobRecords(); }
