@@ -5936,7 +5936,9 @@ function renderJobCostingPage(){
     const dailyProfit=wDays>0&&revenue>0?Math.round(profit/wDays*100)/100:null;
     const finishDate=members.reduce((mx,m)=>(m.finishDate>mx?m.finishDate:mx),'');
     const comboJob={...primary.job,customer:(primary.job.customer||'Unnamed')+' (Combined — '+members.length+' phases)',_comboMembers:members.map(m=>m.job)};
-    return{job:comboJob,revenue,laborCost,matCost,consCost,mileCost,commCost,totalCost,profit,margin,totalHrs:Math.round(sum('totalHrs')*10)/10,wDays,dailyProfit,finishDate,isTM:members.some(m=>m.isTM),missingTimeCount:sum('missingTimeCount')};
+    // _memberRows: each phase's own numbers, listed under the combined line so Will can check they add up
+    return{job:comboJob,revenue,laborCost,matCost,consCost,mileCost,commCost,totalCost,profit,margin,totalHrs:Math.round(sum('totalHrs')*10)/10,wDays,dailyProfit,finishDate,isTM:members.some(m=>m.isTM),missingTimeCount:sum('missingTimeCount'),
+      _memberRows:members.slice().sort((a,b)=>(a.finishDate||'').localeCompare(b.finishDate||''))};
   });
 
   // Newest-finished jobs first (was raw record order, which looked random)
@@ -5969,7 +5971,7 @@ function renderJobCostingPage(){
       <div>Job</div><div style="text-align:right;">Revenue</div><div style="text-align:right;">Labor</div><div style="text-align:right;">Materials</div><div style="text-align:right;">Profit</div><div style="text-align:right;">Margin</div><div style="text-align:right;">Profit/Day</div>
     </div>`;
 
-  rows.forEach(({job,revenue,laborCost,matCost,profit,margin,totalHrs,wDays,dailyProfit,missingTimeCount})=>{
+  rows.forEach(({job,revenue,laborCost,matCost,profit,margin,totalHrs,wDays,dailyProfit,missingTimeCount,_memberRows})=>{
     const profitColor=profit>=0?'var(--green)':'var(--red)';
     const statusColors={complete:'var(--green)',in_progress:'var(--accent)',scheduled:'var(--blue)',inprogress:'var(--accent)'};
     const sc=statusColors[job.status]||'var(--text3)';
@@ -5990,6 +5992,25 @@ function renderJobCostingPage(){
       <div style="text-align:right;font-family:'DM Mono',monospace;font-size:13px;font-weight:600;color:${margin!==null?profitColor:'var(--text3)'};">${margin!==null?margin+'%':'—'}</div>
       <div style="text-align:right;font-family:'DM Mono',monospace;font-size:13px;font-weight:600;color:${dailyProfit!==null?profitColor:'var(--text3)'};">${dailyProfit!==null?fmt(dailyProfit)+(wDays>1?`<span style="font-size:10px;font-weight:400;color:var(--text3);margin-left:3px;">${wDays}d</span>`:''):'—'}</div>
     </div>`;
+    // Combined job: break out each phase underneath so the total above can be checked line by line
+    if(_memberRows){
+      const cell=(v,show,color)=>`<div style="text-align:right;font-family:'DM Mono',monospace;font-size:12px;color:${show?color:'var(--text3)'};">${show?v:'—'}</div>`;
+      _memberRows.forEach(m=>{
+        const pc=m.profit>=0?'var(--green)':'var(--red)';
+        html+=`<div onclick="openJobCard('${m.job.id}')" title="Open this phase" style="display:grid;grid-template-columns:1.8fr 1fr 1fr 1fr 1fr 1fr 1fr;gap:0;padding:7px 16px 7px 30px;border-bottom:1px solid var(--border2);background:var(--surface2);cursor:pointer;" onmouseover="this.style.background='var(--surface3)'" onmouseout="this.style.background='var(--surface2)'">
+          <div style="min-width:0;">
+            <div style="font-size:12px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">↳ ${m.job.customer||'Unnamed'}</div>
+            <div style="font-size:10.5px;color:var(--text3);margin-top:1px;">${m.job.startDate?jcFmtDate(m.job.startDate)+(m.finishDate&&m.finishDate!==m.job.startDate?' – '+jcFmtDate(m.finishDate):''):''}${m.totalHrs>0?' · '+m.totalHrs+'h':''}</div>
+          </div>
+          ${cell(fmt(m.revenue),m.revenue>0,'var(--text2)')}
+          ${cell(fmt(m.laborCost),m.laborCost>0,'var(--text2)')}
+          ${cell(fmt(m.matCost),m.matCost>0,'var(--text2)')}
+          ${cell(fmt(m.profit),m.revenue>0,pc)}
+          ${cell(m.margin+'%',m.margin!==null,pc)}
+          ${cell(m.dailyProfit!==null?fmt(m.dailyProfit)+(m.wDays>1?`<span style="font-size:10px;color:var(--text3);margin-left:3px;">${m.wDays}d</span>`:''):'',m.dailyProfit!==null,pc)}
+        </div>`;
+      });
+    }
   });
 
   html+=`</div>`;
