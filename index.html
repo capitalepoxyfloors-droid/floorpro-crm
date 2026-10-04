@@ -538,7 +538,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><circle cx="12" cy="16" r="2"/></svg>
         <span>Holidays</span>
       </button>
-      <button class="nav-item" onclick="showPage('pinsettings')">
+      <button class="nav-item" id="nav-pinsettings" onclick="showPage('pinsettings')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
         <span>Security</span>
       </button>
@@ -554,8 +554,8 @@
     </nav>
     <div class="sidebar-bottom">
       <div class="user-row">
-        <div class="avatar">WB</div>
-        <div><div class="user-name">Will Bradford</div><div class="user-role">Owner</div></div>
+        <div class="avatar" id="sb-user-avatar">WB</div>
+        <div><div class="user-name" id="sb-user-name">Will Bradford</div><div class="user-role" id="sb-user-role">Owner</div></div>
       </div>
     </div>
   </div>
@@ -984,6 +984,18 @@
             <div style="font-size:11.5px;color:var(--text2);margin-top:5px;line-height:1.4;">Give each crew member their own 4-digit PIN. When they sign in with it, the app identifies them automatically — no need to tap a name. Leave blank to disable.</div>
           </div>
           <div id="pin-crew-list" style="padding:6px 18px 14px;"></div>
+        </div>
+        <div class="jobs-block" style="padding:0;margin-bottom:16px;">
+          <div style="padding:14px 18px;border-bottom:1px solid var(--border);">
+            <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);">Office Staff</div>
+            <div style="font-size:11.5px;color:var(--text2);margin-top:5px;line-height:1.4;">Office staff get the same full access as the manager code, with their own 4-digit PIN. Everything they change is logged under their name in the Audit Log. Only the manager code can open this Security page.</div>
+          </div>
+          <div id="pin-office-list" style="padding:6px 18px 4px;"></div>
+          <div style="display:flex;align-items:center;gap:8px;padding:10px 18px 16px;flex-wrap:wrap;">
+            <input class="form-input" id="office-new-name" type="text" placeholder="Name (e.g. Grok – Ops Manager)" style="flex:1;min-width:160px;font-size:13px;"/>
+            <input class="form-input" id="office-new-pin" type="text" inputmode="numeric" maxlength="4" placeholder="PIN" style="width:84px;font-size:16px;letter-spacing:3px;text-align:center;font-family:'DM Mono',monospace;"/>
+            <button class="btn btn-primary" onclick="addOfficeUser()" style="font-size:12px;padding:7px 14px;">+ Add</button>
+          </div>
         </div>
         <div class="jobs-block" style="padding:0;">
           <div style="padding:14px 18px;border-bottom:1px solid var(--border);">
@@ -2075,6 +2087,7 @@ function currentActorName(){
     if(!isNaN(ci)&&CREW_DATA[ci]) return CREW_DATA[ci].full;
     return 'Crew (unknown)';
   }
+  const office=_currentOfficeUser(); if(office) return office;   // office staff sign-in (e.g. "Grok – Ops Manager")
   return 'Manager';
 }
 async function logAudit(action,entity,details){
@@ -3539,13 +3552,27 @@ document.addEventListener('DOMContentLoaded',()=>{
     } else {
       localStorage.removeItem('fpRole');
       document.body.classList.remove('crew-mode');
-      loadAllFromSupabase().then(()=>{
+      _applySignedInUserUi();
+      loadAllFromSupabase().then(async ()=>{
+        // Still-open office-staff session whose access has since been removed → sign them out
+        const office=_currentOfficeUser();
+        if(office){
+          try{ const v=await sb.getKV('office_users'); OFFICE_USERS=v?(JSON.parse(v)||[]):[]; }catch(e){}
+          if(!OFFICE_USERS.some(u=>u&&u.name===office)){
+            _sessionAuthed=false;
+            try{ localStorage.removeItem(_pinAuthKey()); localStorage.removeItem('fpOfficeUser'); }catch(e){}
+            _applySignedInUserUi();
+            showLoginScreen();
+            return;
+          }
+        }
         try{ const last=localStorage.getItem('fpLastPage'); if(last&&document.getElementById('page-'+last)) showPage(last); }catch(e){}
       });
     }
   } else {
     localStorage.removeItem(_pinAuthKey());
     localStorage.removeItem('fpRole');
+    localStorage.removeItem('fpOfficeUser');
     showLoginScreen();
   }
   // Refresh the 24-hour window on any user interaction
@@ -7933,6 +7960,21 @@ function renderMaterialCalc(){
 // ── PIN AUTH ─────────────────────────────────────────────────────────────────
 let ADMIN_PIN='0061', _pinBuf='';
 let CREW_PINS={};   // { crewIdx: "pin" } — personal per-crew sign-in PINs (KV 'crew_pins'). Shared crew code retired.
+// Office staff (KV 'office_users'): [{id,name,pin}] — same full access as the manager code, but
+// signed in under their own name so the Audit Log shows who did what. Kept separate from CREW
+// (crew is positional and drives schedule rows, payroll, PTO, overhead — office staff aren't crew).
+// Only the manager code can open the Security page, so office staff can't change PINs.
+let OFFICE_USERS=[];
+function _currentOfficeUser(){ try{ return localStorage.getItem('fpOfficeUser')||''; }catch(e){ return ''; } }
+function _officePinMatch(pin){ return OFFICE_USERS.find(u=>u&&String(u.pin)===String(pin))||null; }
+function _applySignedInUserUi(){
+  const office=_currentOfficeUser();
+  const nm=document.getElementById('sb-user-name'), rl=document.getElementById('sb-user-role'), av=document.getElementById('sb-user-avatar');
+  if(nm) nm.textContent=office||'Will Bradford';
+  if(rl) rl.textContent=office?'Office':'Owner';
+  if(av) av.textContent=office?(office.replace(/[^A-Za-z ]/g,' ').trim().split(/\s+/).map(w=>w[0]).join('').slice(0,2).toUpperCase()||'OF'):'WB';
+  const sec=document.getElementById('nav-pinsettings'); if(sec) sec.style.display=office?'none':'';
+}
 let _sessionAuthed = false;
 let _autoLockTimer  = null;
 const AUTO_LOCK_MS  = 24 * 60 * 60 * 1000; // 24 hours since last activity
@@ -7972,6 +8014,7 @@ function _resetAutoLockTimer(){
     localStorage.removeItem(_pinAuthKey());
     localStorage.removeItem('fpRole');
     localStorage.removeItem('fpClockCrew');
+    localStorage.removeItem('fpOfficeUser');
     document.body.classList.remove('crew-mode');
     showLoginScreen();
     showToast('🔒 App locked due to inactivity.');
@@ -7988,6 +8031,8 @@ async function showLoginScreen(){
     if(ap) ADMIN_PIN=String(ap).trim();
     const cpins=await sb.getKV('crew_pins');
     if(cpins){ try{ CREW_PINS=JSON.parse(cpins)||{}; }catch(e){} }
+    const opins=await sb.getKV('office_users');
+    if(opins){ try{ OFFICE_USERS=JSON.parse(opins)||[]; }catch(e){} }
     await loadCrewInactive();
   }catch(e){}
 }
@@ -8017,7 +8062,9 @@ function _crewPinMatch(pin){
 }
 function pinSubmit(){
   if(!_pinBuf) return;
-  if(_pinBuf===ADMIN_PIN){ _pinSuccess('admin'); return; }
+  if(_pinBuf===ADMIN_PIN){ try{ localStorage.removeItem('fpOfficeUser'); }catch(e){} _pinSuccess('admin'); return; }
+  const office=_officePinMatch(_pinBuf);
+  if(office){ try{ localStorage.setItem('fpOfficeUser', office.name); }catch(e){} _pinSuccess('admin'); logAudit('signed_in',office.name,'Office staff sign-in'); return; }
   const ci=_crewPinMatch(_pinBuf);
   if(ci!==-1 && isCrewInactive(ci)){ _pinFail(); return; } // inactive crew — PIN kept but sign-in blocked
   if(ci!==-1){ _pinSuccess('crew', ci); return; }   // personal PIN → crew identity auto-set
@@ -8029,6 +8076,7 @@ function _pinSuccess(role, crewIdx){
   _hideLoginScreen();
   if(role==='crew'){
     localStorage.setItem('fpRole','crew');
+    try{ localStorage.removeItem('fpOfficeUser'); }catch(e){}
     if(crewIdx!=null && crewIdx>=0){
       // Signed in with a personal PIN — fix the clock identity to this crew member.
       // fpClockCrew is the immutable "who am I clocked as"; fpCvCrew is just the default calendar filter.
@@ -8046,6 +8094,7 @@ function _pinSuccess(role, crewIdx){
     document.body.classList.remove('crew-mode');
     const ml=document.getElementById('cv-manager-link');
     if(ml) ml.style.display='none';
+    _applySignedInUserUi();
     loadAllFromSupabase().then(()=>{
       try{ const last=localStorage.getItem('fpLastPage'); if(last&&last!=='dashboard'&&document.getElementById('page-'+last)) showPage(last); }catch(e){}
     });
@@ -8068,6 +8117,7 @@ function pinLogout(){
   localStorage.removeItem(_pinAuthKey());
   localStorage.removeItem('fpRole');
   localStorage.removeItem('fpClockCrew');
+  localStorage.removeItem('fpOfficeUser');
   document.body.classList.remove('crew-mode');
   showLoginScreen();
 }
@@ -8078,6 +8128,7 @@ async function pinSaveSettings(){
   if(na.length<4){ showToast('Manager code must be at least 4 digits.'); return; }
   if(!/^\d+$/.test(na)){ showToast('Manager code must be numbers only.'); return; }
   for(const k in CREW_PINS){ if(String(CREW_PINS[k])===na){ showToast('That matches a crew PIN — pick a different manager code.'); return; } }
+  if(_officePinMatch(na)){ showToast('That matches an office staff PIN — pick a different manager code.'); return; }
   ADMIN_PIN=na; await sb.setKV('admin_pin',na); document.getElementById('pin-new-admin').value='';
   logAudit('pin_changed','Manager code','');
   showToast('✅ Manager code updated.');
@@ -8114,15 +8165,74 @@ async function saveCrewPin(i){
   if(v.length<4||!/^\d+$/.test(v)){ showToast('PIN must be at least 4 digits, numbers only.'); return; }
   if(v===ADMIN_PIN){ showToast('That matches the manager code — pick a different PIN.'); return; }
   for(const k in CREW_PINS){ if(parseInt(k)!==i && String(CREW_PINS[k])===v){ showToast('That PIN is already used by '+((CREW_DATA[k]&&CREW_DATA[k].full)||('crew '+(parseInt(k)+1)))+'.'); return; } }
+  if(_officePinMatch(v)){ showToast('That PIN is already used by office staff ('+_officePinMatch(v).name+').'); return; }
   CREW_PINS[i]=v;
   await sb.setKV('crew_pins',JSON.stringify(CREW_PINS));
   logAudit('pin_changed',who,'PIN updated');
   showToast('✅ PIN saved for '+who);
 }
 
+// ── Office staff (manager-level access under their own name) ──
+async function _loadOfficeUsers(){ try{ const v=await sb.getKV('office_users'); OFFICE_USERS=v?(JSON.parse(v)||[]):[]; }catch(e){} }
+// Why a PIN can't be used, or '' if it's free. exceptId = the office user being edited.
+function _officePinProblem(pin, exceptId){
+  if(!/^\d{4}$/.test(pin)) return 'PIN must be exactly 4 digits.';
+  if(pin===ADMIN_PIN) return 'That matches the manager code — pick a different PIN.';
+  const ci=_crewPinMatch(pin); if(ci!==-1) return 'That PIN is already used by '+((CREW_DATA[ci]&&CREW_DATA[ci].full)||'a crew member')+'.';
+  const o=OFFICE_USERS.find(u=>u&&u.id!==exceptId&&String(u.pin)===pin); if(o) return 'That PIN is already used by '+o.name+'.';
+  return '';
+}
+async function renderOfficeUsers(){
+  const host=document.getElementById('pin-office-list'); if(!host) return;
+  await _loadOfficeUsers();
+  if(!OFFICE_USERS.length){ host.innerHTML='<div style="color:var(--text3);font-size:13px;padding:8px 0;">No office staff yet — add one below.</div>'; return; }
+  host.innerHTML=OFFICE_USERS.map(u=>`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);">
+      <span style="flex:1;font-size:13px;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">🧑‍💼 ${_alEsc(u.name)}</span>
+      <input class="form-input" id="opin-${u.id}" type="text" inputmode="numeric" maxlength="4" value="${_alEsc(String(u.pin||''))}" style="width:84px;font-size:16px;letter-spacing:3px;text-align:center;font-family:'DM Mono',monospace;"/>
+      <button class="btn btn-ghost" onclick="saveOfficeUserPin('${u.id}')" style="font-size:12px;padding:6px 12px;">Save</button>
+      <button class="btn btn-ghost" onclick="removeOfficeUser('${u.id}')" title="Remove access" style="font-size:12px;padding:6px 10px;color:var(--red);border-color:var(--red);">Remove</button>
+    </div>`).join('');
+}
+async function addOfficeUser(){
+  const nameEl=document.getElementById('office-new-name'), pinEl=document.getElementById('office-new-pin');
+  const name=(nameEl.value||'').trim(), pin=(pinEl.value||'').trim();
+  if(!name){ showToast('Enter a name.'); return; }
+  await _loadOfficeUsers();
+  if(OFFICE_USERS.some(u=>u&&u.name.toLowerCase()===name.toLowerCase())){ showToast('There is already office staff named '+name+'.'); return; }
+  const prob=_officePinProblem(pin,null); if(prob){ showToast(prob); return; }
+  const id=(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)).slice(0,8);
+  OFFICE_USERS.push({id,name,pin,added:new Date().toISOString().split('T')[0]});
+  await sb.setKV('office_users',JSON.stringify(OFFICE_USERS));
+  logAudit('office_user_added',name,'Office staff access granted');
+  nameEl.value=''; pinEl.value='';
+  renderOfficeUsers();
+  showToast('✅ '+name+' can now sign in with their PIN.');
+}
+async function saveOfficeUserPin(id){
+  await _loadOfficeUsers();
+  const u=OFFICE_USERS.find(x=>x.id===id); if(!u) return;
+  const pin=(document.getElementById('opin-'+id)?.value||'').trim();
+  const prob=_officePinProblem(pin,id); if(prob){ showToast(prob); return; }
+  u.pin=pin;
+  await sb.setKV('office_users',JSON.stringify(OFFICE_USERS));
+  logAudit('pin_changed',u.name,'Office staff PIN updated');
+  showToast('✅ PIN saved for '+u.name);
+}
+async function removeOfficeUser(id){
+  await _loadOfficeUsers();
+  const u=OFFICE_USERS.find(x=>x.id===id); if(!u) return;
+  if(!confirm('Remove '+u.name+'\'s access? Their PIN stops working, and any device they are signed in on is signed out the next time the app loads.')) return;
+  OFFICE_USERS=OFFICE_USERS.filter(x=>x.id!==id);
+  await sb.setKV('office_users',JSON.stringify(OFFICE_USERS));
+  logAudit('office_user_removed',u.name,'Office staff access removed');
+  renderOfficeUsers();
+  showToast(u.name+' removed.');
+}
+
 function showPage(id){
   // Crew mode — block all navigation except Crew View
   if(localStorage.getItem('fpRole')==='crew'&&id!=='crewview') return;
+  if(id==='pinsettings'&&_currentOfficeUser()){ showToast('🔒 Security settings need the manager code.'); return; } // office staff can't change PINs
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
   // Highlight by page id (not DOM position) so the sidebar can be reordered freely.
@@ -8150,7 +8260,7 @@ function showPage(id){
   if(id==='ptoreqs') renderPtoRequestsPage();
   if(id==='photos') renderPhotosPage();
   if(id==='jobscope') renderJobScopePage();
-  if(id==='pinsettings') renderCrewPins();
+  if(id==='pinsettings'){ renderCrewPins(); renderOfficeUsers(); }
   if(id==='auditlog'){ AUDIT_LOG_CACHE=null; renderAuditLog(); }
   if(id==='jobs') _markJobsSeen();
   try{localStorage.setItem('fpLastPage',id);}catch(e){}
