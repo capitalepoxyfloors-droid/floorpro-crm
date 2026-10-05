@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Local mocked tests for FloorPro CRM. Not part of the GitHub Pages site.",
   "scripts": {
-    "test": "node --test prelogin.test.mjs"
+    "test": "node --test --test-timeout=120000 prelogin.test.mjs crew-days.test.mjs"
   },
   "dependencies": {
     "jsdom": "^26.1.0"

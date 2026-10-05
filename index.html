@@ -4158,7 +4158,7 @@ function _jrValStr(v){
   else s=String(v);
   return s.length>1500?s.slice(0,1500)+'…':s;
 }
-const _JR_FIELD_LABELS={customer:'Customer',phone:'Phone',address:'Address',jobType:'Job Type',value:'Job Value',crewNames:'Crew',startDate:'Start Date',endDate:'End Date',notes:'Notes',plannedMaterials:'Planned Materials',extraDays:'Extra Days'};
+const _JR_FIELD_LABELS={customer:'Customer',phone:'Phone',address:'Address',jobType:'Job Type',value:'Job Value',crewNames:'Crew',crewDays:'Crew days',startDate:'Start Date',endDate:'End Date',notes:'Notes',plannedMaterials:'Planned Materials',extraDays:'Extra Days'};
 const _JR_STATUS_LABELS={scheduled:'Scheduled',in_progress:'In Progress',complete:'Complete'};
 const _JR_DAYLOG_FIELD_LABELS={task:'Task',notes:'Notes',startTime:'Start Time',endTime:'End Time',overtimeWage:'OT Wages',cashWages:'Cash Wages'};
 // Per-date, per-field diff of a job's day logs — this is what lets the audit log show the
@@ -4426,6 +4426,108 @@ recoverMisroutedLogs.confirm = async function() {
 recoverMisroutedLogs.cancel = function() { recoverMisroutedLogs._pending = null; console.log('Cancelled.'); };
 function jcSlotKey(ci,w,d){ return ci+'_'+w+'_'+d; }
 
+// Work days of the job's current range. Weekdays for a normal job, every calendar
+// day when the job starts or ends on a weekend, plus any extra log days. This is
+// the same span jcSyncCrewSlots used to book for every name in crewNames.
+function jcJobWorkDates(job){
+  if(!job||!job.startDate||!job.endDate) return [];
+  const sDow=new Date(job.startDate+'T00:00:00').getDay();
+  const eDow=new Date(job.endDate+'T00:00:00').getDay();
+  const isWknd=(sDow===0||sDow===6||eDow===0||eDow===6);
+  const orig=isWknd?jcAllDays(job.startDate,job.endDate):jcWeekdays(job.startDate,job.endDate);
+  return [...new Set([...orig,...(job.extraDays||[])])].sort();
+}
+function jcCrewNames(job){
+  return ((job&&job.crewNames)||'').split(',').map(n=>n.trim()).filter(Boolean);
+}
+// An entry exists only after someone has edited that person's days (or a drag/reschedule
+// wrote them down). No entry means "on every current work day" — the old whole-job booking.
+function jcCrewDaysExplicit(job, name){
+  return !!(job&&job.crewDays&&typeof job.crewDays==='object'&&!Array.isArray(job.crewDays)
+    &&Object.prototype.hasOwnProperty.call(job.crewDays,name)&&Array.isArray(job.crewDays[name]));
+}
+function jcAssignedDates(job, name){
+  if(!job||!name||!jcCrewNames(job).includes(name)) return [];
+  const work=jcJobWorkDates(job);
+  if(!jcCrewDaysExplicit(job, name)) return work;
+  const allow=new Set(work);
+  return job.crewDays[name].filter(d=>allow.has(d)).sort();
+}
+// Copy the implied "every day" list onto the job so a later one-day edit cannot
+// drop the other people. Does not save and is not called on page load.
+function jcMaterializeCrewDays(job){
+  if(!job) return job;
+  if(!job.crewDays||typeof job.crewDays!=='object'||Array.isArray(job.crewDays)) job.crewDays={};
+  const work=jcJobWorkDates(job);
+  for(const name of jcCrewNames(job)){
+    if(!jcCrewDaysExplicit(job, name)) job.crewDays[name]=work.slice();
+  }
+  for(const name of Object.keys(job.crewDays)){
+    if(!jcCrewNames(job).includes(name)) delete job.crewDays[name];
+  }
+  return job;
+}
+function jcDropCrewDay(job, ds){
+  if(!job||!job.crewDays||typeof job.crewDays!=='object'||Array.isArray(job.crewDays)) return;
+  for(const name of Object.keys(job.crewDays)){
+    if(Array.isArray(job.crewDays[name])) job.crewDays[name]=job.crewDays[name].filter(d=>d!==ds);
+  }
+}
+// Whole-job reschedule already places every person who has a slot onto every new day.
+// Dropping the day lists makes the record match that calendar instead of pointing at the old dates.
+function jcClearCrewDays(job){ if(job&&job.crewDays) delete job.crewDays; }
+// One-person drag. Freeze everyone else on the days they have now, take the moved
+// days off the origin, and give those new dates to the target — so the next sync
+// does not put the origin back or book the target for the whole job.
+function jcApplyCrewReassignDays(job, originName, originDays, targetName, newDateStrs, targetWasOn){
+  if(!job) return;
+  if(!job.crewDays||typeof job.crewDays!=='object'||Array.isArray(job.crewDays)) job.crewDays={};
+  const prior=jcJobWorkDates(job);
+  for(const name of jcCrewNames(job)){
+    if(name===originName||name===targetName) continue;
+    if(!jcCrewDaysExplicit(job, name)) job.crewDays[name]=prior.slice();
+  }
+  if(jcCrewDaysExplicit(job, originName)){
+    const moved=new Set(originDays);
+    job.crewDays[originName]=job.crewDays[originName].filter(d=>!moved.has(d));
+  }
+  if(!jcCrewNames(job).includes(originName)) delete job.crewDays[originName];
+  if(!jcCrewDaysExplicit(job, targetName)) job.crewDays[targetName]=targetWasOn?prior.slice():[];
+  job.crewDays[targetName]=[...new Set([...(job.crewDays[targetName]||[]), ...(newDateStrs||[])])].sort();
+}
+// Place or clear this job's slot for one person on one date. A day that already
+// belongs to another job is double-booked, never skipped.
+async function jcSetCrewSlot(job, ci, ds, present){
+  const pos=cvDateToSlot(new Date(ds+'T00:00:00')); if(!pos) return 0;
+  const{w,d}=pos;
+  const key=jcSlotKey(ci,w,d);
+  if(present){
+    const cur=newSlots[ci]?.[w]?.[d];
+    if(cur&&(cur.l===job.customer||String(SLOT_JOB_MAP[key])===String(job.id))) return 0;
+    if(getExtraSlots(ci,w,d).some(x=>x.l===job.customer)) return 0;
+    if(cur){
+      // Booked on a different job that day → double-book, NEVER skip. Skipping used to leave the
+      // person with no calendar entry for this job (only a toast said so): adding Hunter while he
+      // was on Helias, then removing Brendon, left Complete Custom Homes with nothing on the
+      // schedule at all. The other job's slot is left exactly as it is.
+      await dbAddExtraSlot(ci,w,d,job.customer,job.jobType||'epoxy',job.id,ds);
+      return 1;
+    }
+    await sePlaceSlot(ci,w,d,job.customer,job.jobType||'epoxy');
+    SLOT_JOB_MAP[key]=job.id;
+    return 0;
+  }
+  const s=newSlots[ci]?.[w]?.[d];
+  const inMap=SLOT_JOB_MAP[key]===job.id;
+  const orphaned=!SLOT_JOB_MAP[key]&&s?.l===job.customer;
+  if(inMap||orphaned){
+    await seRemoveSlot(ci,w,d);
+    delete SLOT_JOB_MAP[key];
+  }
+  await seRemoveExtraSlotForLabel(ci,w,d,job.customer);
+  return 0;
+}
+
 // Retroactively fill SLOT_JOB_MAP for any existing slots that match this job's
 // customer name and fall within its date range — heals legacy slots created before
 // job cards existed so they stop appearing as duplicate bars in the crew calendar.
@@ -4450,23 +4552,22 @@ function jcBackfillSlotMap(job){
   if(changed) saveSlotJobMap();
 }
 
-// Remove schedule slots for crew members who are NOT in job.crewNames but still
-// have a slot matching this job's label — cleans up orphaned/stale slots.
+// Remove this job's slots for anyone who is not assigned that day — either they
+// are off the job entirely, or they are on the job but not on this date.
 async function jcCleanOrphanedSlots(job){
   if(!job||!job.startDate||!job.endDate) return;
-  const names=new Set((job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean));
-  const csDow=new Date(job.startDate+'T00:00:00').getDay(),ceDow=new Date(job.endDate+'T00:00:00').getDay();
-  const csWknd=(csDow===0||csDow===6||ceDow===0||ceDow===6);
-  const allDates=[...(csWknd?jcAllDays(job.startDate,job.endDate):jcWeekdays(job.startDate,job.endDate)),...(job.extraDays||[])];
+  const names=new Set(jcCrewNames(job));
+  const allDates=jcJobWorkDates(job);
   let changed=false;
   for(let ci=0;ci<CREW.length;ci++){
-    if(names.has(CREW[ci].full)) continue; // on the job — leave their slot alone
+    const assigned=names.has(CREW[ci].full)?new Set(jcAssignedDates(job, CREW[ci].full)):null;
     for(const ds of allDates){
+      if(assigned&&assigned.has(ds)) continue; // still assigned this day — leave the slot
       const pos=cvDateToSlot(new Date(ds+'T00:00:00')); if(!pos) continue;
       const{w,d}=pos;
       const s=newSlots[ci]?.[w]?.[d];
       if(s&&s.l===job.customer){
-        // Crew member has a PRIMARY slot for this job but isn't in crewNames — delete it
+        // Primary slot for this job on a day this person is not assigned — delete it
         await seRemoveSlot(ci,w,d);
         const key=jcSlotKey(ci,w,d);
         delete SLOT_JOB_MAP[key];
@@ -4491,21 +4592,14 @@ let _jcConflicts = []; // [{crewName, date}] — slots skipped due to another jo
 
 async function jcSyncCrewSlots(job, force=false){
   if(!job||!job.startDate||!job.endDate||!job.crewNames) return;
-  const names=(job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean);
+  const names=jcCrewNames(job);
   if(!names.length) return;
-  // Use weekdays-only for the original scheduled range so jobs spanning a weekend
-  // don't get phantom Sat/Sun slots. Exception: if the job itself starts or ends on
-  // a weekend day (a true weekend job) use jcAllDays to include those days.
-  const sDow=new Date(job.startDate+'T00:00:00').getDay();
-  const eDow=new Date(job.endDate+'T00:00:00').getDay();
-  const isWkndJob=(sDow===0||sDow===6||eDow===0||eDow===6);
-  const origDates=isWkndJob?jcAllDays(job.startDate,job.endDate):jcWeekdays(job.startDate,job.endDate);
-  const allDates=[...new Set([...origDates,...(job.extraDays||[])])];
+  // Only each person's assigned days. A name with no crewDays entry is still on every
+  // current work day (see jcJobWorkDates), so an old whole-job crew list is not trimmed.
   let added=0;
   for(const name of names){
     const ci=CREW.findIndex(c=>c.full===name); if(ci===-1) continue;
-    // Check each date individually — creates missing slots (e.g. extension days added later)
-    for(const ds of allDates){
+    for(const ds of jcAssignedDates(job, name)){
       const pos=cvDateToSlot(new Date(ds+'T00:00:00')); if(!pos) continue;
       const{w,d}=pos; const key=jcSlotKey(ci,w,d);
       // Already has a slot for this job on this date AND the slot actually exists — skip
@@ -4549,7 +4643,7 @@ async function jcForceOverride(){
   const job=getJobRecord(_jcId); if(!job) return;
   _jcConflicts=[];
   await jcSyncCrewSlots(job, true);
-  if(!_jcConflicts.length) showToast('✓ Override applied — all days scheduled.');
+  if(!_jcConflicts.length) showToast('✓ Override applied — assigned days scheduled.');
 }
 
 function jcWeekdays(s,e){
@@ -4646,76 +4740,55 @@ async function syncBoardCardStatus(job, recordStatus){
   if(_jobsListActive()) renderJobsListView();
 }
 
-// Render crew chip picker on the Info tab
+// Render crew chip picker on the Info tab. A name chip is the whole job.
+// Day chips under a selected name are that person's days only.
 function jcRenderCrewPicker(){
   const job=getJobRecord(_jcId); if(!job) return;
   const el=document.getElementById('jc-crew-picker'); if(!el) return;
+  el.style.flexDirection='column';
+  el.style.alignItems='stretch';
   if(!CREW.length){el.innerHTML='<span style="font-size:12px;color:var(--text3);">No crew members set up yet.</span>';return;}
-  const current=new Set((job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean));
+  const current=new Set(jcCrewNames(job));
+  const days=jcJobWorkDates(job);
   el.innerHTML=CREW.map((c,i)=>{
     const on=current.has(c.full);
     if(isCrewInactive(i)&&!on) return ''; // inactive: only listed on jobs they're already on
     const col=c.color||'var(--accent)';
-    return `<button onclick="jcToggleCrew(${i})" style="padding:6px 15px;border-radius:20px;font-size:12.5px;font-weight:600;cursor:pointer;border:2px solid ${on?col:'var(--border2)'};background:${on?col+'33':'var(--surface2)'};color:${on?col:'var(--text3)'};font-family:'DM Sans',sans-serif;transition:all .15s;">${c.full}</button>`;
+    const assigned=on?new Set(jcAssignedDates(job, c.full)):new Set();
+    const dayHtml=on&&days.length?`<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">${days.map(ds=>{
+      const dayOn=assigned.has(ds);
+      return `<button type="button" data-crew-day="${ds}" data-crew-for="${c.full.replace(/"/g,'')}" data-on="${dayOn?1:0}" onclick="jcToggleCrewDay(${i},'${ds}')" style="padding:5px 10px;border-radius:14px;font-size:11.5px;font-weight:600;cursor:pointer;border:1.5px solid ${dayOn?col:'var(--border2)'};background:${dayOn?col+'33':'var(--surface)'};color:${dayOn?col:'var(--text3)'};font-family:'DM Sans',sans-serif;">${jcFmtDate(ds).replace(/, /,' ')}</button>`;
+    }).join('')}</div>`:'';
+    return `<div style="display:flex;flex-direction:column;align-items:flex-start;max-width:100%;"><button type="button" data-crew-name="${c.full.replace(/"/g,'')}" data-on="${on?1:0}" onclick="jcToggleCrew(${i})" style="padding:6px 15px;border-radius:20px;font-size:12.5px;font-weight:600;cursor:pointer;border:2px solid ${on?col:'var(--border2)'};background:${on?col+'33':'var(--surface2)'};color:${on?col:'var(--text3)'};font-family:'DM Sans',sans-serif;transition:all .15s;">${c.full}</button>${dayHtml}</div>`;
   }).join('');
 }
 
-// Toggle a crew member on/off this job — also syncs their schedule slots automatically
+// Toggle a crew member on/off this job — on means every current work day.
 async function jcToggleCrew(i){
   if(document.body.classList.contains('crew-mode')){ showToast('Only the manager can add or remove jobs from the schedule.'); return; }
   const job=getJobRecord(_jcId); if(!job) return;
   _jcConflicts=[];  // reset so new conflicts are detected fresh
   const name=CREW[i].full;
-  const names=(job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean);
+  const names=jcCrewNames(job);
   const idx=names.indexOf(name);
   const adding=idx===-1;
-  if(adding) names.push(name); else names.splice(idx,1);
-  job.crewNames=names.join(', ');
+  if(adding){
+    jcMaterializeCrewDays(job); // freeze everyone already on the job before this person joins
+    names.push(name);
+    job.crewNames=names.join(', ');
+    if(!job.crewDays||typeof job.crewDays!=='object'||Array.isArray(job.crewDays)) job.crewDays={};
+    job.crewDays[name]=jcJobWorkDates(job).slice();
+  } else {
+    names.splice(idx,1);
+    job.crewNames=names.join(', ');
+    if(job.crewDays) delete job.crewDays[name];
+  }
   await saveJobRecords();
 
-  // Build work-day list for this job — weekdays for regular jobs, all days for weekend jobs
-  const _tsDow=job.startDate?new Date(job.startDate+'T00:00:00').getDay():1;
-  const _teDow=job.endDate?new Date(job.endDate+'T00:00:00').getDay():1;
-  const _tsWknd=(_tsDow===0||_tsDow===6||_teDow===0||_teDow===6);
-  const allDates=job.startDate&&job.endDate?[...(_tsWknd?jcAllDays(job.startDate,job.endDate):jcWeekdays(job.startDate,job.endDate))]:[];
-  (job.extraDays||[]).forEach(d=>{if(!allDates.includes(d))allDates.push(d);});
-
+  const dates=adding?jcAssignedDates(job, name):jcJobWorkDates(job);
   let doubled=0;
-  for(const ds of allDates){
-    const pos=cvDateToSlot(new Date(ds+'T00:00:00')); if(!pos) continue;
-    const{w,d}=pos;
-    const key=jcSlotKey(i,w,d);
-    if(adding){
-      const cur=newSlots[i]?.[w]?.[d];
-      // Already on this job that day (primary or double-booked) — nothing to add
-      if(cur&&(cur.l===job.customer||String(SLOT_JOB_MAP[key])===String(job.id))) continue;
-      if(getExtraSlots(i,w,d).some(x=>x.l===job.customer)) continue;
-      if(cur){
-        // Booked on a different job that day → double-book, NEVER skip. Skipping used to leave the
-        // person with no calendar entry for this job (only a toast said so): adding Hunter while he
-        // was on Helias, then removing Brendon, left Complete Custom Homes with nothing on the
-        // schedule at all. The other job's slot is left exactly as it is.
-        await dbAddExtraSlot(i,w,d,job.customer,job.jobType||'epoxy',job.id,ds);
-        doubled++;
-        continue;
-      }
-      await sePlaceSlot(i,w,d,job.customer,job.jobType||'epoxy');
-      SLOT_JOB_MAP[key]=job.id;
-    } else {
-      // Remove slots belonging to this job — check SLOT_JOB_MAP or matching label (orphaned slots)
-      const s=newSlots[i]?.[w]?.[d];
-      const inMap=SLOT_JOB_MAP[key]===job.id;
-      const orphaned=!SLOT_JOB_MAP[key]&&s?.l===job.customer;
-      if(inMap||orphaned){
-        await seRemoveSlot(i,w,d);
-        delete SLOT_JOB_MAP[key];
-      }
-      // Also remove any double-booked (extra) slot for this job on this day — a crew member's
-      // booking can live ENTIRELY in the extra layer if their primary slot was a different job
-      // that day (added via "⚡ Override & Schedule Anyway"), so the primary-slot check above
-      // alone would silently leave it stranded on the schedule after removing them from the job.
-      await seRemoveExtraSlotForLabel(i,w,d,job.customer);
-    }
+  for(const ds of dates){
+    doubled+=await jcSetCrewSlot(job, i, ds, adding);
   }
 
   await saveSlotJobMap();
@@ -4727,6 +4800,45 @@ async function jcToggleCrew(i){
   showToast(doubled
     ?name+' added — double-booked on '+doubled+' day'+(doubled!==1?'s':'')+' (also on another job)'
     :name+' '+verb+' job.');
+}
+
+// Add or remove one date for one person. Turning off their last day takes them off the job.
+async function jcToggleCrewDay(i, ds){
+  if(document.body.classList.contains('crew-mode')){ showToast('Only the manager can add or remove jobs from the schedule.'); return; }
+  const job=getJobRecord(_jcId); if(!job) return;
+  const name=CREW[i]?.full; if(!name) return;
+  if(!jcJobWorkDates(job).includes(ds)){ showToast('That day is not on this job.'); return; }
+  jcMaterializeCrewDays(job);
+  const names=jcCrewNames(job);
+  let days=(jcCrewDaysExplicit(job, name)?job.crewDays[name]:[]).slice();
+  const turningOff=days.includes(ds);
+  let doubled=0;
+  if(turningOff){
+    days=days.filter(d=>d!==ds);
+    if(!days.length){
+      const idx=names.indexOf(name);
+      if(idx!==-1) names.splice(idx,1);
+      job.crewNames=names.join(', ');
+      delete job.crewDays[name];
+    } else {
+      job.crewDays[name]=days;
+    }
+    await jcSetCrewSlot(job, i, ds, false);
+  } else {
+    if(!names.includes(name)) names.push(name);
+    job.crewNames=names.join(', ');
+    days.push(ds);
+    job.crewDays[name]=[...new Set(days)].sort();
+    doubled=await jcSetCrewSlot(job, i, ds, true);
+  }
+  await saveJobRecords();
+  await saveSlotJobMap();
+  jcRenderCrewPicker();
+  if(document.getElementById('page-schedule')?.classList.contains('active')) renderSchedule();
+  if(document.getElementById('page-crewview')?.classList.contains('active')) renderCrewView();
+  showToast(turningOff
+    ? (days.length ? name+' off '+jcFmtDate(ds)+'.' : name+' removed from job.')
+    : (doubled ? name+' on '+jcFmtDate(ds)+' — double-booked (also on another job).' : name+' on '+jcFmtDate(ds)+'.'));
 }
 
 function jcTab(name){
@@ -5132,31 +5244,25 @@ async function jcAddExtraDay(){
   if(!job.extraDays) job.extraDays=[];
   const allDays=[...jcAllDays(job.startDate,job.endDate),...job.extraDays];
   if(allDays.includes(dateStr)){showToast('That day is already in the log.');return;}
+  // People on the whole job (no day list, or a list that already covers every current
+  // day) pick up the extra day. Someone assigned only some days stays on those days.
+  const before=new Set(jcJobWorkDates(job));
+  const wholeJob=jcCrewNames(job).filter(name=>{
+    if(!jcCrewDaysExplicit(job, name)) return true;
+    const days=job.crewDays[name];
+    return before.size>0&&[...before].every(d=>days.includes(d));
+  });
   job.extraDays.push(dateStr);
-  // Always create/refresh the schedule slot for this extra day for every crew member on the job
-  const pos=cvDateToSlot(new Date(dateStr+'T00:00:00'));
   let doubled=0;
-  if(pos){
-    const{w,d}=pos;
-    const crewNames=(job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean);
-    for(const name of crewNames){
-      const ci=CREW.findIndex(c=>c.full===name); if(ci===-1) continue;
-      const key=jcSlotKey(ci,w,d);
-      // A different job already owns this slot — double-book it instead of silently dropping
-      // the day. Previously this just `continue`d, so the day was added to the log (and the
-      // toast said so) but never actually showed up on the calendar, with no indication anything
-      // had gone wrong (caught in the wild: Linn Community Christian Church's added extra days
-      // never appeared because Seth already had another job on those days).
-      if(newSlots[ci]?.[w]?.[d]&&SLOT_JOB_MAP[key]&&SLOT_JOB_MAP[key]!==job.id){
-        await dbAddExtraSlot(ci,w,d,job.customer,job.jobType||'epoxy',job.id,dateStr);
-        doubled++;
-        continue;
-      }
-      await sePlaceSlot(ci,w,d,job.customer,job.jobType||'epoxy');
-      SLOT_JOB_MAP[key]=job.id;
+  for(const name of wholeJob){
+    if(jcCrewDaysExplicit(job, name)&&!job.crewDays[name].includes(dateStr)){
+      job.crewDays[name]=[...job.crewDays[name], dateStr].sort();
     }
-    await saveSlotJobMap();
+    const ci=CREW.findIndex(c=>c.full===name); if(ci===-1) continue;
+    // A different job already on that day is double-booked, not skipped (jcSetCrewSlot).
+    doubled+=await jcSetCrewSlot(job, ci, dateStr, true);
   }
+  if(wholeJob.length) await saveSlotJobMap();
   jcRenderDayLogs();
   await saveJobRecords();
   // Always re-render both calendars so the new day shows immediately
@@ -5172,6 +5278,7 @@ async function jcAddExtraDay(){
 async function jcRemoveLastDay(ds){
   const job=getJobRecord(_jcId); if(!job) return;
   if(!confirm('Remove '+jcFmtDate(ds)+' from this job?\n\nAny log data entered for that day will also be deleted.')) return;
+  jcDropCrewDay(job, ds);
   if(!job.extraDays) job.extraDays=[];
   const isExtra=job.extraDays.includes(ds);
   if(isExtra){
@@ -7225,8 +7332,10 @@ async function jcRescheduleApply(crewCIs,newDates,duration,job,newStart,force=fa
       SLOT_JOB_MAP[key]=_jcId;
     }
   }
-  // 3. Update job record dates
+  // 3. Update job record dates. A whole-job move books every person who had a slot
+  // onto every new day, so any per-day list would still point at the old dates.
   const newEnd=newDates[newDates.length-1].toISOString().split('T')[0];
+  jcClearCrewDays(job);
   job.startDate=newStart; job.endDate=newEnd;
   // Drop any extraDays that fall outside the new date range
   const newDateSet=new Set(newDates.map(d=>d.toISOString().split('T')[0]));
@@ -12999,10 +13108,12 @@ async function schedHandleCrewReassign(originCi,targetCi,targetSw,targetSd,jobId
 
   // 3. Swap the crew list — origin out, target in. Anyone else already on the job is untouched.
   const names=(job.crewNames||'').split(',').map(n=>n.trim()).filter(Boolean);
+  const targetWasOn=names.includes(targetName);
   const idx=names.indexOf(originName);
   if(idx!==-1) names.splice(idx,1);
   if(!names.includes(targetName)) names.push(targetName);
   job.crewNames=names.join(', ');
+  jcApplyCrewReassignDays(job, originName, originDays, targetName, newDates.map(dt=>dt.toISOString().split('T')[0]), targetWasOn);
 
   // 4. Recompute the job's overall date range from EVERY crew member's actual remaining slots,
   // not just the moved person's — keeps job.startDate/endDate accurate when someone else is
@@ -15514,7 +15625,7 @@ async function deleteMaintEntry(id){
       <div class="form-group" id="jc-crew-picker-group" style="margin-bottom:10px;">
         <label class="form-label">Crew on This Job</label>
         <div id="jc-crew-picker" style="display:flex;flex-wrap:wrap;gap:7px;margin-top:4px;"></div>
-        <div style="font-size:11px;color:var(--text3);margin-top:7px;">Tap to add or remove crew members.</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:7px;">Tap a name for the whole job. Under a name, tap a day to add or remove just that day.</div>
       </div>
       <!-- Double-booking conflict warning — shown by jcSyncCrewSlots when slots were skipped -->
       <div id="jc-conflict-warn" style="display:none;background:var(--red-dim,#fff0f0);border:1px solid var(--red,#e53e3e);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:10px;">
