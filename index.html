@@ -731,7 +731,7 @@
     <div class="page" id="page-installers">
       <div class="topbar">
         <div class="page-title">Crew</div>
-        <div class="topbar-actions"><button class="btn btn-primary" onclick="openModal('installer')">+ Add Crew Member</button></div>
+        <div class="topbar-actions"><button class="btn btn-primary" id="add-crew-member-btn" type="button" hidden disabled style="display:none">+ Add Crew Member</button></div>
       </div>
       <div class="content" id="crew-cards-container"></div>
     </div>
@@ -2013,6 +2013,16 @@ const sb = {
     const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}${params?'?'+params:''}`,{headers:this.headers});
     return res.ok?res.json():[];
   },
+  // Same read as get(), but keeps HTTP/network failure distinct from a real empty table.
+  // Maintenance that deletes or inserts rows must use this — get()'s [] hides a failed load.
+  async getResult(table,params=''){
+    try{
+      const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}${params?'?'+params:''}`,{headers:this.headers});
+      if(!res.ok) return {ok:false, rows:[]};
+      const rows=await res.json();
+      return {ok:true, rows:Array.isArray(rows)?rows:[]};
+    }catch(e){ return {ok:false, rows:[]}; }
+  },
   async insert(table,data){
     const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}`,{method:'POST',headers:this.headers,body:JSON.stringify(data)});
     return res.ok?res.json():null;
@@ -2039,45 +2049,44 @@ const sb = {
     return res.ok?res.json():null;
   },
   async setKV(key,value){
-    // Prefer an ATOMIC upsert (needs a unique index on settings.key). If that constraint
-    // isn't present yet, fall back to delete-then-insert for the rest of this session.
-    // Timeout-guarded (see _fetchWithTimeout) — a plain fetch() never rejects on a merely
-    // STALLED connection (as opposed to an outright failure), so a crew member on a weak
-    // job-site signal could hang here forever with the UI stuck mid-save and no error, ever.
-    // This is the same class of bug fixed for photo uploads (2026-08-08) but was still open
-    // here — every save in the app routes through setKV/getKV, so this was the more likely
-    // culprit for "still hangs" reports even after the photo-upload-specific fixes landed.
-    if(this._upsertOk!==false){
-      let res;
-      try{
-        res=await _fetchWithTimeout(`${SUPABASE_URL}/rest/v1/settings?on_conflict=key`,{
-          method:'POST',
-          headers:{...this.headers,'Prefer':'resolution=merge-duplicates,return=representation'},
-          body:JSON.stringify({key,value})
-        },25000);
-      }catch(e){ throw (e.name==='AbortError'?new Error('Save timed out — check your signal and try again.'):e); }
-      if(res.ok){ this._upsertOk=true; return res.json(); }
-      this._upsertOk=false; // no unique constraint on settings.key — stop trying upsert this session
-    }
+    // Atomic upsert only. A failed upsert used to fall back to delete-then-insert, which can
+    // erase the server row and then fail to put the new copy back. Timeout-guarded (see
+    // _fetchWithTimeout) so a stalled job-site connection surfaces an error instead of hanging.
+    let res;
     try{
-      await _fetchWithTimeout(`${SUPABASE_URL}/rest/v1/settings?key=eq.${encodeURIComponent(key)}`,{method:'DELETE',headers:this.headers},25000);
+      res=await _fetchWithTimeout(`${SUPABASE_URL}/rest/v1/settings?on_conflict=key`,{
+        method:'POST',
+        headers:{...this.headers,'Prefer':'resolution=merge-duplicates,return=representation'},
+        body:JSON.stringify({key,value})
+      },25000);
     }catch(e){ throw (e.name==='AbortError'?new Error('Save timed out — check your signal and try again.'):e); }
-    return this.insert('settings',{key,value});
+    return res.ok?res.json():null;
   },
   async getKV(key){
-    // Returns the most recent value string for a settings key, or null. Same timeout guard as
-    // setKV above — most callers already tolerate a null/failed read, so a timeout here just
-    // becomes a normal "couldn't read, fall back to defaults" instead of an infinite hang.
+    // Returns the most recent value string for a settings key, or null. Null means either
+    // "no row" or "the read failed" — callers that WRITE must use readKV() so they can tell
+    // those apart. Same timeout guard as setKV.
+    const r=await this.readKV(key);
+    return r.ok?r.value:null;
+  },
+  async readKV(key){
+    // {ok:true, value:string|null} — value null means the key has no row (safe to insert).
+    // {ok:false, value:null} means timeout or HTTP error. Do not overwrite the server on ok:false.
     let res;
     try{
       res=await _fetchWithTimeout(`${SUPABASE_URL}/rest/v1/settings?key=eq.${encodeURIComponent(key)}`,{headers:this.headers},25000);
-    }catch(e){ return null; }
-    if(!res.ok) return null;
-    const rows=await res.json();
-    // setKV ensures only one row per key; take last as safety fallback
-    return rows&&rows.length?rows[rows.length-1].value:null;
+    }catch(e){ return {ok:false, value:null}; }
+    if(!res.ok) return {ok:false, value:null};
+    let rows;
+    try{ rows=await res.json(); }catch(e){ return {ok:false, value:null}; }
+    return {ok:true, value:(rows&&rows.length)?rows[rows.length-1].value:null};
   }
 };
+
+// True only when the matching read succeeded. Maintenance that writes slots or shared
+// settings stays off unless these are set, and never runs for a crew session.
+let _slotsLoadOk=false,_leadsLoadOk=false,_jobRecordsLoadOk=false,_slotMapLoadOk=false,_materialsFromServer=false,_leadQuotedDatesLoadOk=false;
+function _isOwnerSession(){ return localStorage.getItem('fpRole')!=='crew'; }
 
 // ── AUDIT LOG ──────────────────────────────────────────────────────────────
 // Fire-and-forget: never let a logging failure block the real action it's recording.
@@ -2554,19 +2563,56 @@ async function loadTodos(){
 }
 
 // ── SUPABASE SYNC FUNCTIONS ────────────────────────────────────────────────────
+// Secondary phone is optional. If the leads table has no phone2 column yet, PostgREST
+// rejects the write — retry once without it so the rest of the lead still saves.
+let _leadsPhone2Ok=true;
+function _leadDbRow(lead, includePhone2){
+  const row={name:lead.name,phone:lead.phone||'',email:lead.email||'',job_type:lead.jobType||'',cust_type:lead.custType||'',sqft:lead.sqft||'',value:lead.value||'',address:lead.address||'',source:lead.source||'',notes:lead.notes||'',stage:lead.stage||'new',detail:lead.detail||'',date_added:lead.date||''};
+  if(includePhone2) row.phone2=lead.phone2||'';
+  return row;
+}
+function _phone2ColumnMissing(status, text){
+  return (status===400||status===404) && /phone2/i.test(text||'') && /(column|schema cache|PGRST204|does not exist)/i.test(text||'');
+}
+async function _leadDbSend(method, url, row){
+  const res=await fetch(url,{method,headers:sb.headers,body:JSON.stringify(row)});
+  const text=await res.text();
+  let data=null;
+  if(text){ try{ data=JSON.parse(text); }catch(e){} }
+  return {ok:res.ok, status:res.status, data, text};
+}
 async function dbSaveLead(lead){
   const isNew=!lead.db_id;
-  const row={name:lead.name,phone:lead.phone||'',email:lead.email||'',job_type:lead.jobType||'',cust_type:lead.custType||'',sqft:lead.sqft||'',value:lead.value||'',address:lead.address||'',source:lead.source||'',notes:lead.notes||'',stage:lead.stage||'new',detail:lead.detail||'',date_added:lead.date||''};
-  if(lead.db_id){const ok=await sb.update('leads',lead.db_id,row);if(!ok){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}}
-  else{const res=await sb.insert('leads',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}lead.db_id=res[0].id;}
+  let includePhone2=_leadsPhone2Ok!==false;
+  let row=_leadDbRow(lead, includePhone2);
+  const url=lead.db_id?`${SUPABASE_URL}/rest/v1/leads?id=eq.${lead.db_id}`:`${SUPABASE_URL}/rest/v1/leads`;
+  const method=lead.db_id?'PATCH':'POST';
+  let result=await _leadDbSend(method, url, row);
+  if(!result.ok && includePhone2 && _phone2ColumnMissing(result.status, result.text)){
+    _leadsPhone2Ok=false;
+    includePhone2=false;
+    row=_leadDbRow(lead, false);
+    result=await _leadDbSend(method, url, row);
+  }
+  if(lead.db_id){
+    if(!result.ok){ showSyncStatus('⚠ Save failed – check connection','var(--red)'); return false; }
+  } else {
+    const created=Array.isArray(result.data)?result.data[0]:null;
+    if(!result.ok||!created){ showSyncStatus('⚠ Save failed – check connection','var(--red)'); return false; }
+    lead.db_id=created.id;
+  }
+  if(includePhone2) _leadsPhone2Ok=true;
   logAudit(isNew?'lead_created':'lead_updated',lead.name||'Lead',lead.stage?('Stage: '+lead.stage):'');
   showSyncStatus('✓ Synced');
   return true;
 }
 async function dbDeleteLead(lead){if(lead.db_id){await sb.delete('leads',lead.db_id);logAudit('lead_deleted',lead.name||'Lead','');}}
 async function loadLeads(){
-  const rows=await sb.get('leads');
-  LEADS=rows.map(r=>({db_id:r.id,name:r.name,phone:r.phone,email:r.email,jobType:r.job_type,custType:r.cust_type,sqft:r.sqft,value:r.value,address:r.address,source:r.source,notes:r.notes,stage:r.stage,detail:r.detail,date:r.date_added}));
+  _leadsLoadOk=false;
+  const got=await sb.getResult('leads');
+  if(!got.ok){ console.error('loadLeads: read failed — keeping leads already in memory'); return; }
+  LEADS=got.rows.map(r=>({db_id:r.id,name:r.name,phone:r.phone,phone2:r.phone2||'',email:r.email,jobType:r.job_type,custType:r.cust_type,sqft:r.sqft,value:r.value,address:r.address,source:r.source,notes:r.notes,stage:r.stage,detail:r.detail,date:r.date_added}));
+  _leadsLoadOk=true;
 }
 
 async function dbSaveJob(jobObj){
@@ -2787,8 +2833,13 @@ async function dbSaveMaterial(mat,idx){
 }
 async function dbDeleteMaterial(db_id,matName){if(db_id){await sb.delete('materials',db_id);logAudit('material_deleted',matName||'Material','');}}
 async function loadMaterials(){
-  const rows=await sb.get('materials');
-  if(rows.length>0)MATERIALS=rows.map(r=>({db_id:r.id,name:r.name,mfr:r.mfr,cat:r.cat,unit:r.unit,price:r.price,date:r.price_date,coverage:r.coverage,coverageUnit:r.coverage_unit,supplier:r.supplier,notes:r.notes}));
+  _materialsFromServer=false;
+  const got=await sb.getResult('materials');
+  if(!got.ok){ console.error('loadMaterials: read failed — not anchoring day-log materials off a partial price list'); return; }
+  if(got.rows.length>0){
+    MATERIALS=got.rows.map(r=>({db_id:r.id,name:r.name,mfr:r.mfr,cat:r.cat,unit:r.unit,price:r.price,date:r.price_date,coverage:r.coverage,coverageUnit:r.coverage_unit,supplier:r.supplier,notes:r.notes}));
+    _materialsFromServer=true;
+  }
 }
 
 async function dbSaveCrew(c,idx){
@@ -2800,9 +2851,7 @@ async function dbSaveCrew(c,idx){
   showSyncStatus('✓ Synced');
   return true;
 }
-// True once CREW/CREW_DATA hold the live crew table (not the hardcoded seed). Background slot
-// maintenance that runs on its own (openJobCard's sync/cleanup) waits for this, so it can never
-// add or delete a slot using a stale name→position mapping.
+// True once CREW/CREW_DATA hold the live crew table (not the hardcoded seed).
 let _crewLoaded=false;
 async function loadCrew(){
   let rows=await sb.get('crew','order=sort_order.asc');
@@ -2877,9 +2926,13 @@ async function loadScheduledSlots(){
   // more than once in the same browser session (e.g. a session-timeout re-login without a page
   // refresh), and multiSlots is built by push(), not overwrite, so without this every double-booked
   // slot silently doubles up in memory on each additional load (primary `newSlots` is unaffected
-  // since it's a direct overwrite, not a push).
+  // since it's a direct overwrite, not a push). A failed read leaves both stores as they were.
+  _slotsLoadOk=false;
+  const got=await sb.getResult('scheduled_slots');
+  if(!got.ok){ console.error('loadScheduledSlots: read failed — keeping the schedule already in memory'); return; }
+  _slotsLoadOk=true;
   Object.keys(multiSlots).forEach(k=>delete multiSlots[k]);
-  const rows=await sb.get('scheduled_slots');
+  const rows=got.rows;
   // Decode every row's absolute date up front, and track each (crew, label)'s earliest scheduled
   // date. When a day is double-booked, which job becomes the continuous "primary" bar and which
   // becomes the small "extra" pill must be decided the same way every load — otherwise it depends
@@ -2985,8 +3038,12 @@ async function fixSlotDrift(){
   // Detect and correct week-offset drift caused by BASE advancing each Monday.
   // Slots are stored relative to BASE at scheduling time; when BASE advances, all
   // offsets appear 1 week later than they should. This self-calibrates automatically.
+  // Owner/manager only, and only after the reads this correction depends on succeeded.
+  if(!_isOwnerSession()||!_jobRecordsLoadOk||!_slotsLoadOk||!_slotMapLoadOk) return;
   const newBaseStr = BASE.toISOString().split('T')[0];
-  const storedBaseStr = await sb.getKV('schedule_base_date');
+  const read = await sb.readKV('schedule_base_date');
+  if(!read.ok){ console.error('fixSlotDrift: could not read schedule_base_date — not writing'); return; }
+  const storedBaseStr = read.value;
 
   let driftWeeks = 0;
   if(storedBaseStr){
@@ -3036,6 +3093,7 @@ async function fixSlotDrift(){
 }
 
 async function deduplicateSlotsByJobRecord(){
+  if(!_isOwnerSession()||!_jobRecordsLoadOk||!_slotsLoadOk||!_slotMapLoadOk) return;
   // Remove slots that fall outside their job's valid date range.
   // Catches duplicates whether or not they have a SLOT_JOB_MAP entry —
   // legacy slots are matched by customer name label instead.
@@ -3128,14 +3186,18 @@ async function loadAllFromSupabase(){
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
     _kvSnapshotBaselines();             // remember loaded server state as the merge ancestor for saves
     applyNavOrder();                    // restore the user's saved sidebar tab order
-    jcBackfillMaterialIds();            // anchor logged materials to permanent IDs (one-time, idempotent)
-    await fixSlotDrift();               // correct any week-offset drift before rendering
-    await deduplicateSlotsByJobRecord(); // remove stale/duplicate slots outside job date ranges
-    // Backfill schedule slots for any jobs that have extra days added via the day log
-    for(const job of JOB_RECORDS){ if((job.extraDays||[]).length>0) await jcSyncCrewSlots(job); }
+    // Schedule repair runs only for an owner/manager, and only when the reads it uses succeeded.
+    // Each function below still writes nothing unless it finds a specific bad row. Crew logins
+    // and opening a job card do not rewrite slots.
+    if(_isOwnerSession()&&_jobRecordsLoadOk&&_slotsLoadOk&&_slotMapLoadOk){
+      if(_materialsFromServer) jcBackfillMaterialIds();
+      await fixSlotDrift();
+      await deduplicateSlotsByJobRecord();
+      for(const job of JOB_RECORDS){ if((job.extraDays||[]).length>0) await jcSyncCrewSlots(job); }
+    }
     HOLIDAYS=buildHolidayLookup();
     populateJobTypeDropdowns();
-    await autoMoveStaleQuotedLeads(); // move stale 'Estimate Sent' leads to Follow-Up BEFORE the dashboard renders
+    if(_isOwnerSession()&&_leadsLoadOk&&_leadQuotedDatesLoadOk) await autoMoveStaleQuotedLeads();
     renderDashboard();
     renderTodos(); // must be after renderDashboard so todo-list element exists
     renderPipeline();
@@ -4001,9 +4063,20 @@ function _jrClone(x){ try{ return JSON.parse(JSON.stringify(x)); }catch(e){ retu
 function _jrEq(a,b){ return JSON.stringify(a===undefined?null:a)===JSON.stringify(b===undefined?null:b); }
 
 async function loadJobRecords(){
-  const v=await sb.getKV('job_records');
-  if(v){try{JOB_RECORDS=JSON.parse(v)||[];}catch(e){console.error('loadJobRecords parse error – job_records may be corrupt:',e);}}
+  _jobRecordsLoadOk=false;
+  const read=await sb.readKV('job_records');
+  if(!read.ok){ console.error('loadJobRecords: read failed — keeping jobs already in memory'); return; }
+  if(read.value!=null){
+    try{
+      const parsed=JSON.parse(read.value);
+      if(!Array.isArray(parsed)) throw new Error('job_records is not an array');
+      JOB_RECORDS=parsed;
+    }catch(e){ console.error('loadJobRecords parse error – job_records may be corrupt:',e); return; }
+  } else {
+    JOB_RECORDS=[];
+  }
   _jrBaseline=_jrClone(JOB_RECORDS); // remember the server state this device started from
+  _jobRecordsLoadOk=true;
 }
 
 // Saving used to overwrite the entire shared job_records blob with THIS device's copy, so a
@@ -4021,17 +4094,48 @@ async function _saveJobRecordsNow(){
   // devices' edits too, which shouldn't be attributed to this session's actor.
   const preLocal=_jrClone(JOB_RECORDS);
   const priorBaseline=_jrBaseline;
+  const read=await sb.readKV('job_records');
+  // A failed re-read must NOT be treated as an empty server. Writing the local copy then
+  // would wipe edits made on another phone. Keep the in-memory edits and let the user retry.
+  if(!read.ok){
+    showSyncStatus('⚠ Could not re-read the server copy — nothing was saved. Your edits are still here; try again.','var(--red)');
+    return false;
+  }
   let serverArr=null;
-  try{ const sv=await sb.getKV('job_records'); if(sv){ serverArr=JSON.parse(sv); if(!Array.isArray(serverArr)) serverArr=null; } }
-  catch(e){ serverArr=null; }
-  // Only merge if we got a plausible server array. A failed/empty read (e.g. a transient
-  // during another device's write) must NOT be read as "everything was deleted" — in that
-  // case we just write our own copy, same as the old behavior.
-  if(serverArr){ try{ _mergeServerIntoLocal(serverArr); }catch(e){ console.error('job_records merge failed — writing local copy:',e); } }
-  await sb.setKV('job_records',JSON.stringify(JOB_RECORDS));
+  if(read.value!=null){
+    try{
+      serverArr=JSON.parse(read.value);
+      if(!Array.isArray(serverArr)) throw new Error('job_records is not an array');
+    }catch(e){
+      console.error('job_records re-read was not valid JSON — refusing to overwrite:',e);
+      showSyncStatus('⚠ Server copy looks damaged — nothing was saved. Your edits are still here; try again.','var(--red)');
+      return false;
+    }
+  }
+  if(serverArr){
+    const beforeMerge=_jrClone(JOB_RECORDS);
+    try{ _mergeServerIntoLocal(serverArr); }
+    catch(e){
+      JOB_RECORDS.splice(0,JOB_RECORDS.length,...beforeMerge);
+      console.error('job_records merge failed — nothing was saved:',e);
+      showSyncStatus('⚠ Could not merge with the server copy — nothing was saved. Your edits are still here; try again.','var(--red)');
+      return false;
+    }
+  }
+  let wrote;
+  try{ wrote=await sb.setKV('job_records',JSON.stringify(JOB_RECORDS)); }
+  catch(e){
+    showSyncStatus('⚠ '+((e&&e.message)||'Save failed')+' Your edits are still here; try again.','var(--red)');
+    return false;
+  }
+  if(!wrote){
+    showSyncStatus('⚠ Save failed — check your connection. Your edits are still here; try again.','var(--red)');
+    return false;
+  }
   _jrLogFieldChanges(priorBaseline,preLocal);
   _jrBaseline=_jrClone(JOB_RECORDS); // our copy is now the synced baseline
   showSyncStatus('✓ Saved');
+  return true;
 }
 // Turn a raw field value into a short, human-readable string for the audit log — arrays of
 // crew/material objects become "Name qty unit" lists, everything else stringifies plainly.
@@ -4195,15 +4299,40 @@ function merge3(base, local, server){
 // Persist a shared collection by MERGING with the latest server copy. Returns the merged
 // value (caller reassigns its global). Surfaces a real failure instead of a false "Saved".
 async function _saveKVMerged(key, localVal){
+  const read=await sb.readKV(key);
+  if(!read.ok){
+    showSyncStatus('⚠ Could not re-read the server copy — nothing was saved. Your edits are still here; try again.','var(--red)');
+    return localVal;
+  }
   let serverVal=null;
-  try{ const sv=await sb.getKV(key); if(sv!=null) serverVal=(typeof sv==='string'?JSON.parse(sv):sv); }catch(e){ serverVal=null; }
+  if(read.value!=null){
+    try{ serverVal=JSON.parse(read.value); }
+    catch(e){
+      console.error('KV re-read for '+key+' was not valid JSON — refusing to overwrite:',e);
+      showSyncStatus('⚠ Server copy looks damaged — nothing was saved. Your edits are still here; try again.','var(--red)');
+      return localVal;
+    }
+  }
   let merged=localVal;
   if(serverVal!==null && serverVal!==undefined){
-    try{ merged=merge3(_kvBaselines[key], localVal, serverVal); }catch(e){ console.error('merge failed for '+key+', writing local copy:',e); merged=localVal; }
+    try{ merged=merge3(_kvBaselines[key], localVal, serverVal); }
+    catch(e){
+      console.error('merge failed for '+key+' — nothing was saved:',e);
+      showSyncStatus('⚠ Could not merge with the server copy — nothing was saved. Your edits are still here; try again.','var(--red)');
+      return localVal;
+    }
   }
-  const ok=await sb.setKV(key, JSON.stringify(merged));
+  let ok;
+  try{ ok=await sb.setKV(key, JSON.stringify(merged)); }
+  catch(e){
+    showSyncStatus('⚠ '+((e&&e.message)||'Save failed')+' Your edits are still here; try again.','var(--red)');
+    return localVal;
+  }
+  if(!ok){
+    showSyncStatus('⚠ Save failed – check connection. Your edits are still here; try again.','var(--red)');
+    return localVal;
+  }
   _kvBaselines[key]=_jrClone(merged);
-  if(!ok) showSyncStatus('⚠ Save failed – check connection','var(--red)');
   return merged;
 }
 // Snapshot every shared collection right after a full load (the merge ancestor for the session).
@@ -4228,7 +4357,21 @@ function _kvSnapshotBaselines(){
   _kvBaselines['job_docs']=_jrClone(JOB_DOCS);
   _kvBaselines['sales_scope_photos']=_jrClone(SALES_SCOPE_PHOTOS);
 }
-async function loadSlotJobMap(){ const v=await sb.getKV('slot_job_map'); if(v){try{SLOT_JOB_MAP=JSON.parse(v)||{};}catch(e){console.error('loadSlotJobMap parse error – slot_job_map may be corrupt:',e);}} }
+async function loadSlotJobMap(){
+  _slotMapLoadOk=false;
+  const read=await sb.readKV('slot_job_map');
+  if(!read.ok){ console.error('loadSlotJobMap: read failed — keeping the map already in memory'); return; }
+  if(read.value!=null){
+    try{
+      const parsed=JSON.parse(read.value);
+      if(!parsed||typeof parsed!=='object'||Array.isArray(parsed)) throw new Error('slot_job_map is not an object');
+      SLOT_JOB_MAP=parsed;
+    }catch(e){ console.error('loadSlotJobMap parse error – slot_job_map may be corrupt:',e); return; }
+  } else {
+    SLOT_JOB_MAP={};
+  }
+  _slotMapLoadOk=true;
+}
 async function saveSlotJobMap(){ SLOT_JOB_MAP = await _saveKVMerged('slot_job_map', SLOT_JOB_MAP); }
 
 function getJobRecord(id){ return JOB_RECORDS.find(j=>String(j.id)===String(id))||null; }
@@ -4427,13 +4570,8 @@ function openJobCard(jobId){
   const job=getJobRecord(jobId); if(!job) return;
   _jcId=jobId;
   _jcConflicts=[];  // clear any stale conflicts from previous card
-  // These three silently write to the schedule just from opening the card — only run them once
-  // the real crew list is loaded (see _crewLoaded), or a crew name resolves to the wrong row.
-  if(_crewLoaded){
-    jcBackfillSlotMap(job);    // heal legacy slots missing from SLOT_JOB_MAP
-    jcSyncCrewSlots(job);      // create any missing slots for crew listed in crewNames
-    jcCleanOrphanedSlots(job); // remove slots for crew members no longer on this job
-  }
+  // Opening a card does not write schedule slots. Repairs run from an owner/manager load
+  // only, and only when that load succeeded (see loadAllFromSupabase).
   // Hide pricing + costing tab when opened from crew view page OR in locked crew mode
   const hideValue = document.getElementById('page-crewview')?.classList.contains('active') || localStorage.getItem('fpRole')==='crew';
   document.getElementById('jc-value-group').style.display = hideValue ? 'none' : '';
@@ -5408,6 +5546,7 @@ function jcResolveMatIdx(m){
 // future renames/deletes can't knock its price loose. Safe + idempotent — only fills a missing
 // matId from an exact current name match, and skips entirely if the price list didn't load.
 function jcBackfillMaterialIds(){
+  if(!_isOwnerSession()||!_jobRecordsLoadOk||!_materialsFromServer) return;
   if(!Array.isArray(JOB_RECORDS)||!Array.isArray(MATERIALS)||!MATERIALS.length) return;
   let changed=false;
   JOB_RECORDS.forEach(job=>{
@@ -5480,6 +5619,7 @@ function jcLogPickMaterial(ds,idx,sel){
   const v=sel.value;
   if(v==='custom'){
     m.matIdx=-1; m.name=''; m.usageUnit=''; m.matId=null;
+    delete m.unitCost;
   } else {
     const mi=parseInt(v);
     const mat=MATERIALS[mi];
@@ -5488,16 +5628,29 @@ function jcLogPickMaterial(ds,idx,sel){
       // Strip leading quantity from unit (e.g. "15 Gal" → "Gal", "2 Gallon" → "Gallon")
       const rawUnit=mat.unit||'';
       m.usageUnit=rawUnit.replace(/^\d+\.?\d*\s*/,'').trim()||rawUnit;
+      _jcCaptureUnitCost(m);
     }
   }
   jcRenderDayMats(ds);
 }
 
+function _jcCaptureUnitCost(m){
+  if(!m||m.matIdx===-1) return;
+  if(m.qty==null||String(m.qty).trim()==='') return;
+  const qty=parseFloat(m.qty);
+  if(isNaN(qty)) return;
+  const ri=jcResolveMatIdx(m);
+  if(ri<0||!MATERIALS[ri]) return;
+  const mat=MATERIALS[ri];
+  const pkgQty=parseFloat((mat.unit||'').match(/^(\d+\.?\d*)/)?.[1])||1;
+  m.unitCost=(parseFloat(mat.price)||0)/pkgQty;
+}
 function jcLogSetMaterial(ds,idx,field,val){
   const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
   _jcMigrateMats(job.dayLogs[ds]);
   const m=job.dayLogs[ds].materialsUsed[idx]; if(!m) return;
   m[field]=val;
+  if(field==='qty') _jcCaptureUnitCost(m);
 }
 
 function jcCalcHrs(s,e){
@@ -5588,11 +5741,19 @@ function jcSetMileageRate(val){
 // time, and it stays on the live schedule (picking up future tiers automatically) going forward.
 let MILEAGE_RATES={tiers:[]};
 async function loadMileageRates(){
-  const v=await sb.getKV('mileage_rates');
-  if(v){ try{ const o=JSON.parse(v); if(o&&typeof o==='object'&&Array.isArray(o.tiers)) MILEAGE_RATES={tiers:o.tiers}; }catch(e){ console.error('loadMileageRates parse error:',e); } }
+  const read=await sb.readKV('mileage_rates');
+  if(!read.ok){ console.error('loadMileageRates: read failed — not saving default rates'); return; }
+  if(read.value!=null){
+    try{
+      const o=JSON.parse(read.value);
+      if(!(o&&typeof o==='object'&&Array.isArray(o.tiers))){ console.error('loadMileageRates: unexpected shape — not saving defaults'); return; }
+      MILEAGE_RATES={tiers:o.tiers};
+    }catch(e){ console.error('loadMileageRates parse error:',e); return; }
+  }
   if(!MILEAGE_RATES.tiers.length){
     // First run after this feature shipped — seed the two tiers that were previously hardcoded
     // so behavior is unchanged until the owner edits the schedule themselves.
+    // Only reached when the read succeeded and the stored list is actually empty.
     MILEAGE_RATES.tiers=[{id:'mr_seed1',rate:'0.725',effective:'2000-01-01'},{id:'mr_seed2',rate:'0.76',effective:'2026-07-01'}];
     await saveMileageRates();
   }
@@ -5888,27 +6049,37 @@ function renderJobCostingPage(){
       // even if stray crew/time data lingers from before it was marked. Materials below still count
       // (materials can still be delivered/used on a no-work day).
       if(!log.noWork){
-        const seenDay=new Set();
+        const grouped=new Map();
         (Array.isArray(log.crewPresent)?log.crewPresent:[]).forEach(c=>{
           const effectiveName=(c.name||(c.crewIdx>=0&&CREW_DATA[c.crewIdx]?CREW_DATA[c.crewIdx].full:'')).trim();
           if(!effectiveName) return;
-          if(seenDay.has(effectiveName.toLowerCase())) return;
-          seenDay.add(effectiveName.toLowerCase());
-          const hrs=jcGetCrewMemberHrs(c,log);
+          const k=effectiveName.toLowerCase();
+          if(!grouped.has(k)) grouped.set(k,{rows:[]});
+          grouped.get(k).rows.push(c);
+        });
+        grouped.forEach(({rows})=>{
+          // Two Full Day rows are the day-level flag repeated — count 8 once. Otherwise add both rows.
+          const hrs=log.fullDay?8:rows.reduce((s,c)=>s+(parseFloat(jcGetCrewMemberHrs(c,log))||0),0);
           if(hrs>0){
             totalHrs+=hrs;
-            const rate=jcGetBurdenedRate(c,job,log);
+            const rate=jcGetBurdenedRate(rows[0],job,log);
             laborCost+=hrs*rate;
           }
         });
       }
       // Materials
       (Array.isArray(log.materialsUsed)?log.materialsUsed:[]).forEach(m=>{
-        const ri=jcResolveMatIdx(m);
-        if(!m.qty||ri<0||!MATERIALS[ri]) return;
-        const mat=MATERIALS[ri];
-        const pkgQty=parseFloat((mat.unit||'').match(/^(\d+\.?\d*)/)?.[1])||1;
-        const unitCost=(parseFloat(mat.price)||0)/pkgQty;
+        if(!m.qty) return;
+        const stored=(m.unitCost!=null&&m.unitCost!==''&&!isNaN(parseFloat(m.unitCost)))?parseFloat(m.unitCost):null;
+        let unitCost;
+        if(stored!=null) unitCost=stored;
+        else {
+          const ri=jcResolveMatIdx(m);
+          if(ri<0||!MATERIALS[ri]) return;
+          const mat=MATERIALS[ri];
+          const pkgQty=parseFloat((mat.unit||'').match(/^(\d+\.?\d*)/)?.[1])||1;
+          unitCost=(parseFloat(mat.price)||0)/pkgQty;
+        }
         matCost+=(parseFloat(m.qty)||0)*unitCost;
       });
     });
@@ -6094,19 +6265,22 @@ function _payrollCompute(offset){
       const ot=(log.overtimeWage!==undefined)?!!log.overtimeWage:!!job.overtimeWage;
       const cash=(log.cashWages!==undefined)?!!log.cashWages:!!job.cashWages;
       const prevailing=!!job.prevailingWage;
-      // Same person can have multiple crewPresent rows for one day (e.g. a split shift logged
-      // as a morning session + an afternoon session). Job Costing already dedupes this by name
-      // per day (see seenDay/seenThisDay in renderJobCostingPage/renderJobCosting) — count once —
-      // but Payroll never got the same guard, so a Full-Day-flagged split shift (each row reports
-      // a flat 8h) summed into a false 16h day instead of one 8h day. Match the same dedup here.
-      const seenDay=new Set();
+      // Same person can have multiple crewPresent rows for one day (a split shift). Two Full Day
+      // rows share the day-level flag, so count 8 once. Otherwise add the hours of both rows.
+      // Overtime stays the whole-day checkbox (log.overtimeWage / job.overtimeWage) — unchanged.
+      const grouped=new Map();
       (Array.isArray(log.crewPresent)?log.crewPresent:[]).forEach(c=>{
         const hasCrew=c.crewIdx>=0&&CREW_DATA[c.crewIdx];
         const label=(hasCrew?CREW_DATA[c.crewIdx].full:(c.name||'')).trim();
         if(!label) return;
-        if(seenDay.has(label.toLowerCase())) return;
-        seenDay.add(label.toLowerCase());
-        const hrs=jcGetCrewMemberHrs(c,log);
+        const k=label.toLowerCase();
+        if(!grouped.has(k)) grouped.set(k,{label, rows:[]});
+        grouped.get(k).rows.push(c);
+      });
+      grouped.forEach(({label, rows})=>{
+        const c=rows[0];
+        const hasCrew=c.crewIdx>=0&&CREW_DATA[c.crewIdx];
+        const hrs=log.fullDay?8:rows.reduce((s,row)=>s+(parseFloat(jcGetCrewMemberHrs(row,log))||0),0);
         if(hrs<=0) return;
         if(cash&&!prevailing) return; // off-payroll — not sent to payroll, so not shown here
         const key=hasCrew?('c'+c.crewIdx):('n:'+label.toLowerCase());
@@ -6319,17 +6493,20 @@ function renderJobCosting(){
   allDates.forEach(ds=>{
     const log=logs[ds]; if(!log||log.noWork) return; // crew pulled off — deliberate zero, not a real work day
     const crew=Array.isArray(log.crewPresent)?log.crewPresent:[];
-    const seenThisDay=new Set();
+    const grouped=new Map();
     crew.forEach(c=>{
       // Fall back to CREW_DATA name if stored name is blank
       const effectiveName=(c.name||(c.crewIdx>=0&&CREW_DATA[c.crewIdx]?CREW_DATA[c.crewIdx].full:'')).trim();
       if(!effectiveName) return;
-      // Deduplicate by name — catches same person added as both custom + CREW_DATA entry
-      if(seenThisDay.has(effectiveName.toLowerCase())) return;
-      seenThisDay.add(effectiveName.toLowerCase());
-      // Use per-crew-member times when set; fall back to day-level times
-      const hrs=jcGetCrewMemberHrs(c,log);
+      const k=effectiveName.toLowerCase();
+      if(!grouped.has(k)) grouped.set(k,{name:effectiveName, rows:[]});
+      grouped.get(k).rows.push(c);
+    });
+    grouped.forEach(({name:effectiveName, rows})=>{
+      // Two Full Day rows count 8 once. Otherwise add the hours of both rows (split shift).
+      const hrs=log.fullDay?8:rows.reduce((s,c)=>s+(parseFloat(jcGetCrewMemberHrs(c,log))||0),0);
       if(hrs<=0) return;
+      const c=rows[0];
       const rate=jcGetBurdenedRate(c,job,log);
       const cost=Math.round(hrs*rate*100)/100;
       totalLaborCost+=cost;
@@ -6351,7 +6528,11 @@ function renderJobCosting(){
       const qty=parseFloat(m.qty)||0;
       const ri=jcResolveMatIdx(m);
       let unitCost=0, pkgNote='';
-      if(ri>=0&&MATERIALS[ri]){
+      const stored=(m.unitCost!=null&&m.unitCost!==''&&!isNaN(parseFloat(m.unitCost)))?parseFloat(m.unitCost):null;
+      if(stored!=null){
+        unitCost=Math.round(stored*100)/100;
+        if(ri>=0&&MATERIALS[ri]&&MATERIALS[ri].unit) pkgNote='$'+(parseFloat(MATERIALS[ri].price)||0).toFixed(2)+'/'+MATERIALS[ri].unit;
+      } else if(ri>=0&&MATERIALS[ri]){
         const mat=MATERIALS[ri];
         const pkgQty=parseFloat((mat.unit||'').match(/^(\d+\.?\d*)/)?.[1])||1;
         unitCost=Math.round((parseFloat(mat.price)||0)/pkgQty*100)/100;
@@ -6797,7 +6978,8 @@ async function saveJobCard(){
     if(_tPatches.length) await Promise.all(_tPatches);
   }
   document.getElementById('jc-name').textContent=job.customer||'Unnamed Job';
-  await saveJobRecords();
+  const _saved=await saveJobRecords();
+  if(!_saved) return;
   // ── Sync value back to the board card ────────────────────────────────────
   // Reconciles against the loaded data cache (_lastJobRows), NOT the DOM — matching by raw
   // `.lead-name` textContent breaks whenever the board customer field carries a baked-in
@@ -9649,11 +9831,20 @@ let LEAD_QUOTED_DATES = {}; // {lead_db_id: ISO date string} — tracks when eac
 async function loadLeadQuotedDates(){
   // Same historical bug as loadLeadDupAcks: saved un-parsed, so each save re-wrapped it in
   // another layer of JSON.stringify. Unwrap however many layers exist instead of losing the data.
-  let data=await sb.getKV('lead_quoted_dates');
+  // A failed read must not look like "no timers yet" — that would restart the 7-day clock.
+  _leadQuotedDatesLoadOk=false;
+  const read=await sb.readKV('lead_quoted_dates');
+  if(!read.ok){ console.error('loadLeadQuotedDates: read failed — not moving Estimate Sent leads'); return; }
+  let data=read.value;
   for(let i=0;i<10 && typeof data==='string';i++){
     try{ data=JSON.parse(data); }catch(e){ data=null; break; }
   }
+  if(read.value!=null && (data==null || typeof data!=='object' || Array.isArray(data))){
+    console.error('loadLeadQuotedDates: unreadable value — not moving Estimate Sent leads');
+    return;
+  }
   LEAD_QUOTED_DATES=(data && typeof data==='object' && !Array.isArray(data)) ? data : {};
+  _leadQuotedDatesLoadOk=true;
 }
 async function saveLeadQuotedDates(){
   LEAD_QUOTED_DATES = await _saveKVMerged('lead_quoted_dates', LEAD_QUOTED_DATES);
@@ -9739,6 +9930,7 @@ function leadDupKeep(key){
 }
 
 async function autoMoveStaleQuotedLeads(){
+  if(!_isOwnerSession()||!_leadsLoadOk||!_leadQuotedDatesLoadOk) return;
   const now=Date.now();
   const SEVEN_DAYS=7*24*60*60*1000;
   let changed=false, movedNames=[];

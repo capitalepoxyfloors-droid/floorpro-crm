@@ -1,0 +1,15 @@
+{
+  "name": "floorpro-dev-tests",
+  "private": true,
+  "type": "module",
+  "description": "Local mocked tests for FloorPro CRM. Not part of the GitHub Pages site.",
+  "scripts": {
+    "test": "node --test prelogin.test.mjs"
+  },
+  "dependencies": {
+    "jsdom": "^26.1.0"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.55.0"
+  }
+}
