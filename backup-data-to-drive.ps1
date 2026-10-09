@@ -13,8 +13,14 @@
 #                     pto_requests, material_requests, sales_visits, todos,
 #                     custom_job_types, holidays, PINs, and more
 
+# After row security is on, the public anon key can no longer read these tables.
+# Put the service_role key in the environment on this PC only. Do not paste it into the app.
 $SUPABASE_URL = 'https://cngbsmmdfxmerlqnkate.supabase.co'
-$SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNuZ2JzbW1kZnhtZXJscW5rYXRlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg3NzcxNTEsImV4cCI6MjA5NDM1MzE1MX0.WYzlfn8OHPYsWCY-P7bXjvl_v78wozwjk2ajEBxa-7I'
+$SUPABASE_KEY = $env:SUPABASE_SERVICE_ROLE_KEY
+if (-not $SUPABASE_KEY) {
+    Write-Error 'Set SUPABASE_SERVICE_ROLE_KEY in this window first (Dashboard, Settings, API, service_role). The anon key can no longer read the database.'
+    exit 1
+}
 $destDir = 'G:\My Drive\FloorPro CRM Backups'
 $keep    = 30
 

@@ -981,7 +981,7 @@
         <div class="jobs-block" style="padding:0;margin-bottom:16px;">
           <div style="padding:14px 18px;border-bottom:1px solid var(--border);">
             <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);">Personal Crew Sign-In PINs</div>
-            <div style="font-size:11.5px;color:var(--text2);margin-top:5px;line-height:1.4;">Give each crew member their own 4-digit PIN. When they sign in with it, the app identifies them automatically — no need to tap a name. Leave blank to disable.</div>
+            <div style="font-size:11.5px;color:var(--text2);margin-top:5px;line-height:1.4;">Give each crew member their own 4-digit PIN. When they sign in with it, the app identifies them automatically — no need to tap a name. The saved PIN is not shown. Leave the box blank and save to turn their PIN off.</div>
           </div>
           <div id="pin-crew-list" style="padding:6px 18px 14px;"></div>
         </div>
@@ -1995,6 +1995,11 @@
 // ── SUPABASE CONFIG ────────────────────────────────────────────────────────────
 const SUPABASE_URL = 'https://cngbsmmdfxmerlqnkate.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNuZ2JzbW1kZnhtZXJscW5rYXRlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg3NzcxNTEsImV4cCI6MjA5NDM1MzE1MX0.WYzlfn8OHPYsWCY-P7bXjvl_v78wozwjk2ajEBxa-7I';
+// The anon key only identifies the project. Data calls send the signed-in user's
+// access token. Until the first sign-in (and in the local tests) there is no token.
+let _accessToken = '';
+let _refreshToken = '';
+let _accessExp = 0;
 
 // ── GEOAPIFY CONFIG (address autocomplete + geocoding) ──────────────────────────
 // Free tier, no credit card: sign up at https://myprojects.geoapify.com, create a
@@ -2003,13 +2008,16 @@ const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 const GEOAPIFY_KEY = '066b4fb324194ef98ee2843a36a53d62';
 
 const sb = {
-  headers:{
-    'Content-Type':'application/json',
-    'apikey':SUPABASE_KEY,
-    'Authorization':'Bearer '+SUPABASE_KEY,
-    'Prefer':'return=representation'
+  get headers(){
+    return {
+      'Content-Type':'application/json',
+      'apikey':SUPABASE_KEY,
+      'Authorization':'Bearer '+(_accessToken||SUPABASE_KEY),
+      'Prefer':'return=representation'
+    };
   },
   async get(table,params=''){
+    await fpEnsureSession();
     const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}${params?'?'+params:''}`,{headers:this.headers});
     return res.ok?res.json():[];
   },
@@ -2017,6 +2025,7 @@ const sb = {
   // Maintenance that deletes or inserts rows must use this — get()'s [] hides a failed load.
   async getResult(table,params=''){
     try{
+      await fpEnsureSession();
       const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}${params?'?'+params:''}`,{headers:this.headers});
       if(!res.ok) return {ok:false, rows:[]};
       const rows=await res.json();
@@ -2024,23 +2033,28 @@ const sb = {
     }catch(e){ return {ok:false, rows:[]}; }
   },
   async insert(table,data){
+    await fpEnsureSession();
     const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}`,{method:'POST',headers:this.headers,body:JSON.stringify(data)});
     return res.ok?res.json():null;
   },
   async update(table,id,data){
+    await fpEnsureSession();
     const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`,{method:'PATCH',headers:this.headers,body:JSON.stringify(data)});
     return res.ok;
   },
   async delete(table,id){
+    await fpEnsureSession();
     const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`,{method:'DELETE',headers:this.headers});
     return res.ok;
   },
   async deleteWhere(table,filters){
+    await fpEnsureSession();
     const params=Object.entries(filters).map(([k,v])=>`${k}=eq.${encodeURIComponent(v)}`).join('&');
     const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`,{method:'DELETE',headers:this.headers});
     return res.ok;
   },
   async upsert(table,data,onConflict='key'){
+    await fpEnsureSession();
     const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}?on_conflict=${onConflict}`,{
       method:'POST',
       headers:{...this.headers,'Prefer':'resolution=merge-duplicates,return=representation'},
@@ -2054,6 +2068,7 @@ const sb = {
     // _fetchWithTimeout) so a stalled job-site connection surfaces an error instead of hanging.
     let res;
     try{
+      await fpEnsureSession();
       res=await _fetchWithTimeout(`${SUPABASE_URL}/rest/v1/settings?on_conflict=key`,{
         method:'POST',
         headers:{...this.headers,'Prefer':'resolution=merge-duplicates,return=representation'},
@@ -2074,6 +2089,7 @@ const sb = {
     // {ok:false, value:null} means timeout or HTTP error. Do not overwrite the server on ok:false.
     let res;
     try{
+      await fpEnsureSession();
       res=await _fetchWithTimeout(`${SUPABASE_URL}/rest/v1/settings?key=eq.${encodeURIComponent(key)}`,{headers:this.headers},25000);
     }catch(e){ return {ok:false, value:null}; }
     if(!res.ok) return {ok:false, value:null};
@@ -2169,7 +2185,7 @@ function _alRenderRich(rich){
   if(rich.photos&&rich.photos.length){
     const urls=JSON.stringify(rich.photos.map(p=>p.url||p.thumb));
     html+='<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:'+(rich.changes&&rich.changes.length?'8px':'0')+';">'+rich.photos.map((p,i)=>`
-      <img src="${_alEsc(p.thumb||p.url)}" loading="lazy" onclick='openLightbox(${urls},${i})' title="${_alEsc(p.name)}" style="width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);cursor:pointer;"/>`).join('')+'</div>';
+      <img src="${_alEsc(fpMediaUrl(p.thumb||p.url))}" loading="lazy" onclick='openLightbox(${urls},${i})' title="${_alEsc(p.name)}" style="width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);cursor:pointer;"/>`).join('')+'</div>';
   }
   return html;
 }
@@ -2194,6 +2210,7 @@ async function renderAuditLog(){
     return [r.actor,r.action,r.entity,detailText].join(' ').toLowerCase();
   };
   const rows=(AUDIT_LOG_CACHE||[]).filter(r=>!q||searchText(r).includes(q));
+  try{ await fpWarmStoredMedia(); }catch(e){}
   if(!rows.length){
     el.innerHTML='<div style="padding:60px 20px;text-align:center;color:var(--text3);">'+(q?'No matching entries.':'No activity logged yet.')+'</div>';
     return;
@@ -3184,6 +3201,7 @@ async function loadAllFromSupabase(){
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
+    try{ await fpWarmStoredMedia(); }catch(e){ console.error('photo signing failed', e); }
     _kvSnapshotBaselines();             // remember loaded server state as the merge ancestor for saves
     applyNavOrder();                    // restore the user's saved sidebar tab order
     // Schedule repair runs only for an owner/manager, and only when the reads it uses succeeded.
@@ -3589,54 +3607,9 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.getElementById('pto-slot-date').value=today;
   // Render dashboard immediately
   renderDashboard();
-  // Check for a saved session within the last 24 hours
-  const _savedRole = checkLoginSession();
-  if(_savedRole){
-    _sessionAuthed = true;
-    _resetAutoLockTimer();
-    if(_savedRole === 'crew'){
-      localStorage.setItem('fpRole','crew');
-      document.body.classList.add('crew-mode');
-      const ml = document.getElementById('cv-manager-link');
-      if(ml) ml.style.display = 'block';
-      loadAllFromSupabase().then(()=>{
-        // A still-open session for a crew member who's since been marked inactive → sign them out
-        let _cid=NaN; try{ _cid=parseInt(localStorage.getItem('fpClockCrew')); }catch(e){}
-        if(!isNaN(_cid) && isCrewInactive(_cid)){
-          _sessionAuthed=false;
-          try{ localStorage.removeItem(_pinAuthKey()); localStorage.removeItem('fpRole'); localStorage.removeItem('fpClockCrew'); }catch(e){}
-          document.body.classList.remove('crew-mode');
-          showLoginScreen();
-          return;
-        }
-        showPage('crewview');
-      });
-    } else {
-      localStorage.removeItem('fpRole');
-      document.body.classList.remove('crew-mode');
-      _applySignedInUserUi();
-      loadAllFromSupabase().then(async ()=>{
-        // Still-open office-staff session whose access has since been removed → sign them out
-        const office=_currentOfficeUser();
-        if(office){
-          try{ const v=await sb.getKV('office_users'); OFFICE_USERS=v?(JSON.parse(v)||[]):[]; }catch(e){}
-          if(!OFFICE_USERS.some(u=>u&&u.name===office)){
-            _sessionAuthed=false;
-            try{ localStorage.removeItem(_pinAuthKey()); localStorage.removeItem('fpOfficeUser'); }catch(e){}
-            _applySignedInUserUi();
-            showLoginScreen();
-            return;
-          }
-        }
-        try{ const last=localStorage.getItem('fpLastPage'); if(last&&document.getElementById('page-'+last)) showPage(last); }catch(e){}
-      });
-    }
-  } else {
-    localStorage.removeItem(_pinAuthKey());
-    localStorage.removeItem('fpRole');
-    localStorage.removeItem('fpOfficeUser');
-    showLoginScreen();
-  }
+  // A saved Supabase session skips the keypad. Old PIN-only bookmarks are not a session.
+  fpBootAuth();
+  fpInstallMediaHydrator();
   // Refresh the 24-hour window on any user interaction
   ['click','keydown','touchstart','mousemove'].forEach(ev=>
     document.addEventListener(ev, _resetAutoLockTimer, {passive:true})
@@ -8249,15 +8222,15 @@ function renderMaterialCalc(){
 }
 
 // ── PIN AUTH ─────────────────────────────────────────────────────────────────
-let ADMIN_PIN='0061', _pinBuf='';
-let CREW_PINS={};   // { crewIdx: "pin" } — personal per-crew sign-in PINs (KV 'crew_pins'). Shared crew code retired.
-// Office staff (KV 'office_users'): [{id,name,pin}] — same full access as the manager code, but
-// signed in under their own name so the Audit Log shows who did what. Kept separate from CREW
-// (crew is positional and drives schedule rows, payroll, PTO, overhead — office staff aren't crew).
-// Only the manager code can open the Security page, so office staff can't change PINs.
-let OFFICE_USERS=[];
+// The keypad still accepts a PIN and nothing else. The PIN is checked by the
+// pin-login Edge Function, which returns a real Supabase session. Hashes never
+// come back to the browser. CREW_PIN_SET / OFFICE_USERS only remember who has
+// a PIN, not the digits.
+let _pinBuf='';
+let _pinBusy=false;
+let CREW_PIN_SET={};   // { crewIdx: true } — whether a personal PIN is on file
+let OFFICE_USERS=[];   // [{id,name,has_pin}] — names only, for the Security page
 function _currentOfficeUser(){ try{ return localStorage.getItem('fpOfficeUser')||''; }catch(e){ return ''; } }
-function _officePinMatch(pin){ return OFFICE_USERS.find(u=>u&&String(u.pin)===String(pin))||null; }
 function _applySignedInUserUi(){
   const office=_currentOfficeUser();
   const nm=document.getElementById('sb-user-name'), rl=document.getElementById('sb-user-role'), av=document.getElementById('sb-user-avatar');
@@ -8268,64 +8241,251 @@ function _applySignedInUserUi(){
 }
 let _sessionAuthed = false;
 let _autoLockTimer  = null;
+let _authGate = null;
 const AUTO_LOCK_MS  = 24 * 60 * 60 * 1000; // 24 hours since last activity
 
 function _pinAuthKey(){ return 'fpAuth_v2'; }
+function _readAuthBlob(){
+  try{ return JSON.parse(localStorage.getItem(_pinAuthKey())||'null'); }catch(e){ return null; }
+}
+function _writeAuthBlob(patch){
+  const prev=_readAuthBlob()||{};
+  const next=Object.assign({}, prev, patch||{});
+  try{ localStorage.setItem(_pinAuthKey(), JSON.stringify(next)); }catch(e){}
+  return next;
+}
 
-// Returns role ('admin'|'crew') if saved session is within 24 hours, else null
-function checkLoginSession(){
+function fpClearLocalAuth(){
+  _accessToken='';
+  _refreshToken='';
+  _accessExp=0;
+  _sessionAuthed=false;
+  clearTimeout(_autoLockTimer);
   try{
-    const raw=localStorage.getItem(_pinAuthKey());
-    if(!raw) return null;
-    const {role,ts}=JSON.parse(raw);
-    if(Date.now()-ts < AUTO_LOCK_MS) return role||'admin';
+    localStorage.removeItem(_pinAuthKey());
+    localStorage.removeItem('fpRole');
+    localStorage.removeItem('fpClockCrew');
+    localStorage.removeItem('fpOfficeUser');
   }catch(e){}
-  return null;
+  document.body.classList.remove('crew-mode');
 }
 
 function _saveSession(role){
   _sessionAuthed = true;
-  try{ localStorage.setItem(_pinAuthKey(), JSON.stringify({role:role||'admin', ts:Date.now()})); }catch(e){}
+  _writeAuthBlob({role:role||'admin', ts:Date.now()});
   _resetAutoLockTimer();
 }
 
 function _resetAutoLockTimer(){
   if(!_sessionAuthed) return;
-  // Throttle localStorage timestamp refresh to once per minute
   try{
-    const raw=localStorage.getItem(_pinAuthKey());
-    if(raw){
-      const d=JSON.parse(raw);
-      if(Date.now()-d.ts > 60000){ d.ts=Date.now(); localStorage.setItem(_pinAuthKey(), JSON.stringify(d)); }
-    }
+    const d=_readAuthBlob();
+    if(d && Date.now()-(d.ts||0) > 60000){ d.ts=Date.now(); localStorage.setItem(_pinAuthKey(), JSON.stringify(d)); }
   }catch(e){}
   clearTimeout(_autoLockTimer);
   _autoLockTimer = setTimeout(()=>{
-    _sessionAuthed = false;
-    localStorage.removeItem(_pinAuthKey());
-    localStorage.removeItem('fpRole');
-    localStorage.removeItem('fpClockCrew');
-    localStorage.removeItem('fpOfficeUser');
-    document.body.classList.remove('crew-mode');
+    fpRevokeServerSession();
+    fpClearLocalAuth();
     showLoginScreen();
     showToast('🔒 App locked due to inactivity.');
   }, AUTO_LOCK_MS);
 }
 
-async function showLoginScreen(){
-  _pinBuf=''; _pinRender();
-  document.getElementById('pin-error').style.display='none';
-  const ls=document.getElementById('login-screen');
-  ls.style.display='flex';
+function fpAuthHeaders(userToken){
+  return {
+    'Content-Type':'application/json',
+    apikey:SUPABASE_KEY,
+    Authorization:'Bearer '+(userToken?(_accessToken||SUPABASE_KEY):SUPABASE_KEY)
+  };
+}
+
+async function fpEnsureSession(){
+  if(_authGate) return _authGate;
+  _authGate=_fpEnsureSessionInner();
+  try{ return await _authGate; }
+  finally{ _authGate=null; }
+}
+async function _fpEnsureSessionInner(){
+  if(!_refreshToken){
+    const blob=_readAuthBlob();
+    if(blob&&blob.refresh_token){
+      _refreshToken=blob.refresh_token;
+      _accessToken=blob.access_token||_accessToken;
+      _accessExp=blob.expires_at||_accessExp;
+    }
+  }
+  if(_accessToken && Date.now() < _accessExp - 60000) return true;
+  if(!_refreshToken) return !!_accessToken;
   try{
-    const ap=await sb.getKV('admin_pin');
-    if(ap) ADMIN_PIN=String(ap).trim();
-    const cpins=await sb.getKV('crew_pins');
-    if(cpins){ try{ CREW_PINS=JSON.parse(cpins)||{}; }catch(e){} }
-    const opins=await sb.getKV('office_users');
-    if(opins){ try{ OFFICE_USERS=JSON.parse(opins)||[]; }catch(e){} }
-    await loadCrewInactive();
+    const res=await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`,{
+      method:'POST',
+      headers:{ apikey:SUPABASE_KEY, 'Content-Type':'application/json' },
+      body:JSON.stringify({ refresh_token:_refreshToken })
+    });
+    if(res.status===400 || res.status===401) return false;
+    if(!res.ok) return !!(_accessToken && Date.now() < _accessExp);
+    const data=await res.json();
+    if(!data||!data.access_token) return !!(_accessToken && Date.now() < _accessExp);
+    _accessToken=data.access_token;
+    _refreshToken=data.refresh_token||_refreshToken;
+    _accessExp=Date.now()+((data.expires_in||3600)*1000);
+    _writeAuthBlob({ access_token:_accessToken, refresh_token:_refreshToken, expires_at:_accessExp });
+    return true;
+  }catch(e){
+    return !!(_accessToken && Date.now() < _accessExp);
+  }
+}
+
+function fpRememberTokens(session, account){
+  _accessToken=session.access_token||'';
+  _refreshToken=session.refresh_token||'';
+  _accessExp=Date.now()+((session.expires_in||3600)*1000);
+  _writeAuthBlob({
+    access_token:_accessToken,
+    refresh_token:_refreshToken,
+    expires_at:_accessExp,
+    kind:account.kind,
+    crew_idx:account.crew_idx,
+    office_id:account.office_id||null,
+    display_name:account.display_name||'',
+    role:account.kind==='crew'?'crew':'admin',
+    ts:Date.now()
+  });
+}
+
+function _accountFromBlob(){
+  const b=_readAuthBlob();
+  if(!b||!b.kind) return null;
+  return { kind:b.kind, crew_idx:b.crew_idx??null, office_id:b.office_id||null, display_name:b.display_name||'' };
+}
+
+async function fpPinLogin(pin){
+  let res;
+  try{
+    res=await fetch(`${SUPABASE_URL}/functions/v1/pin-login`,{
+      method:'POST',
+      headers:fpAuthHeaders(false),
+      body:JSON.stringify({ pin:String(pin) })
+    });
+  }catch(e){
+    return { ok:false, message:'Could not reach the server. Check your signal and try again.' };
+  }
+  let data=null;
+  try{ data=await res.json(); }catch(e){ data=null; }
+  if(res.status===429) return { ok:false, message:(data&&data.error)||'Too many tries. Wait 15 minutes and try again.' };
+  if(!res.ok||!data||!data.access_token) return { ok:false, message:(data&&data.error)||'Incorrect PIN — try again.' };
+  return { ok:true, session:data, account:data.account||{} };
+}
+
+async function fpWhoAmI(){
+  if(!_accessToken) return null;
+  try{
+    const res=await fetch(`${SUPABASE_URL}/functions/v1/pin-admin`,{
+      method:'POST',
+      headers:fpAuthHeaders(true),
+      body:JSON.stringify({ action:'whoami' })
+    });
+    if(res.status===401||res.status===403) return null;
+    if(!res.ok) return _accountFromBlob();
+    const data=await res.json();
+    if(!data||!data.kind) return _accountFromBlob();
+    _writeAuthBlob({ kind:data.kind, crew_idx:data.crew_idx, office_id:data.office_id||null, display_name:data.display_name||'' });
+    return data;
+  }catch(e){
+    return _accountFromBlob();
+  }
+}
+
+async function fpPinAdmin(action, extra){
+  await fpEnsureSession();
+  const res=await fetch(`${SUPABASE_URL}/functions/v1/pin-admin`,{
+    method:'POST',
+    headers:fpAuthHeaders(true),
+    body:JSON.stringify(Object.assign({ action }, extra||{}))
+  });
+  let data=null;
+  try{ data=await res.json(); }catch(e){ data=null; }
+  if(!res.ok){
+    const msg=(data&&data.error)||'Could not save that. Try again.';
+    return { ok:false, error:msg };
+  }
+  return { ok:true, data };
+}
+
+function fpApplyAccount(account){
+  if(!account) return;
+  if(account.kind==='crew'){
+    localStorage.setItem('fpRole','crew');
+    try{ localStorage.removeItem('fpOfficeUser'); }catch(e){}
+    if(account.crew_idx!=null && account.crew_idx>=0){
+      try{ localStorage.setItem('fpClockCrew', account.crew_idx); localStorage.setItem('fpCvCrew', account.crew_idx); }catch(e){}
+      cvCrewIdx=account.crew_idx;
+    }
+  } else {
+    localStorage.removeItem('fpRole');
+    if(account.kind==='office'){
+      try{ localStorage.setItem('fpOfficeUser', account.display_name||''); }catch(e){}
+    } else {
+      try{ localStorage.removeItem('fpOfficeUser'); }catch(e){}
+    }
+  }
+}
+
+async function fpBootAuth(){
+  const blob=_readAuthBlob();
+  const fresh=!!(blob && blob.refresh_token && (Date.now()-(blob.ts||0) < AUTO_LOCK_MS));
+  if(!fresh){
+    if(blob && blob.refresh_token) fpClearLocalAuth();
+    showLoginScreen();
+    return;
+  }
+  _accessToken=blob.access_token||'';
+  _refreshToken=blob.refresh_token||'';
+  _accessExp=blob.expires_at||0;
+  const tokenOk=await fpEnsureSession();
+  if(!tokenOk){ fpClearLocalAuth(); showLoginScreen(); return; }
+  const who=await fpWhoAmI();
+  if(!who){ fpClearLocalAuth(); showLoginScreen(); return; }
+  _sessionAuthed=true;
+  _resetAutoLockTimer();
+  fpApplyAccount(who);
+  if(who.kind==='crew'){
+    document.body.classList.add('crew-mode');
+    const ml=document.getElementById('cv-manager-link');
+    if(ml) ml.style.display='block';
+    loadAllFromSupabase().then(()=>{
+      let _cid=NaN; try{ _cid=parseInt(localStorage.getItem('fpClockCrew')); }catch(e){}
+      if(!isNaN(_cid) && isCrewInactive(_cid)){ fpClearLocalAuth(); showLoginScreen(); return; }
+      showPage('crewview');
+    });
+  } else {
+    document.body.classList.remove('crew-mode');
+    const ml=document.getElementById('cv-manager-link');
+    if(ml) ml.style.display='none';
+    _applySignedInUserUi();
+    loadAllFromSupabase().then(()=>{
+      try{ const last=localStorage.getItem('fpLastPage'); if(last&&document.getElementById('page-'+last)) showPage(last); }catch(e){}
+    });
+  }
+}
+
+function fpRevokeServerSession(){
+  const token=_accessToken;
+  if(!token) return;
+  try{
+    fetch(`${SUPABASE_URL}/auth/v1/logout?scope=local`,{
+      method:'POST',
+      headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+token, 'Content-Type':'application/json' }
+    }).catch(()=>{});
   }catch(e){}
+}
+
+async function showLoginScreen(){
+  _pinBuf=''; _pinBusy=false; _pinRender();
+  const err=document.getElementById('pin-error');
+  if(err){ err.style.display='none'; err.textContent='Incorrect PIN — try again.'; }
+  const ls=document.getElementById('login-screen');
+  if(ls) ls.style.display='flex';
 }
 
 function _hideLoginScreen(){
@@ -8340,48 +8500,48 @@ function _pinRender(){
 }
 
 function pinKey(d){
-  if(_pinBuf.length>=6) return;
+  if(_pinBusy||_pinBuf.length>=6) return;
   _pinBuf+=String(d); _pinRender();
   if(_pinBuf.length>=4) setTimeout(pinSubmit,180);
 }
 
-function pinDel(){ if(_pinBuf.length){_pinBuf=_pinBuf.slice(0,-1);_pinRender();} }
+function pinDel(){ if(_pinBusy) return; if(_pinBuf.length){_pinBuf=_pinBuf.slice(0,-1);_pinRender();} }
 
-function _crewPinMatch(pin){
-  for(const k in CREW_PINS){ if(String(CREW_PINS[k])===String(pin)) return parseInt(k); }
-  return -1;
-}
-function pinSubmit(){
-  if(!_pinBuf) return;
-  if(_pinBuf===ADMIN_PIN){ try{ localStorage.removeItem('fpOfficeUser'); }catch(e){} _pinSuccess('admin'); return; }
-  const office=_officePinMatch(_pinBuf);
-  if(office){ try{ localStorage.setItem('fpOfficeUser', office.name); }catch(e){} _pinSuccess('admin'); logAudit('signed_in',office.name,'Office staff sign-in'); return; }
-  const ci=_crewPinMatch(_pinBuf);
-  if(ci!==-1 && isCrewInactive(ci)){ _pinFail(); return; } // inactive crew — PIN kept but sign-in blocked
-  if(ci!==-1){ _pinSuccess('crew', ci); return; }   // personal PIN → crew identity auto-set
-  _pinFail();                                        // shared crew code retired — personal PIN required
+async function pinSubmit(){
+  if(_pinBusy||!_pinBuf) return;
+  _pinBusy=true;
+  const pin=_pinBuf;
+  const err=document.getElementById('pin-error');
+  if(err){ err.textContent='Checking…'; err.style.display='block'; }
+  try{
+    const result=await fpPinLogin(pin);
+    if(!result.ok){ _pinFail(result.message); return; }
+    fpRememberTokens(result.session, result.account);
+    fpApplyAccount(result.account);
+    if(result.account.kind==='office') logAudit('signed_in', result.account.display_name, 'Office staff sign-in');
+    _pinSuccess(result.account);
+  }catch(e){
+    _pinFail('Could not reach the server. Check your signal and try again.');
+  }finally{
+    _pinBusy=false;
+  }
 }
 
-function _pinSuccess(role, crewIdx){
+function _pinSuccess(account){
+  const role=account&&account.kind==='crew'?'crew':'admin';
   _saveSession(role);
   _hideLoginScreen();
+  fpApplyAccount(account);
   if(role==='crew'){
-    localStorage.setItem('fpRole','crew');
-    try{ localStorage.removeItem('fpOfficeUser'); }catch(e){}
-    if(crewIdx!=null && crewIdx>=0){
-      // Signed in with a personal PIN — fix the clock identity to this crew member.
-      // fpClockCrew is the immutable "who am I clocked as"; fpCvCrew is just the default calendar filter.
-      try{ localStorage.setItem('fpClockCrew', crewIdx); localStorage.setItem('fpCvCrew', crewIdx); }catch(e){}
-      cvCrewIdx=crewIdx;
-    } else {
-      try{ localStorage.removeItem('fpClockCrew'); }catch(e){}   // legacy shared code — no fixed identity
-    }
     document.body.classList.add('crew-mode');
     const ml=document.getElementById('cv-manager-link');
     if(ml) ml.style.display='block';
-    loadAllFromSupabase().then(()=>{ showPage('crewview'); });
+    loadAllFromSupabase().then(()=>{
+      let _cid=NaN; try{ _cid=parseInt(localStorage.getItem('fpClockCrew')); }catch(e){}
+      if(!isNaN(_cid) && isCrewInactive(_cid)){ fpClearLocalAuth(); showLoginScreen(); return; }
+      showPage('crewview');
+    });
   } else {
-    localStorage.removeItem('fpRole');
     document.body.classList.remove('crew-mode');
     const ml=document.getElementById('cv-manager-link');
     if(ml) ml.style.display='none';
@@ -8392,52 +8552,57 @@ function _pinSuccess(role, crewIdx){
   }
 }
 
-function _pinFail(){
+function _pinFail(message){
   _pinBuf=''; _pinRender();
   const err=document.getElementById('pin-error');
-  err.style.display='block';
+  if(err){ err.textContent=message||'Incorrect PIN — try again.'; err.style.display='block'; }
   const card=document.getElementById('login-card');
-  card.style.animation='pin-shake .4s ease';
-  setTimeout(()=>{ card.style.animation=''; err.style.display='none'; },2000);
+  if(card){ card.style.animation='pin-shake .4s ease'; setTimeout(()=>{ card.style.animation=''; },400); }
+  setTimeout(()=>{ if(err && err.textContent!=='Checking…') err.style.display='none'; },2500);
 }
 
 function pinLogout(){
-  if(!confirm('Lock the app and return to the manager code screen?')) return;
-  _sessionAuthed = false;
-  clearTimeout(_autoLockTimer);
-  localStorage.removeItem(_pinAuthKey());
-  localStorage.removeItem('fpRole');
-  localStorage.removeItem('fpClockCrew');
-  localStorage.removeItem('fpOfficeUser');
-  document.body.classList.remove('crew-mode');
+  if(!confirm('Lock the app and return to the sign-in screen?')) return;
+  fpRevokeServerSession();
+  fpClearLocalAuth();
   showLoginScreen();
 }
 
 async function pinSaveSettings(){
   const na=document.getElementById('pin-new-admin').value.trim();
   if(!na){ showToast('Enter a new manager code.'); return; }
-  if(na.length<4){ showToast('Manager code must be at least 4 digits.'); return; }
+  if(na.length<4||na.length>6){ showToast('Manager code must be 4 to 6 digits.'); return; }
   if(!/^\d+$/.test(na)){ showToast('Manager code must be numbers only.'); return; }
-  for(const k in CREW_PINS){ if(String(CREW_PINS[k])===na){ showToast('That matches a crew PIN — pick a different manager code.'); return; } }
-  if(_officePinMatch(na)){ showToast('That matches an office staff PIN — pick a different manager code.'); return; }
-  ADMIN_PIN=na; await sb.setKV('admin_pin',na); document.getElementById('pin-new-admin').value='';
+  const res=await fpPinAdmin('set_owner_pin',{ pin:na });
+  if(!res.ok){ showToast(res.error); return; }
+  document.getElementById('pin-new-admin').value='';
   logAudit('pin_changed','Manager code','');
   showToast('✅ Manager code updated.');
 }
 
-// Owner: list each crew member with their personal sign-in PIN
+async function _loadPinDirectory(){
+  const res=await fpPinAdmin('list');
+  if(!res.ok){ showToast(res.error); return false; }
+  CREW_PIN_SET={};
+  (res.data.crew||[]).forEach(row=>{ if(row&&row.has_pin) CREW_PIN_SET[row.crew_idx]=true; });
+  OFFICE_USERS=(res.data.office||[]).map(row=>({ id:row.office_id, name:row.name, has_pin:!!row.has_pin }));
+  return true;
+}
+
 async function renderCrewPins(){
   const host=document.getElementById('pin-crew-list'); if(!host) return;
-  try{ const cp=await sb.getKV('crew_pins'); if(cp) CREW_PINS=JSON.parse(cp)||{}; }catch(e){}
+  host.innerHTML='<div style="color:var(--text3);font-size:13px;padding:8px 0;">Loading…</div>';
+  if(!await _loadPinDirectory()) return;
   const list=(CREW_DATA||[]);
   if(!list.length){ host.innerHTML='<div style="color:var(--text3);font-size:13px;padding:8px 0;">No crew members yet — add them under Installers.</div>'; return; }
   host.innerHTML=list.map((cd,i)=>{
-    const pin=CREW_PINS[i]!=null?String(CREW_PINS[i]):'';
+    const on=!!CREW_PIN_SET[i];
     const col=cd.color||'var(--accent)';
     return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);">
       <span style="width:9px;height:9px;border-radius:50%;background:${col};flex-shrink:0;"></span>
       <span style="flex:1;font-size:13px;color:var(--text);">${(cd.full||('Crew '+(i+1))).replace(/</g,'&lt;')}${isCrewInactive(i)?' <span style="font-size:11px;color:var(--text3);">(inactive — sign-in blocked)</span>':''}</span>
-      <input class="form-input" id="cpin-${i}" type="text" inputmode="numeric" maxlength="6" value="${pin}" placeholder="— set —" style="width:104px;font-size:16px;letter-spacing:3px;text-align:center;font-family:'DM Mono',monospace;"/>
+      <span style="font-size:11px;color:var(--text3);width:58px;">${on?'PIN on file':'No PIN'}</span>
+      <input class="form-input" id="cpin-${i}" type="password" inputmode="numeric" maxlength="6" value="" placeholder="${on?'new PIN':'set PIN'}" style="width:104px;font-size:16px;letter-spacing:3px;text-align:center;font-family:'DM Mono',monospace;"/>
       <button class="btn btn-ghost" onclick="saveCrewPin(${i})" style="font-size:12px;padding:6px 12px;">Save</button>
     </div>`;
   }).join('');
@@ -8447,39 +8612,34 @@ async function saveCrewPin(i){
   const v=el.value.trim();
   const who=(CREW_DATA[i]&&CREW_DATA[i].full)||('crew '+(i+1));
   if(v===''){
-    delete CREW_PINS[i];
-    await sb.setKV('crew_pins',JSON.stringify(CREW_PINS));
+    if(!CREW_PIN_SET[i]){ showToast('Enter a PIN, or leave it alone if they do not need one.'); return; }
+    if(!confirm('Turn off the PIN for '+who+'? They will not be able to sign in until you set a new one.')) return;
+    const cleared=await fpPinAdmin('clear_crew_pin',{ crew_idx:i });
+    if(!cleared.ok){ showToast(cleared.error); return; }
     logAudit('pin_changed',who,'PIN cleared');
     showToast('PIN cleared for '+who);
+    renderCrewPins();
     return;
   }
   if(v.length<4||!/^\d+$/.test(v)){ showToast('PIN must be at least 4 digits, numbers only.'); return; }
-  if(v===ADMIN_PIN){ showToast('That matches the manager code — pick a different PIN.'); return; }
-  for(const k in CREW_PINS){ if(parseInt(k)!==i && String(CREW_PINS[k])===v){ showToast('That PIN is already used by '+((CREW_DATA[k]&&CREW_DATA[k].full)||('crew '+(parseInt(k)+1)))+'.'); return; } }
-  if(_officePinMatch(v)){ showToast('That PIN is already used by office staff ('+_officePinMatch(v).name+').'); return; }
-  CREW_PINS[i]=v;
-  await sb.setKV('crew_pins',JSON.stringify(CREW_PINS));
+  const saved=await fpPinAdmin('set_crew_pin',{ crew_idx:i, pin:v });
+  if(!saved.ok){ showToast(saved.error); return; }
+  el.value='';
   logAudit('pin_changed',who,'PIN updated');
   showToast('✅ PIN saved for '+who);
+  renderCrewPins();
 }
 
-// ── Office staff (manager-level access under their own name) ──
-async function _loadOfficeUsers(){ try{ const v=await sb.getKV('office_users'); OFFICE_USERS=v?(JSON.parse(v)||[]):[]; }catch(e){} }
-// Why a PIN can't be used, or '' if it's free. exceptId = the office user being edited.
-function _officePinProblem(pin, exceptId){
-  if(!/^\d{4}$/.test(pin)) return 'PIN must be exactly 4 digits.';
-  if(pin===ADMIN_PIN) return 'That matches the manager code — pick a different PIN.';
-  const ci=_crewPinMatch(pin); if(ci!==-1) return 'That PIN is already used by '+((CREW_DATA[ci]&&CREW_DATA[ci].full)||'a crew member')+'.';
-  const o=OFFICE_USERS.find(u=>u&&u.id!==exceptId&&String(u.pin)===pin); if(o) return 'That PIN is already used by '+o.name+'.';
-  return '';
-}
 async function renderOfficeUsers(){
   const host=document.getElementById('pin-office-list'); if(!host) return;
-  await _loadOfficeUsers();
+  if(!OFFICE_USERS.length){
+    if(!await _loadPinDirectory()) return;
+  }
   if(!OFFICE_USERS.length){ host.innerHTML='<div style="color:var(--text3);font-size:13px;padding:8px 0;">No office staff yet — add one below.</div>'; return; }
   host.innerHTML=OFFICE_USERS.map(u=>`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);">
       <span style="flex:1;font-size:13px;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">🧑‍💼 ${_alEsc(u.name)}</span>
-      <input class="form-input" id="opin-${u.id}" type="text" inputmode="numeric" maxlength="4" value="${_alEsc(String(u.pin||''))}" style="width:84px;font-size:16px;letter-spacing:3px;text-align:center;font-family:'DM Mono',monospace;"/>
+      <span style="font-size:11px;color:var(--text3);">PIN on file</span>
+      <input class="form-input" id="opin-${u.id}" type="password" inputmode="numeric" maxlength="4" value="" placeholder="new" style="width:84px;font-size:16px;letter-spacing:3px;text-align:center;font-family:'DM Mono',monospace;"/>
       <button class="btn btn-ghost" onclick="saveOfficeUserPin('${u.id}')" style="font-size:12px;padding:6px 12px;">Save</button>
       <button class="btn btn-ghost" onclick="removeOfficeUser('${u.id}')" title="Remove access" style="font-size:12px;padding:6px 10px;color:var(--red);border-color:var(--red);">Remove</button>
     </div>`).join('');
@@ -8488,36 +8648,35 @@ async function addOfficeUser(){
   const nameEl=document.getElementById('office-new-name'), pinEl=document.getElementById('office-new-pin');
   const name=(nameEl.value||'').trim(), pin=(pinEl.value||'').trim();
   if(!name){ showToast('Enter a name.'); return; }
-  await _loadOfficeUsers();
-  if(OFFICE_USERS.some(u=>u&&u.name.toLowerCase()===name.toLowerCase())){ showToast('There is already office staff named '+name+'.'); return; }
-  const prob=_officePinProblem(pin,null); if(prob){ showToast(prob); return; }
-  const id=(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)).slice(0,8);
-  OFFICE_USERS.push({id,name,pin,added:new Date().toISOString().split('T')[0]});
-  await sb.setKV('office_users',JSON.stringify(OFFICE_USERS));
+  if(!/^\d{4}$/.test(pin)){ showToast('PIN must be exactly 4 digits.'); return; }
+  const saved=await fpPinAdmin('add_office',{ name, pin });
+  if(!saved.ok){ showToast(saved.error); return; }
   logAudit('office_user_added',name,'Office staff access granted');
   nameEl.value=''; pinEl.value='';
+  OFFICE_USERS=[];
   renderOfficeUsers();
   showToast('✅ '+name+' can now sign in with their PIN.');
 }
 async function saveOfficeUserPin(id){
-  await _loadOfficeUsers();
-  const u=OFFICE_USERS.find(x=>x.id===id); if(!u) return;
+  const u=OFFICE_USERS.find(x=>x.id===id);
   const pin=(document.getElementById('opin-'+id)?.value||'').trim();
-  const prob=_officePinProblem(pin,id); if(prob){ showToast(prob); return; }
-  u.pin=pin;
-  await sb.setKV('office_users',JSON.stringify(OFFICE_USERS));
-  logAudit('pin_changed',u.name,'Office staff PIN updated');
-  showToast('✅ PIN saved for '+u.name);
+  if(!/^\d{4}$/.test(pin)){ showToast('PIN must be exactly 4 digits.'); return; }
+  const saved=await fpPinAdmin('set_office_pin',{ office_id:id, pin });
+  if(!saved.ok){ showToast(saved.error); return; }
+  logAudit('pin_changed',(u&&u.name)||'Office staff','Office staff PIN updated');
+  showToast('✅ PIN saved'+(u?' for '+u.name:'')+'.');
+  const el=document.getElementById('opin-'+id); if(el) el.value='';
 }
 async function removeOfficeUser(id){
-  await _loadOfficeUsers();
-  const u=OFFICE_USERS.find(x=>x.id===id); if(!u) return;
-  if(!confirm('Remove '+u.name+'\'s access? Their PIN stops working, and any device they are signed in on is signed out the next time the app loads.')) return;
-  OFFICE_USERS=OFFICE_USERS.filter(x=>x.id!==id);
-  await sb.setKV('office_users',JSON.stringify(OFFICE_USERS));
-  logAudit('office_user_removed',u.name,'Office staff access removed');
+  const u=OFFICE_USERS.find(x=>x.id===id);
+  const name=(u&&u.name)||'this person';
+  if(!confirm('Remove '+name+'\'s access? Their PIN stops working. A device they still have open keeps working until they reload or the sign-in expires (about an hour).')) return;
+  const removed=await fpPinAdmin('remove_office',{ office_id:id });
+  if(!removed.ok){ showToast(removed.error); return; }
+  logAudit('office_user_removed',name,'Office staff access removed');
+  OFFICE_USERS=[];
   renderOfficeUsers();
-  showToast(u.name+' removed.');
+  showToast(name+' removed.');
 }
 
 function showPage(id){
@@ -11864,7 +12023,7 @@ function renderAttachmentList(){
   wrap.innerHTML = [...atts].reverse().map(att=>{
     const ci = catInfo[att.category]||catInfo.other;
     const safeName = att.name.replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    const safeUrl  = att.url.replace(/"/g,'&quot;');
+    const safeUrl  = fpMediaUrl(att.url).replace(/"/g,'&quot;');
     return `<div style="display:flex;gap:10px;align-items:center;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:10px 12px;">
       <div style="flex:1;min-width:0;">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:3px;">
@@ -14111,6 +14270,131 @@ async function saveVehicleDocs(){ VEHICLE_DOCS = await _saveKVMerged('vehicle_do
 
 function _vehDocPath(p){ return p.split('/').map(encodeURIComponent).join('/'); }
 function _vehDocPublicUrl(path){ return `${SUPABASE_URL}/storage/v1/object/public/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`; }
+// Stored records keep the old public URL. The bucket is private, so screens ask for a
+// signed URL at display time and never rewrite the saved JSON.
+const _signedUrlCache=new Map();
+function fpStoragePath(stored){
+  if(stored==null||stored==='') return '';
+  const s=String(stored);
+  const marker='/vehicle-docs/';
+  const i=s.indexOf(marker);
+  if(i>=0){
+    let rest=s.slice(i+marker.length).split('?')[0].split('#')[0];
+    try{ rest=decodeURIComponent(rest); }catch(e){}
+    return rest;
+  }
+  if(!/^https?:/i.test(s) && !s.includes('://')) return s.replace(/^\/+/,'');
+  return '';
+}
+function fpMediaUrl(stored){
+  const path=fpStoragePath(stored);
+  if(!path) return stored==null?'':String(stored);
+  const hit=_signedUrlCache.get(path);
+  if(hit && hit.exp>Date.now()+15000) return hit.url;
+  return String(stored);
+}
+function _storageHeaders(extra){
+  const h={ apikey:SUPABASE_KEY, Authorization:'Bearer '+(_accessToken||SUPABASE_KEY) };
+  if(extra) Object.assign(h, extra);
+  return h;
+}
+function _absSignedUrl(signed){
+  if(!signed) return '';
+  if(/^https?:/i.test(signed)) return signed;
+  const path=signed.startsWith('/')?signed:('/'+signed);
+  return `${SUPABASE_URL}/storage/v1${path}`;
+}
+async function fpSignPaths(paths){
+  const need=[...new Set((paths||[]).filter(Boolean))].filter(p=>{
+    const hit=_signedUrlCache.get(p);
+    return !(hit && hit.exp>Date.now()+60000);
+  });
+  if(!need.length || !_accessToken) return;
+  await fpEnsureSession();
+  const expSec=12*60*60;
+  for(let i=0;i<need.length;i+=80){
+    const chunk=need.slice(i,i+80);
+    let res;
+    try{
+      res=await fetch(`${SUPABASE_URL}/storage/v1/object/sign/${VEH_DOCS_BUCKET}`,{
+        method:'POST',
+        headers:_storageHeaders({ 'Content-Type':'application/json' }),
+        body:JSON.stringify({ expiresIn:expSec, paths:chunk })
+      });
+    }catch(e){ console.error('sign urls failed', e); return; }
+    if(!res.ok){ console.error('sign urls HTTP', res.status); return; }
+    let rows=[];
+    try{ rows=await res.json(); }catch(e){ return; }
+    if(!Array.isArray(rows)) rows=rows?[rows]:[];
+    const exp=Date.now()+expSec*1000;
+    rows.forEach(row=>{
+      if(!row||row.error||!row.path) return;
+      const url=_absSignedUrl(row.signedURL||row.signedUrl);
+      if(url) _signedUrlCache.set(row.path, { url, exp });
+    });
+  }
+}
+function _fpCollectPaths(node, out){
+  if(!node) return;
+  if(typeof node==='string'){
+    const p=fpStoragePath(node);
+    if(p) out.add(p);
+    return;
+  }
+  if(Array.isArray(node)){ node.forEach(n=>_fpCollectPaths(n, out)); return; }
+  if(typeof node==='object'){
+    ['path','thumbPath','url','thumbUrl','thumb'].forEach(k=>{
+      if(node[k]){ const p=fpStoragePath(node[k]); if(p) out.add(p); }
+    });
+    Object.keys(node).forEach(k=>{
+      if(k==='path'||k==='thumbPath'||k==='url'||k==='thumbUrl'||k==='thumb') return;
+      const v=node[k];
+      if(v&&typeof v==='object') _fpCollectPaths(v, out);
+    });
+  }
+}
+async function fpWarmStoredMedia(){
+  const out=new Set();
+  [typeof JOB_PHOTOS!=='undefined'?JOB_PHOTOS:null,
+   typeof JOB_DOCS!=='undefined'?JOB_DOCS:null,
+   typeof VEHICLE_DOCS!=='undefined'?VEHICLE_DOCS:null,
+   typeof MATERIAL_DOCS!=='undefined'?MATERIAL_DOCS:null,
+   typeof SALES_SCOPE_PHOTOS!=='undefined'?SALES_SCOPE_PHOTOS:null,
+   typeof JOB_RECORDS!=='undefined'?JOB_RECORDS:null,
+   typeof AUDIT_LOG_CACHE!=='undefined'?AUDIT_LOG_CACHE:null
+  ].forEach(node=>_fpCollectPaths(node, out));
+  await fpSignPaths([...out]);
+}
+function fpInstallMediaHydrator(){
+  if(window._fpMediaHydrator) return;
+  let queued=false;
+  const pass=()=>{
+    queued=false;
+    const nodes=document.querySelectorAll('img[src*="/object/public/vehicle-docs/"],a[href*="/object/public/vehicle-docs/"]');
+    const paths=[];
+    nodes.forEach(el=>{
+      const attr=el.tagName==='A'?'href':'src';
+      const raw=el.getAttribute(attr)||'';
+      const path=fpStoragePath(raw);
+      if(!path) return;
+      const signed=fpMediaUrl(raw);
+      if(signed && signed!==raw){ el.setAttribute(attr, signed); return; }
+      paths.push(path);
+    });
+    if(!paths.length) return;
+    fpSignPaths(paths).then(()=>{
+      nodes.forEach(el=>{
+        const attr=el.tagName==='A'?'href':'src';
+        const raw=el.getAttribute(attr)||'';
+        const signed=fpMediaUrl(raw);
+        if(signed && signed!==raw) el.setAttribute(attr, signed);
+      });
+    }).catch(()=>{});
+  };
+  const schedule=()=>{ if(queued) return; queued=true; requestAnimationFrame(pass); };
+  window._fpMediaHydrator=new MutationObserver(schedule);
+  window._fpMediaHydrator.observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['src','href']});
+}
 function _vehFmtBytes(b){ b=+b||0; if(b<1024)return b+' B'; if(b<1048576)return Math.round(b/1024)+' KB'; return (b/1048576).toFixed(1)+' MB'; }
 function _vehDocIcon(name){ return /\.pdf$/i.test(name)?'📄':/\.(jpe?g|png|heic|gif|webp)$/i.test(name)?'🖼️':'📎'; }
 
@@ -14130,7 +14414,7 @@ async function vehUploadDocs(vehId){
     try{
       const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
         method:'POST',
-        headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
+        headers:{ ..._storageHeaders(), 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
         body:file
       });
       if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
@@ -14140,6 +14424,7 @@ async function vehUploadDocs(vehId){
         date:new Date().toISOString().split('T')[0],
         category, name:file.name, path, url:_vehDocPublicUrl(path), size:file.size
       });
+      try{ await fpSignPaths([path]); }catch(e){}
       ok++;
     }catch(e){ console.error('vehicle doc upload failed:',e); fail++; }
   }
@@ -14157,7 +14442,7 @@ async function vehDeleteDoc(vehId,docId){
   if(!confirm(`Delete "${doc.name}"?\n\nThis removes it from the app. Any copy already synced to your Google Drive folder stays there as an archive.`)) return;
   try{
     await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(doc.path)}`,{
-      method:'DELETE', headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY }
+      method:'DELETE', headers:{ ..._storageHeaders() }
     });
   }catch(e){ console.error('storage delete failed',e); }
   VEHICLE_DOCS[vehId]=list.filter(d=>d.id!==docId);
@@ -14179,7 +14464,7 @@ function vehDocsHtml(v){
           <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(d.name||'').replace(/</g,'&lt;')}</div>
           <div style="font-size:11px;color:var(--text3);"><span style="color:${catColor[d.category]||'var(--text3)'};font-weight:600;">${d.category||'Other'}</span> · ${fmtD(d.date)}${d.size?' · '+_vehFmtBytes(d.size):''}</div>
         </div>
-        <a class="btn btn-ghost" href="${d.url}" target="_blank" rel="noopener" style="font-size:11px;padding:4px 10px;flex-shrink:0;">View</a>
+        <a class="btn btn-ghost" href="${fpMediaUrl(d.url)}" target="_blank" rel="noopener" style="font-size:11px;padding:4px 10px;flex-shrink:0;">View</a>
         <button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;color:var(--red);flex-shrink:0;" onclick="vehDeleteDoc('${v.id}','${d.id}')">✕</button>
       </div>`).join('');
   return `
@@ -14316,7 +14601,7 @@ async function _uploadPhotoWithThumb(file, dir, safe, ts){
   try{
     res=await _fetchWithTimeout(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
       method:'POST',
-      headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':_photoMimeType(file), 'x-upsert':'true' },
+      headers:{ ..._storageHeaders(), 'Content-Type':_photoMimeType(file), 'x-upsert':'true' },
       body:file
     },45000);
   }catch(e){
@@ -14332,12 +14617,13 @@ async function _uploadPhotoWithThumb(file, dir, safe, ts){
       const candidatePath=`${dir}/thumb_${ts}_${safe}`;
       const tres=await _fetchWithTimeout(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(candidatePath)}`,{
         method:'POST',
-        headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':thumbFile.type||'application/octet-stream', 'x-upsert':'true' },
+        headers:{ ..._storageHeaders(), 'Content-Type':thumbFile.type||'application/octet-stream', 'x-upsert':'true' },
         body:thumbFile
       },20000);
       if(tres.ok){ thumbUrl=_vehDocPublicUrl(candidatePath); thumbPath=candidatePath; }
     }
   }catch(e){ console.error('thumbnail upload failed (non-fatal, using full-size url):',e); }
+  try{ await fpSignPaths([path].concat(thumbPath?[thumbPath]:[])); }catch(e){}
   return {path, url, thumbPath, thumbUrl, size:file.size};
 }
 
@@ -14424,11 +14710,11 @@ async function jcDeletePhoto(ds,photoId){
   if(!confirm('Delete this photo?')) return;
   try{
     await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(photo.path)}`,{
-      method:'DELETE', headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY }
+      method:'DELETE', headers:{ ..._storageHeaders() }
     });
     if(photo.thumbPath){
       await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(photo.thumbPath)}`,{
-        method:'DELETE', headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY }
+        method:'DELETE', headers:{ ..._storageHeaders() }
       });
     }
   }catch(e){ console.error('job photo storage delete failed',e); }
@@ -14478,8 +14764,11 @@ function openLightbox(urls,startIdx){
 }
 function closeLightbox(){ const el=document.getElementById('photo-lightbox'); if(el) el.style.display='none'; }
 function lbNav(dir){ if(!_lbPhotos.length) return; _lbIdx=(_lbIdx+dir+_lbPhotos.length)%_lbPhotos.length; _lbRender(); }
-function _lbRender(){
-  document.getElementById('lb-img').src=_lbPhotos[_lbIdx];
+async function _lbRender(){
+  const raw=_lbPhotos[_lbIdx];
+  const path=fpStoragePath(raw);
+  if(path && fpMediaUrl(raw)===String(raw)){ try{ await fpSignPaths([path]); }catch(e){} }
+  document.getElementById('lb-img').src=fpMediaUrl(raw);
   document.getElementById('lb-counter').textContent=(_lbIdx+1)+' / '+_lbPhotos.length;
   const multi=_lbPhotos.length>1;
   document.getElementById('lb-prev').style.display=multi?'':'none';
@@ -14494,7 +14783,7 @@ function jcDayPhotosHtml(ds){
   const photoUrls=JSON.stringify(photos.map(p=>p.url));
   const thumbs=photos.map((p,idx)=>`
     <div style="position:relative;width:74px;height:74px;flex-shrink:0;">
-      <img src="${p.thumbUrl||p.url}" loading="lazy" onclick='openLightbox(${photoUrls},${idx})' style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
+      <img src="${fpMediaUrl(p.thumbUrl||p.url)}" loading="lazy" onclick='openLightbox(${photoUrls},${idx})' style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
       <button onclick="jcDeletePhoto('${ds}','${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
     </div>`).join('');
   return `
@@ -14531,7 +14820,7 @@ function renderPhotosPage(){
     const groupUrls=JSON.stringify(g.photos.map(p=>p.url));
     const thumbs=g.photos.map((p,idx)=>`
       <div style="position:relative;width:104px;height:104px;flex-shrink:0;">
-        <img src="${p.thumbUrl||p.url}" loading="lazy" onclick='openLightbox(${groupUrls},${idx})' style="width:104px;height:104px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
+        <img src="${fpMediaUrl(p.thumbUrl||p.url)}" loading="lazy" onclick='openLightbox(${groupUrls},${idx})' style="width:104px;height:104px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
         <div style="position:absolute;bottom:2px;left:2px;right:2px;background:rgba(0,0,0,.55);color:#fff;font-size:9px;border-radius:4px;padding:1px 4px;text-align:center;pointer-events:none;">${jcFmtDate(p.ds)}</div>
         <button onclick="phDeletePhoto('${g.jobId}','${p.ds}','${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
       </div>`).join('');
@@ -14565,19 +14854,20 @@ async function _transferScopePhotosToJob(visitId,jobId){
     try{
       const res=await fetch(`${SUPABASE_URL}/storage/v1/object/copy`,{
         method:'POST',
-        headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':'application/json' },
+        headers:{ ..._storageHeaders(), 'Content-Type':'application/json' },
         body:JSON.stringify({bucketId:VEH_DOCS_BUCKET, sourceKey:p.path, destinationKey:destPath})
       });
       if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
       // Carry the thumbnail along too, if the source photo has one — otherwise the job's copy
       // falls back to full-size (still correct, just no speed win for this one photo).
       let destThumbUrl=_vehDocPublicUrl(destPath);
+      let destThumbPath='';
       if(p.thumbPath){
-        const destThumbPath=`jobs/${jobId}/scope/thumb_${ts}_${i}_${safe}`;
+        destThumbPath=`jobs/${jobId}/scope/thumb_${ts}_${i}_${safe}`;
         try{
           const tres=await fetch(`${SUPABASE_URL}/storage/v1/object/copy`,{
             method:'POST',
-            headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':'application/json' },
+            headers:{ ..._storageHeaders(), 'Content-Type':'application/json' },
             body:JSON.stringify({bucketId:VEH_DOCS_BUCKET, sourceKey:p.thumbPath, destinationKey:destThumbPath})
           });
           if(tres.ok) destThumbUrl=_vehDocPublicUrl(destThumbPath);
@@ -14587,6 +14877,11 @@ async function _transferScopePhotosToJob(visitId,jobId){
         id:(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)),
         name:p.name, path:destPath, url:_vehDocPublicUrl(destPath), thumbUrl:destThumbUrl, size:p.size, ts:new Date().toISOString()
       });
+      try{
+        const signed=[destPath];
+        if(destThumbPath && destThumbUrl!==_vehDocPublicUrl(destPath)) signed.push(destThumbPath);
+        await fpSignPaths(signed);
+      }catch(e){}
       ok++;
     }catch(e){ console.error('scope photo transfer failed:',e); }
   }
@@ -14608,7 +14903,7 @@ function jcRenderScopePhotos(){
     const scopeUrls=JSON.stringify(photos.map(p=>p.url));
     grid.innerHTML=photos.map((p,idx)=>`
       <div style="position:relative;width:74px;height:74px;flex-shrink:0;">
-        <img src="${p.thumbUrl||p.url}" loading="lazy" onclick='openLightbox(${scopeUrls},${idx})' style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
+        <img src="${fpMediaUrl(p.thumbUrl||p.url)}" loading="lazy" onclick='openLightbox(${scopeUrls},${idx})' style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
         ${isCrew?'':`<button onclick="jcDeleteScopePhoto('${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>`}
       </div>`).join('');
     return;
@@ -14645,7 +14940,7 @@ function jcRenderJobDocs(){
           <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(d.name||'').replace(/</g,'&lt;')}</div>
           <div style="font-size:11px;color:var(--text3);">${fmtD(d.date)}${d.size?' · '+_vehFmtBytes(d.size):''}</div>
         </div>
-        <a class="btn btn-ghost" href="${d.url}" target="_blank" rel="noopener" style="font-size:11px;padding:4px 10px;flex-shrink:0;">View</a>
+        <a class="btn btn-ghost" href="${fpMediaUrl(d.url)}" target="_blank" rel="noopener" style="font-size:11px;padding:4px 10px;flex-shrink:0;">View</a>
         ${isCrew?'':`<button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;color:var(--red);flex-shrink:0;" onclick="jcDeleteJobDoc('${d.id}')">✕</button>`}
       </div>`).join('');
 }
@@ -14686,7 +14981,7 @@ async function jcUploadJobDocFiles(files){
     try{
       const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
         method:'POST',
-        headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
+        headers:{ ..._storageHeaders(), 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
         body:file
       });
       if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
@@ -14696,6 +14991,7 @@ async function jcUploadJobDocFiles(files){
         date:new Date().toISOString().split('T')[0],
         name:file.name, path, url:_vehDocPublicUrl(path), size:file.size
       });
+      try{ await fpSignPaths([path]); }catch(e){}
       ok++;
     }catch(e){ console.error('job doc upload failed:',e); fail++; }
   }
@@ -14712,7 +15008,7 @@ async function jcDeleteJobDoc(docId){
   if(!confirm(`Delete "${doc.name}"?`)) return;
   try{
     await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(doc.path)}`,{
-      method:'DELETE', headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY }
+      method:'DELETE', headers:{ ..._storageHeaders() }
     });
   }catch(e){ console.error('job doc storage delete failed',e); }
   JOB_DOCS[job.id]=list.filter(d=>d.id!==docId);
@@ -14737,11 +15033,11 @@ async function jcDeleteScopePhoto(photoId){
   if(!confirm('Delete this photo?')) return;
   try{
     await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(photo.path)}`,{
-      method:'DELETE', headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY }
+      method:'DELETE', headers:{ ..._storageHeaders() }
     });
     if(photo.thumbPath){
       await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(photo.thumbPath)}`,{
-        method:'DELETE', headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY }
+        method:'DELETE', headers:{ ..._storageHeaders() }
       });
     }
   }catch(e){ console.error('scope photo storage delete failed',e); }
@@ -14923,11 +15219,11 @@ async function svScopeDeletePhoto(photoId){
   if(!confirm('Delete this photo?')) return;
   try{
     await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(photo.path)}`,{
-      method:'DELETE', headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY }
+      method:'DELETE', headers:{ ..._storageHeaders() }
     });
     if(photo.thumbPath){
       await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(photo.thumbPath)}`,{
-        method:'DELETE', headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY }
+        method:'DELETE', headers:{ ..._storageHeaders() }
       });
     }
   }catch(e){ console.error('scope photo storage delete failed',e); }
@@ -14947,7 +15243,7 @@ function renderSvScopePhotos(){
   const scopeVisitUrls=JSON.stringify(photos.map(p=>p.url));
   const thumbs=photos.map((p,idx)=>`
     <div style="position:relative;width:84px;height:84px;flex-shrink:0;">
-      <img src="${p.thumbUrl||p.url}" loading="lazy" onclick='openLightbox(${scopeVisitUrls},${idx})' style="width:84px;height:84px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
+      <img src="${fpMediaUrl(p.thumbUrl||p.url)}" loading="lazy" onclick='openLightbox(${scopeVisitUrls},${idx})' style="width:84px;height:84px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
       <button onclick="svScopeDeletePhoto('${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
     </div>`).join('');
   el.innerHTML=`
@@ -15013,7 +15309,7 @@ function renderJobScopePage(){
         <div style="font-size:11px;color:var(--text3);">${(v.name||'').replace(/</g,'&lt;')}${v.date?' · '+jcFmtDate(v.date):''}</div>
         ${v.address?`<div style="font-size:11px;color:var(--text3);">📍 ${v.address.replace(/</g,'&lt;')}</div>`:''}
         ${notes?`<div style="font-size:12.5px;color:var(--text2);white-space:pre-wrap;line-height:1.4;max-height:110px;overflow:hidden;">${notes}</div>`:''}
-        ${photos.length?`<div style="display:flex;gap:4px;margin-top:2px;align-items:center;">${photos.slice(0,4).map(p=>`<img src="${p.url}" loading="lazy" style="width:36px;height:36px;object-fit:cover;border-radius:4px;border:1px solid var(--border2);"/>`).join('')}${photos.length>4?`<span style="font-size:11px;color:var(--text3);">+${photos.length-4}</span>`:''}</div>`:''}
+        ${photos.length?`<div style="display:flex;gap:4px;margin-top:2px;align-items:center;">${photos.slice(0,4).map(p=>`<img src="${fpMediaUrl(p.url)}" loading="lazy" style="width:36px;height:36px;object-fit:cover;border-radius:4px;border:1px solid var(--border2);"/>`).join('')}${photos.length>4?`<span style="font-size:11px;color:var(--text3);">+${photos.length-4}</span>`:''}</div>`:''}
         ${edited?`<div style="font-size:10px;color:var(--text3);margin-top:2px;">${edited}</div>`:''}
       </div>`;
     }).join('')
@@ -15111,7 +15407,7 @@ function renderMatDocsList(){
           <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(d.name||'').replace(/</g,'&lt;')}</div>
           <div style="font-size:11px;color:var(--text3);">${fmtD(d.date)}${d.size?' · '+_vehFmtBytes(d.size):''}</div>
         </div>
-        <a class="btn btn-ghost" href="${d.url}" target="_blank" rel="noopener" style="font-size:11px;padding:4px 10px;flex-shrink:0;">View</a>
+        <a class="btn btn-ghost" href="${fpMediaUrl(d.url)}" target="_blank" rel="noopener" style="font-size:11px;padding:4px 10px;flex-shrink:0;">View</a>
         <button class="btn btn-ghost" style="font-size:11px;padding:4px 8px;color:var(--red);flex-shrink:0;" onclick="matDeleteDoc('${d.id}')">✕</button>
       </div>`).join('');
 }
@@ -15130,7 +15426,7 @@ async function matUploadDocs(){
     try{
       const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
         method:'POST',
-        headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
+        headers:{ ..._storageHeaders(), 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
         body:file
       });
       if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
@@ -15140,6 +15436,7 @@ async function matUploadDocs(){
         date:new Date().toISOString().split('T')[0],
         name:file.name, path, url:_vehDocPublicUrl(path), size:file.size
       });
+      try{ await fpSignPaths([path]); }catch(e){}
       ok++;
     }catch(e){ console.error('material doc upload failed:',e); fail++; }
   }
@@ -15156,7 +15453,7 @@ async function matDeleteDoc(docId){
   if(!confirm(`Delete "${doc.name}"?`)) return;
   try{
     await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(doc.path)}`,{
-      method:'DELETE', headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY }
+      method:'DELETE', headers:{ ..._storageHeaders() }
     });
   }catch(e){ console.error('storage delete failed',e); }
   MATERIAL_DOCS[id]=list.filter(d=>d.id!==docId);
@@ -15206,7 +15503,7 @@ function renderProdDocs(){
         </div>
         <button class="btn btn-ghost" style="font-size:11px;padding:3px 0 0;color:var(--accent);font-weight:600;" onclick="document.getElementById('pdnote-add-${m.db_id}').style.display='block';this.style.display='none';">＋ Add a tip</button>
       </div>`;
-    const links=docs.map(d=>`<a href="${d.url}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);text-decoration:none;color:var(--text);font-size:13px;font-weight:500;">
+    const links=docs.map(d=>`<a href="${fpMediaUrl(d.url)}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);text-decoration:none;color:var(--text);font-size:13px;font-weight:500;">
         <span style="font-size:17px;flex-shrink:0;">${_vehDocIcon(d.name||'')}</span>
         <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(d.name||'').replace(/</g,'&lt;')}</span>
         <span style="font-size:11px;color:var(--accent);font-weight:700;flex-shrink:0;">Open ↗</span>
