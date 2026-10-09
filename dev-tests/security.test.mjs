@@ -97,6 +97,12 @@ test('the page does not fetch or contain the old client-side PIN check', () => {
   assert.equal(adminSrc.includes('/auth/v1/admin/users/'), false);
   assert.equal(adminSrc.includes('status !== 404'), false);
   assert.equal(adminSrc.includes('requirePin(body.pin, 4, 6)'), false);
+  const loadAt = html.indexOf('async function loadAllFromSupabase');
+  const renderAt = html.indexOf('renderDashboard();', loadAt);
+  const warmAt = html.indexOf('fpWarmStoredMedia()', loadAt);
+  assert.ok(renderAt > loadAt && warmAt > renderAt, 'dashboard must render before photo signing');
+  const auditFn = html.slice(html.indexOf('async function renderAuditLog'), html.indexOf('function showSyncStatus'));
+  assert.equal(auditFn.includes('fpWarmStoredMedia'), false, 'audit log must not wait on photo signing');
 });
 
 test('login goes through the server and stored photo URLs are signed without rewriting them', async () => {
@@ -210,8 +216,13 @@ test('login goes through the server and stored photo URLs are signed without rew
     assert.equal(jobGet.authorization, 'Bearer tok-owner');
 
     w.eval('JOB_PHOTOS = { j1: [{ url: ' + JSON.stringify(publicUrl) + ', thumb: "jobs/thumb.jpg" }] }');
+    w.eval('JOB_RECORDS = [{ customer: "Noblett Shop", extraDays: ["2026-10-05"], scope: "gate code 1234" }]');
+    w.eval('AUDIT_LOG_CACHE = [{ details: "Seth worked Noblett Shop" }]');
     const before = publicUrl;
     await call('fpWarmStoredMedia');
+    const signCall = calls.find(c => c.url.includes('/storage/v1/object/sign/'));
+    assert.ok(signCall, 'expected a sign request');
+    assert.deepEqual(signCall.body.paths.slice().sort(), ['jobs/a b.jpg', 'jobs/thumb.jpg']);
     const signed = call('fpMediaUrl', publicUrl);
     assert.notEqual(signed, before);
     assert.match(signed, /\/storage\/v1\/object\/sign\/vehicle-docs\//);

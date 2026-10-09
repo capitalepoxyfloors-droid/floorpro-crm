@@ -2210,7 +2210,6 @@ async function renderAuditLog(){
     return [r.actor,r.action,r.entity,detailText].join(' ').toLowerCase();
   };
   const rows=(AUDIT_LOG_CACHE||[]).filter(r=>!q||searchText(r).includes(q));
-  try{ await fpWarmStoredMedia(); }catch(e){}
   if(!rows.length){
     el.innerHTML='<div style="padding:60px 20px;text-align:center;color:var(--text3);">'+(q?'No matching entries.':'No activity logged yet.')+'</div>';
     return;
@@ -3202,7 +3201,6 @@ async function loadAllFromSupabase(){
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
-    try{ await fpWarmStoredMedia(); }catch(e){ console.error('photo signing failed', e); }
     _kvSnapshotBaselines();             // remember loaded server state as the merge ancestor for saves
     applyNavOrder();                    // restore the user's saved sidebar tab order
     // Schedule repair runs only for an owner/manager, and only when the reads it uses succeeded.
@@ -3229,6 +3227,10 @@ async function loadAllFromSupabase(){
     crossCheckLeadsVsJobs();   // flag any pipeline lead that's already an approved job
     initSalesNotifications();
     showSyncStatus('✓ Ready','var(--green)');
+    // Sign photo URLs after the screens are drawn. Waiting here used to leave the
+    // dashboard on its empty first paint, because every note and date in the job
+    // records was being sent to the storage signer.
+    fpWarmStoredMedia().catch(e=>console.error('photo signing failed', e));
   }catch(e){
     showSyncStatus('⚠ Working offline','var(--red)');
     console.error('Supabase load error:',e);
@@ -14363,17 +14365,35 @@ async function fpSignPaths(paths){
     });
   }
 }
+// A stored photo is either a vehicle-docs URL or a relative object key like jobs/a.jpg.
+// Notes, dates, and customer names are also strings. They must not be signed.
+function _fpRememberMedia(value, out){
+  if(value==null||value==='') return;
+  const s=String(value);
+  const marker='/vehicle-docs/';
+  let from=0;
+  while(from<s.length){
+    const i=s.indexOf(marker, from);
+    if(i<0) break;
+    let rest=s.slice(i+marker.length).split(/[?\s#"'<>]/)[0];
+    try{ rest=decodeURIComponent(rest); }catch(e){}
+    if(rest && rest.length<500 && rest.includes('/')) out.add(rest);
+    from=i+marker.length;
+  }
+  if(!s.includes('://') && /^(jobs|materials|vehicles)\//.test(s) && s.length<500 && !/\s/.test(s)){
+    out.add(s.replace(/^\/+/,''));
+  }
+}
 function _fpCollectPaths(node, out){
   if(!node) return;
   if(typeof node==='string'){
-    const p=fpStoragePath(node);
-    if(p) out.add(p);
+    _fpRememberMedia(node, out);
     return;
   }
   if(Array.isArray(node)){ node.forEach(n=>_fpCollectPaths(n, out)); return; }
   if(typeof node==='object'){
     ['path','thumbPath','url','thumbUrl','thumb'].forEach(k=>{
-      if(node[k]){ const p=fpStoragePath(node[k]); if(p) out.add(p); }
+      if(node[k]) _fpRememberMedia(node[k], out);
     });
     Object.keys(node).forEach(k=>{
       if(k==='path'||k==='thumbPath'||k==='url'||k==='thumbUrl'||k==='thumb') return;
