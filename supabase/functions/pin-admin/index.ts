@@ -62,17 +62,21 @@ Deno.serve(async (req) => {
   if (action === 'whoami') return json(publicAccount(self));
 
   const role = user.app_metadata?.fp_role;
-  if (role !== 'owner' || self.kind !== 'owner') {
-    return json({ error: 'Only the manager code can change PINs.' }, 403);
-  }
+  const isOwner = role === 'owner' && self.kind === 'owner';
+  const isOffice = role === 'office' && self.kind === 'office';
 
   try {
+    if (action === 'revoke_crew') {
+      if (!isOwner && !isOffice) return json({ error: 'Only the office can deactivate a crew member.' }, 403);
+      return json(await revokeCrew(db, url, service, body));
+    }
+    if (!isOwner) return json({ error: 'Only the manager code can change PINs.' }, 403);
     if (action === 'list') return json(await listAccounts(db));
-    if (action === 'set_owner_pin') return json(await setOwnerPin(db, body));
-    if (action === 'set_crew_pin') return json(await setCrewPin(db, body));
-    if (action === 'clear_crew_pin') return json(await clearCrewPin(db, body));
+    if (action === 'set_owner_pin') return json(await setOwnerPin(db, url, service, body));
+    if (action === 'set_crew_pin') return json(await setCrewPin(db, url, service, body));
+    if (action === 'clear_crew_pin') return json(await clearCrewPin(db, url, service, body));
     if (action === 'add_office') return json(await addOffice(db, body));
-    if (action === 'set_office_pin') return json(await setOfficePin(db, body));
+    if (action === 'set_office_pin') return json(await setOfficePin(db, url, service, body));
     if (action === 'remove_office') return json(await removeOffice(db, url, service, body));
     return json({ error: 'Unknown action' }, 400);
   } catch (err) {
@@ -114,35 +118,78 @@ async function listAccounts(db: ReturnType<typeof createClient>) {
   };
 }
 
-async function setOwnerPin(db: ReturnType<typeof createClient>, body: Record<string, unknown>) {
-  const pin = requirePin(body.pin, 4, 6);
+async function setOwnerPin(
+  db: ReturnType<typeof createClient>,
+  url: string,
+  service: string,
+  body: Record<string, unknown>,
+) {
+  const pin = requirePin(body.pin, 4, 4);
   await assertPinFree(db, pin, { kind: 'owner' });
-  const { error } = await db.from('pin_accounts').update({
-    pin_hash: bcrypt.hashSync(pin, 8),
-    updated_at: new Date().toISOString(),
-  }).eq('kind', 'owner');
-  if (error) throw new Error('Could not save the manager code.');
+  const { data: existing, error: readErr } = await db.from('pin_accounts')
+    .select('id, auth_user_id, session_nonce').eq('kind', 'owner').maybeSingle();
+  if (readErr || !existing) throw new Error('Could not save the manager code.');
+  await replacePin(db, url, service, existing, { pin_hash: bcrypt.hashSync(pin, 8) }, 'owner');
   return { ok: true };
 }
 
-async function setCrewPin(db: ReturnType<typeof createClient>, body: Record<string, unknown>) {
+async function setCrewPin(
+  db: ReturnType<typeof createClient>,
+  url: string,
+  service: string,
+  body: Record<string, unknown>,
+) {
   const crewIdx = requireIndex(body.crew_idx);
-  const pin = requirePin(body.pin, 4, 6);
+  const pin = requirePin(body.pin, 4, 4);
   await assertPinFree(db, pin, { kind: 'crew', crew_idx: crewIdx });
   const label = await crewLabel(db, crewIdx);
   const hash = bcrypt.hashSync(pin, 8);
-  const { data: existing } = await db.from('pin_accounts').select('id').eq('kind', 'crew').eq('crew_idx', crewIdx).maybeSingle();
-  const write = existing
-    ? await db.from('pin_accounts').update({ pin_hash: hash, label, updated_at: new Date().toISOString() }).eq('id', existing.id)
-    : await db.from('pin_accounts').insert({ kind: 'crew', crew_idx: crewIdx, label, pin_hash: hash });
-  if (write.error) throw new Error('Could not save that crew PIN.');
+  const { data: existing } = await db.from('pin_accounts')
+    .select('id, auth_user_id, session_nonce').eq('kind', 'crew').eq('crew_idx', crewIdx).maybeSingle();
+  if (existing) {
+    await replacePin(db, url, service, existing, { pin_hash: hash, label }, 'crew', crewIdx);
+  } else {
+    const { error } = await db.from('pin_accounts').insert({ kind: 'crew', crew_idx: crewIdx, label, pin_hash: hash });
+    if (error) throw new Error('Could not save that crew PIN.');
+  }
   return { ok: true };
 }
 
-async function clearCrewPin(db: ReturnType<typeof createClient>, body: Record<string, unknown>) {
+async function clearCrewPin(
+  db: ReturnType<typeof createClient>,
+  url: string,
+  service: string,
+  body: Record<string, unknown>,
+) {
   const crewIdx = requireIndex(body.crew_idx);
-  const { error } = await db.from('pin_accounts').delete().eq('kind', 'crew').eq('crew_idx', crewIdx);
-  if (error) throw new Error('Could not clear that PIN.');
+  const { data: existing } = await db.from('pin_accounts')
+    .select('id, auth_user_id').eq('kind', 'crew').eq('crew_idx', crewIdx).maybeSingle();
+  if (existing?.auth_user_id) await revokeAuthUser(url, service, existing.auth_user_id, true);
+  if (existing) {
+    const { error } = await db.from('pin_accounts').delete().eq('id', existing.id);
+    if (error) throw new Error('Could not clear that PIN.');
+  }
+  return { ok: true };
+}
+
+async function revokeCrew(
+  db: ReturnType<typeof createClient>,
+  url: string,
+  service: string,
+  body: Record<string, unknown>,
+) {
+  const crewIdx = requireIndex(body.crew_idx);
+  const { data: existing } = await db.from('pin_accounts')
+    .select('id, auth_user_id').eq('kind', 'crew').eq('crew_idx', crewIdx).maybeSingle();
+  if (existing?.auth_user_id) {
+    await revokeAuthUser(url, service, existing.auth_user_id, true);
+    const { error } = await db.from('pin_accounts').update({
+      auth_user_id: null,
+      email: null,
+      updated_at: new Date().toISOString(),
+    }).eq('id', existing.id);
+    if (error) throw new Error('Could not sign that person out.');
+  }
   return { ok: true };
 }
 
@@ -166,16 +213,20 @@ async function addOffice(db: ReturnType<typeof createClient>, body: Record<strin
   return { ok: true, office_id: officeId };
 }
 
-async function setOfficePin(db: ReturnType<typeof createClient>, body: Record<string, unknown>) {
+async function setOfficePin(
+  db: ReturnType<typeof createClient>,
+  url: string,
+  service: string,
+  body: Record<string, unknown>,
+) {
   const officeId = String(body.office_id || '');
   if (!officeId) throw new Error('Missing office staff.');
   const pin = requirePin(body.pin, 4, 4);
   await assertPinFree(db, pin, { kind: 'office', office_id: officeId });
-  const { error } = await db.from('pin_accounts').update({
-    pin_hash: bcrypt.hashSync(pin, 8),
-    updated_at: new Date().toISOString(),
-  }).eq('kind', 'office').eq('office_id', officeId);
-  if (error) throw new Error('Could not save that PIN.');
+  const { data: existing, error: readErr } = await db.from('pin_accounts')
+    .select('id, auth_user_id, session_nonce').eq('kind', 'office').eq('office_id', officeId).maybeSingle();
+  if (readErr || !existing) throw new Error('Could not save that PIN.');
+  await replacePin(db, url, service, existing, { pin_hash: bcrypt.hashSync(pin, 8) }, 'office');
   return { ok: true };
 }
 
@@ -190,24 +241,61 @@ async function removeOffice(
   const { data: row } = await db.from('pin_accounts').select('auth_user_id').eq('kind', 'office').eq('office_id', officeId).maybeSingle();
   const { error } = await db.from('pin_accounts').delete().eq('kind', 'office').eq('office_id', officeId);
   if (error) throw new Error('Could not remove that person.');
-  if (row?.auth_user_id) {
-    try {
-      await fetch(`${url}/auth/v1/admin/users/${row.auth_user_id}/logout`, {
-        method: 'POST',
-        headers: {
-          apikey: service,
-          Authorization: `Bearer ${service}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ scope: 'global' }),
-      });
-      const admin = createClient(url, service, { auth: { persistSession: false, autoRefreshToken: false } });
-      await admin.auth.admin.updateUserById(row.auth_user_id, { ban_duration: '876000h' });
-    } catch (err) {
-      console.error('office revoke failed', err instanceof Error ? err.message : 'unknown');
-    }
-  }
+  if (row?.auth_user_id) await revokeAuthUser(url, service, row.auth_user_id, true);
   return { ok: true };
+}
+
+// Keeps the same Auth user when a PIN changes. Bumps the nonce and signs every
+// session out so the previous refresh token cannot mint a new access token, and
+// the previous access token no longer matches private.fp_member().
+async function replacePin(
+  db: ReturnType<typeof createClient>,
+  url: string,
+  service: string,
+  existing: { id: string; auth_user_id: string | null; session_nonce: number | null },
+  patch: Record<string, unknown>,
+  kind: string,
+  crewIdx: number | null = null,
+) {
+  const nextNonce = (existing.session_nonce || 0) + 1;
+  const { error } = await db.from('pin_accounts').update({
+    ...patch,
+    session_nonce: nextNonce,
+    updated_at: new Date().toISOString(),
+  }).eq('id', existing.id);
+  if (error) throw new Error('Could not save that PIN.');
+  if (!existing.auth_user_id) return;
+  const admin = createClient(url, service, { auth: { persistSession: false, autoRefreshToken: false } });
+  const updated = await admin.auth.admin.updateUserById(existing.auth_user_id, {
+    app_metadata: {
+      fp_role: kind,
+      fp_nonce: nextNonce,
+      crew_idx: kind === 'crew' ? crewIdx : null,
+    },
+  });
+  if (updated.error) throw new Error(updated.error.message);
+  await revokeAuthUser(url, service, existing.auth_user_id, false);
+}
+
+async function revokeAuthUser(url: string, service: string, userId: string, deleteUser: boolean) {
+  const logout = await fetch(`${url}/auth/v1/admin/users/${userId}/logout`, {
+    method: 'POST',
+    headers: {
+      apikey: service,
+      Authorization: `Bearer ${service}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ scope: 'global' }),
+  });
+  if (!deleteUser) {
+    if (!logout.ok && logout.status !== 404) throw new Error('Could not sign that person out.');
+    return;
+  }
+  const admin = createClient(url, service, { auth: { persistSession: false, autoRefreshToken: false } });
+  const deleted = await admin.auth.admin.deleteUser(userId);
+  if (deleted.error && !/not found/i.test(deleted.error.message || '')) {
+    throw new Error('Could not sign that person out.');
+  }
 }
 
 function requirePin(value: unknown, min: number, max: number) {

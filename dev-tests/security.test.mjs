@@ -24,9 +24,10 @@ const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 
 test('PIN matching prefers owner, then office, then crew, and always checks every hash', () => {
   assert.equal(normalizePin('1234'), '1234');
-  assert.equal(normalizePin(' 123456 '), '123456');
+  assert.equal(normalizePin(' 1234 '), '1234');
   assert.equal(normalizePin('123'), '');
-  assert.equal(normalizePin('1234567'), '');
+  assert.equal(normalizePin('12345'), '');
+  assert.equal(normalizePin('123456'), '');
   assert.equal(normalizePin('12a4'), '');
 
   const rows = [
@@ -73,6 +74,22 @@ test('the page does not fetch or contain the old client-side PIN check', () => {
   assert.equal(html.includes("getKV('office_users')"), false);
   assert.match(html, /functions\/v1\/pin-login/);
   assert.match(html, /function fpStoragePath/);
+  assert.match(html, /_pinBuf\.length>=4/);
+  assert.equal(html.includes('_pinBuf.length>=6'), false);
+  assert.equal(html.includes('maxlength="6"'), false);
+  assert.match(html, /await fpEnsureSession\(\);\s*const res=await fetch\(url,\{method,headers:sb\.headers/);
+  assert.match(html, /async function fpStorageHeaders/);
+  const migration = fs.readFileSync(path.join(root, 'supabase/migrations/20261009143000_rls_pin_auth_private_storage.sql'), 'utf8');
+  assert.equal(migration.includes('ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY'), false);
+  assert.match(migration, /private\.fp_member\(\)/);
+  assert.match(migration, /crew_inactive/);
+  assert.match(migration, /Crew ' \|\| \(v_key::int \+ 1\)/);
+  const adminSrc = fs.readFileSync(path.join(root, 'supabase/functions/pin-admin/index.ts'), 'utf8');
+  assert.match(adminSrc, /Crew \$\{crewIdx \+ 1\}/);
+  assert.match(adminSrc, /scope: 'global'/);
+  assert.match(adminSrc, /deleteUser/);
+  assert.match(adminSrc, /session_nonce/);
+  assert.equal(adminSrc.includes('requirePin(body.pin, 4, 6)'), false);
 });
 
 test('login goes through the server and stored photo URLs are signed without rewriting them', async () => {

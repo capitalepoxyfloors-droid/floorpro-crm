@@ -9,7 +9,7 @@ const KIND_RANK = { owner: 0, office: 1, crew: 2 };
 
 export function normalizePin(pin) {
   const s = String(pin ?? '').trim();
-  return /^\d{4,6}$/.test(s) ? s : '';
+  return /^\d{4}$/.test(s) ? s : '';
 }
 
 export function sortAccounts(rows) {

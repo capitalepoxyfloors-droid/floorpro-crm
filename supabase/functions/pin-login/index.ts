@@ -62,7 +62,7 @@ Deno.serve(async (req) => {
 
   const { data: accounts, error: acctErr } = await db
     .from('pin_accounts')
-    .select('id, kind, crew_idx, office_id, label, pin_hash, auth_user_id, email');
+    .select('id, kind, crew_idx, office_id, label, pin_hash, auth_user_id, email, session_nonce');
   if (acctErr) {
     console.error('pin account read failed', acctErr.message);
     return json({ error: 'Sign-in is unavailable. Try again in a minute.' }, 503);
@@ -124,12 +124,14 @@ async function ensureSession(
     label: string;
     auth_user_id: string | null;
     email: string | null;
+    session_nonce: number | null;
   },
 ) {
   const admin = createClient(url, service, { auth: { persistSession: false, autoRefreshToken: false } });
   const email = row.email || `p${row.id.replace(/-/g, '')}@pin.floorpro.invalid`;
   const appMetadata = {
     fp_role: row.kind,
+    fp_nonce: row.session_nonce ?? 0,
     crew_idx: row.kind === 'crew' ? row.crew_idx : null,
     display_name: row.label || '',
   };
@@ -141,10 +143,16 @@ async function ensureSession(
       email_confirm: true,
       app_metadata: appMetadata,
     });
-    if (created.error || !created.data.user) {
-      throw new Error(created.error?.message || 'createUser failed');
+    if (created.data.user) {
+      userId = created.data.user.id;
+    } else {
+      // The same pin row already created this login before. Reuse it instead of
+      // leaving a second account whose refresh token still works.
+      userId = await findAuthUserId(url, service, email);
+      if (!userId) throw new Error(created.error?.message || 'createUser failed');
+      const linked = await admin.auth.admin.updateUserById(userId, { app_metadata: appMetadata });
+      if (linked.error) throw new Error(linked.error.message);
     }
-    userId = created.data.user.id;
     const saved = await db.from('pin_accounts').update({
       auth_user_id: userId,
       email,
@@ -173,4 +181,20 @@ async function ensureSession(
     last = verified.error?.message || last;
   }
   throw new Error(last);
+}
+
+async function findAuthUserId(url: string, service: string, email: string) {
+  const wanted = email.toLowerCase();
+  for (let page = 1; page <= 5; page++) {
+    const res = await fetch(`${url}/auth/v1/admin/users?page=${page}&per_page=200`, {
+      headers: { apikey: service, Authorization: `Bearer ${service}` },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const users = Array.isArray(data) ? data : (data.users || []);
+    const hit = users.find((u: { email?: string; id?: string }) => (u.email || '').toLowerCase() === wanted);
+    if (hit?.id) return hit.id as string;
+    if (users.length < 200) return null;
+  }
+  return null;
 }

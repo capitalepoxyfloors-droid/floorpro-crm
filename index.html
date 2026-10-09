@@ -970,7 +970,7 @@
           <div style="padding:20px 18px;display:flex;flex-direction:column;gap:16px;">
             <div class="form-group" style="margin:0;">
               <label class="form-label">Manager Code <span style="color:var(--text3);font-weight:400;">(full access — keep private)</span></label>
-              <input class="form-input" id="pin-new-admin" type="password" inputmode="numeric" maxlength="6" placeholder="New manager code" style="width:200px;font-size:18px;letter-spacing:4px;font-family:'DM Mono',monospace;"/>
+              <input class="form-input" id="pin-new-admin" type="password" inputmode="numeric" maxlength="4" placeholder="New manager code" style="width:200px;font-size:18px;letter-spacing:4px;font-family:'DM Mono',monospace;"/>
             </div>
             <div style="font-size:11.5px;color:var(--text2);line-height:1.4;">Crew sign in with their own personal PINs (set below) — there is no shared crew code.</div>
             <div>
@@ -2592,6 +2592,7 @@ function _phone2ColumnMissing(status, text){
   return (status===400||status===404) && /phone2/i.test(text||'') && /(column|schema cache|PGRST204|does not exist)/i.test(text||'');
 }
 async function _leadDbSend(method, url, row){
+  await fpEnsureSession();
   const res=await fetch(url,{method,headers:sb.headers,body:JSON.stringify(row)});
   const text=await res.text();
   let data=null;
@@ -8500,7 +8501,7 @@ function _pinRender(){
 }
 
 function pinKey(d){
-  if(_pinBusy||_pinBuf.length>=6) return;
+  if(_pinBusy||_pinBuf.length>=4) return;
   _pinBuf+=String(d); _pinRender();
   if(_pinBuf.length>=4) setTimeout(pinSubmit,180);
 }
@@ -8571,13 +8572,14 @@ function pinLogout(){
 async function pinSaveSettings(){
   const na=document.getElementById('pin-new-admin').value.trim();
   if(!na){ showToast('Enter a new manager code.'); return; }
-  if(na.length<4||na.length>6){ showToast('Manager code must be 4 to 6 digits.'); return; }
-  if(!/^\d+$/.test(na)){ showToast('Manager code must be numbers only.'); return; }
+  if(!/^\d{4}$/.test(na)){ showToast('Manager code must be exactly 4 digits.'); return; }
   const res=await fpPinAdmin('set_owner_pin',{ pin:na });
   if(!res.ok){ showToast(res.error); return; }
   document.getElementById('pin-new-admin').value='';
   logAudit('pin_changed','Manager code','');
-  showToast('✅ Manager code updated.');
+  fpClearLocalAuth();
+  showLoginScreen();
+  showToast('Manager code updated. Sign in with the new code.');
 }
 
 async function _loadPinDirectory(){
@@ -8602,7 +8604,7 @@ async function renderCrewPins(){
       <span style="width:9px;height:9px;border-radius:50%;background:${col};flex-shrink:0;"></span>
       <span style="flex:1;font-size:13px;color:var(--text);">${(cd.full||('Crew '+(i+1))).replace(/</g,'&lt;')}${isCrewInactive(i)?' <span style="font-size:11px;color:var(--text3);">(inactive — sign-in blocked)</span>':''}</span>
       <span style="font-size:11px;color:var(--text3);width:58px;">${on?'PIN on file':'No PIN'}</span>
-      <input class="form-input" id="cpin-${i}" type="password" inputmode="numeric" maxlength="6" value="" placeholder="${on?'new PIN':'set PIN'}" style="width:104px;font-size:16px;letter-spacing:3px;text-align:center;font-family:'DM Mono',monospace;"/>
+      <input class="form-input" id="cpin-${i}" type="password" inputmode="numeric" maxlength="4" value="" placeholder="${on?'new PIN':'set PIN'}" style="width:104px;font-size:16px;letter-spacing:3px;text-align:center;font-family:'DM Mono',monospace;"/>
       <button class="btn btn-ghost" onclick="saveCrewPin(${i})" style="font-size:12px;padding:6px 12px;">Save</button>
     </div>`;
   }).join('');
@@ -8621,7 +8623,7 @@ async function saveCrewPin(i){
     renderCrewPins();
     return;
   }
-  if(v.length<4||!/^\d+$/.test(v)){ showToast('PIN must be at least 4 digits, numbers only.'); return; }
+  if(!/^\d{4}$/.test(v)){ showToast('PIN must be exactly 4 digits.'); return; }
   const saved=await fpPinAdmin('set_crew_pin',{ crew_idx:i, pin:v });
   if(!saved.ok){ showToast(saved.error); return; }
   el.value='';
@@ -8670,7 +8672,7 @@ async function saveOfficeUserPin(id){
 async function removeOfficeUser(id){
   const u=OFFICE_USERS.find(x=>x.id===id);
   const name=(u&&u.name)||'this person';
-  if(!confirm('Remove '+name+'\'s access? Their PIN stops working. A device they still have open keeps working until they reload or the sign-in expires (about an hour).')) return;
+  if(!confirm('Remove '+name+'\'s access? Their PIN stops working, and an open tab loses access on the next save.')) return;
   const removed=await fpPinAdmin('remove_office',{ office_id:id });
   if(!removed.ok){ showToast(removed.error); return; }
   logAudit('office_user_removed',name,'Office staff access removed');
@@ -11420,6 +11422,8 @@ function _crewHasWeekActivity(ci,cells){
 async function toggleCrewInactive(idx){
   const c=CREW_DATA[idx]; if(!c) return;
   const who=c.full||('Crew '+(idx+1));
+  const prev=CREW_INACTIVE[idx]?Object.assign({},CREW_INACTIVE[idx]):null;
+  let turningOff=false;
   if(isCrewInactive(idx)){
     if(!confirm('Reactivate '+who+'?\n\nThey\'ll show on the Install Schedule and in crew pickers again, and their PIN will work.')) return;
     delete CREW_INACTIVE[idx];
@@ -11434,10 +11438,19 @@ async function toggleCrewInactive(idx){
     let msg='Mark '+who+' as INACTIVE?\n\n• Removed from the Install Schedule and crew pickers\n• Their PIN stops working\n• No Holiday Pay, and their hours stop counting toward the overhead $/hr\n• All past jobs, hours and payroll history are kept\n\nYou can reactivate them any time.';
     if(fut||openJobs.length) msg+='\n\n⚠ Still booked: '+(fut?fut+' scheduled day'+(fut!==1?'s':'')+' from today on':'')+(fut&&openJobs.length?', ':'')+(openJobs.length?'on '+openJobs.map(j=>j.customer).join(', '):'')+'. Those will keep showing until you reassign them.';
     if(!confirm(msg)) return;
+    turningOff=true;
     CREW_INACTIVE[idx]={since:todayStr,name:who};
   }
   const ok=await sb.setKV('crew_inactive',JSON.stringify(CREW_INACTIVE));
-  if(!ok){ showSyncStatus('⚠ Save failed – check connection','var(--red)'); return; }
+  if(!ok){
+    if(prev) CREW_INACTIVE[idx]=prev; else delete CREW_INACTIVE[idx];
+    showSyncStatus('⚠ Save failed – check connection','var(--red)');
+    return;
+  }
+  if(turningOff){
+    const revoked=await fpPinAdmin('revoke_crew',{ crew_idx:idx });
+    if(!revoked.ok) showToast(revoked.error||'Marked inactive, but their open session could not be signed out.');
+  }
   logAudit('crew_updated',who,isCrewInactive(idx)?'Marked inactive':'Reactivated');
   if(editingCrewIdx===idx){ _ceRenderStatus(); calcBurden(); } // modal stays open — unsaved edits there aren't lost
   renderCrewCards();
@@ -14293,10 +14306,26 @@ function fpMediaUrl(stored){
   if(hit && hit.exp>Date.now()+15000) return hit.url;
   return String(stored);
 }
-function _storageHeaders(extra){
+async function fpStorageHeaders(extra){
+  await fpEnsureSession();
   const h={ apikey:SUPABASE_KEY, Authorization:'Bearer '+(_accessToken||SUPABASE_KEY) };
   if(extra) Object.assign(h, extra);
   return h;
+}
+async function fpStorageRemove(path){
+  if(!path) return true;
+  let res;
+  try{
+    res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
+      method:'DELETE', headers: await fpStorageHeaders()
+    });
+  }catch(e){
+    console.error('storage delete failed', e);
+    return false;
+  }
+  if(res.ok||res.status===404) return true;
+  console.error('storage delete HTTP', res.status);
+  return false;
 }
 function _absSignedUrl(signed){
   if(!signed) return '';
@@ -14318,7 +14347,7 @@ async function fpSignPaths(paths){
     try{
       res=await fetch(`${SUPABASE_URL}/storage/v1/object/sign/${VEH_DOCS_BUCKET}`,{
         method:'POST',
-        headers:_storageHeaders({ 'Content-Type':'application/json' }),
+        headers:await fpStorageHeaders({ 'Content-Type':'application/json' }),
         body:JSON.stringify({ expiresIn:expSec, paths:chunk })
       });
     }catch(e){ console.error('sign urls failed', e); return; }
@@ -14414,7 +14443,7 @@ async function vehUploadDocs(vehId){
     try{
       const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
         method:'POST',
-        headers:{ ..._storageHeaders(), 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
+        headers:{ ...(await fpStorageHeaders()), 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
         body:file
       });
       if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
@@ -14440,11 +14469,7 @@ async function vehUploadDocs(vehId){
 async function vehDeleteDoc(vehId,docId){
   const list=VEHICLE_DOCS[vehId]||[]; const doc=list.find(d=>d.id===docId); if(!doc) return;
   if(!confirm(`Delete "${doc.name}"?\n\nThis removes it from the app. Any copy already synced to your Google Drive folder stays there as an archive.`)) return;
-  try{
-    await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(doc.path)}`,{
-      method:'DELETE', headers:{ ..._storageHeaders() }
-    });
-  }catch(e){ console.error('storage delete failed',e); }
+  if(!await fpStorageRemove(doc.path)){ showToast('Could not delete that file. It is still in the app.'); return; }
   VEHICLE_DOCS[vehId]=list.filter(d=>d.id!==docId);
   await saveVehicleDocs();
   renderVehicles();
@@ -14601,7 +14626,7 @@ async function _uploadPhotoWithThumb(file, dir, safe, ts){
   try{
     res=await _fetchWithTimeout(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
       method:'POST',
-      headers:{ ..._storageHeaders(), 'Content-Type':_photoMimeType(file), 'x-upsert':'true' },
+      headers:{ ...(await fpStorageHeaders()), 'Content-Type':_photoMimeType(file), 'x-upsert':'true' },
       body:file
     },45000);
   }catch(e){
@@ -14617,7 +14642,7 @@ async function _uploadPhotoWithThumb(file, dir, safe, ts){
       const candidatePath=`${dir}/thumb_${ts}_${safe}`;
       const tres=await _fetchWithTimeout(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(candidatePath)}`,{
         method:'POST',
-        headers:{ ..._storageHeaders(), 'Content-Type':thumbFile.type||'application/octet-stream', 'x-upsert':'true' },
+        headers:{ ...(await fpStorageHeaders()), 'Content-Type':thumbFile.type||'application/octet-stream', 'x-upsert':'true' },
         body:thumbFile
       },20000);
       if(tres.ok){ thumbUrl=_vehDocPublicUrl(candidatePath); thumbPath=candidatePath; }
@@ -14708,16 +14733,10 @@ async function jcDeletePhoto(ds,photoId){
   const list=(JOB_PHOTOS[job.id]&&JOB_PHOTOS[job.id][ds])||[];
   const photo=list.find(p=>p.id===photoId); if(!photo) return;
   if(!confirm('Delete this photo?')) return;
-  try{
-    await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(photo.path)}`,{
-      method:'DELETE', headers:{ ..._storageHeaders() }
-    });
-    if(photo.thumbPath){
-      await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(photo.thumbPath)}`,{
-        method:'DELETE', headers:{ ..._storageHeaders() }
-      });
-    }
-  }catch(e){ console.error('job photo storage delete failed',e); }
+  if(!await fpStorageRemove(photo.path) || (photo.thumbPath && !await fpStorageRemove(photo.thumbPath))){
+    showToast('Could not delete that photo. It is still in the app.');
+    return;
+  }
   JOB_PHOTOS[job.id][ds]=list.filter(p=>p.id!==photoId);
   await saveJobPhotos();
   const dLabel=(typeof jcFmtDate==='function')?jcFmtDate(ds):ds;
@@ -14854,7 +14873,7 @@ async function _transferScopePhotosToJob(visitId,jobId){
     try{
       const res=await fetch(`${SUPABASE_URL}/storage/v1/object/copy`,{
         method:'POST',
-        headers:{ ..._storageHeaders(), 'Content-Type':'application/json' },
+        headers:{ ...(await fpStorageHeaders()), 'Content-Type':'application/json' },
         body:JSON.stringify({bucketId:VEH_DOCS_BUCKET, sourceKey:p.path, destinationKey:destPath})
       });
       if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
@@ -14867,7 +14886,7 @@ async function _transferScopePhotosToJob(visitId,jobId){
         try{
           const tres=await fetch(`${SUPABASE_URL}/storage/v1/object/copy`,{
             method:'POST',
-            headers:{ ..._storageHeaders(), 'Content-Type':'application/json' },
+            headers:{ ...(await fpStorageHeaders()), 'Content-Type':'application/json' },
             body:JSON.stringify({bucketId:VEH_DOCS_BUCKET, sourceKey:p.thumbPath, destinationKey:destThumbPath})
           });
           if(tres.ok) destThumbUrl=_vehDocPublicUrl(destThumbPath);
@@ -14981,7 +15000,7 @@ async function jcUploadJobDocFiles(files){
     try{
       const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
         method:'POST',
-        headers:{ ..._storageHeaders(), 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
+        headers:{ ...(await fpStorageHeaders()), 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
         body:file
       });
       if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
@@ -15006,11 +15025,7 @@ async function jcDeleteJobDoc(docId){
   const job=getJobRecord(_jcId); if(!job) return;
   const list=JOB_DOCS[job.id]||[]; const doc=list.find(d=>d.id===docId); if(!doc) return;
   if(!confirm(`Delete "${doc.name}"?`)) return;
-  try{
-    await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(doc.path)}`,{
-      method:'DELETE', headers:{ ..._storageHeaders() }
-    });
-  }catch(e){ console.error('job doc storage delete failed',e); }
+  if(!await fpStorageRemove(doc.path)){ showToast('Could not delete that file. It is still in the app.'); return; }
   JOB_DOCS[job.id]=list.filter(d=>d.id!==docId);
   await saveJobDocs();
   jcRenderJobDocs();
@@ -15031,16 +15046,10 @@ async function jcDeleteScopePhoto(photoId){
   const list=job.scopePhotos||[];
   const photo=list.find(p=>p.id===photoId); if(!photo) return;
   if(!confirm('Delete this photo?')) return;
-  try{
-    await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(photo.path)}`,{
-      method:'DELETE', headers:{ ..._storageHeaders() }
-    });
-    if(photo.thumbPath){
-      await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(photo.thumbPath)}`,{
-        method:'DELETE', headers:{ ..._storageHeaders() }
-      });
-    }
-  }catch(e){ console.error('scope photo storage delete failed',e); }
+  if(!await fpStorageRemove(photo.path) || (photo.thumbPath && !await fpStorageRemove(photo.thumbPath))){
+    showToast('Could not delete that photo. It is still in the app.');
+    return;
+  }
   job.scopePhotos=list.filter(p=>p.id!==photoId);
   await saveJobRecords();
   jcRenderScopePhotos();
@@ -15217,16 +15226,10 @@ async function svScopeDeletePhoto(photoId){
   const list=SALES_SCOPE_PHOTOS[visitId]||[];
   const photo=list.find(p=>p.id===photoId); if(!photo) return;
   if(!confirm('Delete this photo?')) return;
-  try{
-    await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(photo.path)}`,{
-      method:'DELETE', headers:{ ..._storageHeaders() }
-    });
-    if(photo.thumbPath){
-      await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(photo.thumbPath)}`,{
-        method:'DELETE', headers:{ ..._storageHeaders() }
-      });
-    }
-  }catch(e){ console.error('scope photo storage delete failed',e); }
+  if(!await fpStorageRemove(photo.path) || (photo.thumbPath && !await fpStorageRemove(photo.thumbPath))){
+    showToast('Could not delete that photo. It is still in the app.');
+    return;
+  }
   SALES_SCOPE_PHOTOS[visitId]=list.filter(p=>p.id!==photoId);
   await saveSalesScopePhotos();
   SALES_VISITS[_svScopeIdx].scopeUpdatedAt=new Date().toISOString();
@@ -15426,7 +15429,7 @@ async function matUploadDocs(){
     try{
       const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(path)}`,{
         method:'POST',
-        headers:{ ..._storageHeaders(), 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
+        headers:{ ...(await fpStorageHeaders()), 'Content-Type':file.type||'application/octet-stream', 'x-upsert':'true' },
         body:file
       });
       if(!res.ok){ throw new Error((await res.text())||('HTTP '+res.status)); }
@@ -15451,11 +15454,7 @@ async function matUploadDocs(){
 async function matDeleteDoc(docId){
   const id=_matDocsActiveId; const list=MATERIAL_DOCS[id]||[]; const doc=list.find(d=>d.id===docId); if(!doc) return;
   if(!confirm(`Delete "${doc.name}"?`)) return;
-  try{
-    await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${_vehDocPath(doc.path)}`,{
-      method:'DELETE', headers:{ ..._storageHeaders() }
-    });
-  }catch(e){ console.error('storage delete failed',e); }
+  if(!await fpStorageRemove(doc.path)){ showToast('Could not delete that file. It is still in the app.'); return; }
   MATERIAL_DOCS[id]=list.filter(d=>d.id!==docId);
   await saveMaterialDocs();
   renderMatDocsList(); renderMaterials();

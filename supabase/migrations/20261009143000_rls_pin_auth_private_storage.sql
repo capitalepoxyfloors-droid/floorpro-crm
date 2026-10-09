@@ -9,7 +9,7 @@
 -- can be restored quickly. A later, optional wipe is in
 -- docs/security/wipe-plaintext-pins.sql.
 --
--- Refuses to run unless settings.admin_pin is a 4–6 digit code. The live
+-- Refuses to run unless settings.admin_pin is exactly 4 digits. The live
 -- database does not have that row today (the page used a built-in fallback).
 -- Run docs/security/00-save-owner-pin.sql first.
 
@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS public.pin_accounts (
   pin_hash text NOT NULL,
   auth_user_id uuid UNIQUE,
   email text UNIQUE,
+  -- Bumped when a PIN changes so an old access token stops matching.
+  session_nonce integer NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT pin_accounts_kind_shape CHECK (
@@ -85,8 +87,8 @@ BEGIN
   END IF;
 
   SELECT btrim(value) INTO v_pin FROM public.settings WHERE key = 'admin_pin';
-  IF v_pin IS NULL OR v_pin !~ '^[0-9]{4,6}$' THEN
-    RAISE EXCEPTION 'No usable admin_pin in settings. Run docs/security/00-save-owner-pin.sql first so the owner is not locked out.';
+  IF v_pin IS NULL OR v_pin !~ '^[0-9]{4}$' THEN
+    RAISE EXCEPTION 'No usable admin_pin in settings. It must be exactly 4 digits (the keypad submits at 4). Run docs/security/00-save-owner-pin.sql first so the owner is not locked out.';
   END IF;
 
   INSERT INTO public.pin_accounts (kind, label, pin_hash)
@@ -105,8 +107,8 @@ BEGIN
       IF v_val IS NULL OR btrim(v_val) = '' THEN
         CONTINUE;
       END IF;
-      IF v_key !~ '^[0-9]+$' OR btrim(v_val) !~ '^[0-9]{4,6}$' THEN
-        RAISE EXCEPTION 'crew_pins has an entry this migration will not guess at (index %).', v_key;
+      IF v_key !~ '^[0-9]+$' OR btrim(v_val) !~ '^[0-9]{4}$' THEN
+        RAISE EXCEPTION 'crew_pins has an entry this migration will not guess at (index %). PINs must be exactly 4 digits.', v_key;
       END IF;
       INSERT INTO public.pin_accounts (kind, crew_idx, label, pin_hash)
       VALUES (
@@ -114,7 +116,7 @@ BEGIN
         v_key::int,
         COALESCE(
           (SELECT full_name FROM public.crew WHERE sort_order = v_key::int ORDER BY created_at NULLS LAST LIMIT 1),
-          'Crew ' || v_key
+          'Crew ' || (v_key::int + 1)
         ),
         extensions.crypt(btrim(v_val), extensions.gen_salt('bf', 8))
       );
@@ -160,8 +162,70 @@ DROP POLICY IF EXISTS anon_all_vehicle_maintenance ON public.vehicle_maintenance
 DROP POLICY IF EXISTS fp_auth_all ON public.vehicles;
 DROP POLICY IF EXISTS fp_auth_all ON public.vehicle_maintenance;
 
+-- A random Auth signup is "authenticated" but has no fp_role. Users cannot write
+-- app_metadata themselves. private.fp_member() also requires the token's user id
+-- to still be linked to a pin_accounts row, with the same nonce the login issued.
+-- Turn off public signups as well (see docs/security/CUTOVER.md). That is a
+-- dashboard setting, not something this file can force.
+CREATE SCHEMA IF NOT EXISTS private;
+
+CREATE OR REPLACE FUNCTION private.fp_crew_inactive(idx integer)
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  raw text;
+  js jsonb;
+BEGIN
+  SELECT value INTO raw FROM public.settings WHERE key = 'crew_inactive';
+  IF raw IS NULL OR btrim(raw) = '' THEN
+    RETURN false;
+  END IF;
+  BEGIN
+    js := raw::jsonb;
+  EXCEPTION WHEN others THEN
+    RETURN false;
+  END;
+  IF jsonb_typeof(js) <> 'object' THEN
+    RETURN false;
+  END IF;
+  RETURN js ? idx::text;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION private.fp_member()
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.pin_accounts AS p
+    WHERE p.auth_user_id = auth.uid()
+      AND p.kind IN ('owner', 'office', 'crew')
+      AND p.kind = COALESCE(auth.jwt() -> 'app_metadata' ->> 'fp_role', '')
+      AND (auth.jwt() -> 'app_metadata' -> 'fp_nonce') = to_jsonb(p.session_nonce)
+      AND (
+        p.kind <> 'crew'
+        OR NOT private.fp_crew_inactive(p.crew_idx)
+      )
+  );
+$$;
+
+REVOKE ALL ON FUNCTION private.fp_crew_inactive(integer) FROM PUBLIC;
+REVOKE ALL ON FUNCTION private.fp_member() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION private.fp_crew_inactive(integer) TO authenticated;
+GRANT EXECUTE ON FUNCTION private.fp_member() TO authenticated;
+REVOKE ALL ON SCHEMA private FROM PUBLIC;
+GRANT USAGE ON SCHEMA private TO authenticated;
+
 -- Authenticated app users can keep doing what the app does today.
--- anon has no policy, so the public anon key can no longer read or write.
+-- anon has no policy. A signed-in user with no app-issued fp_role has none either.
 DO $$
 DECLARE
   t text;
@@ -174,7 +238,7 @@ BEGIN
     EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t);
     EXECUTE format('DROP POLICY IF EXISTS fp_auth_all ON public.%I', t);
     EXECUTE format(
-      'CREATE POLICY fp_auth_all ON public.%I FOR ALL TO authenticated USING (true) WITH CHECK (true)',
+      'CREATE POLICY fp_auth_all ON public.%I FOR ALL TO authenticated USING (private.fp_member()) WITH CHECK (private.fp_member())',
       t
     );
   END LOOP;
@@ -188,10 +252,10 @@ DROP POLICY IF EXISTS fp_audit_insert ON public.audit_log;
 -- through the API; hiding it here would make crew audit inserts fail.
 CREATE POLICY fp_audit_select ON public.audit_log
   FOR SELECT TO authenticated
-  USING (true);
+  USING (private.fp_member());
 CREATE POLICY fp_audit_insert ON public.audit_log
   FOR INSERT TO authenticated
-  WITH CHECK (true);
+  WITH CHECK (private.fp_member());
 
 ALTER TABLE public.settings ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS fp_settings_select ON public.settings;
@@ -200,23 +264,55 @@ DROP POLICY IF EXISTS fp_settings_update ON public.settings;
 DROP POLICY IF EXISTS fp_settings_delete ON public.settings;
 
 -- PIN rows stay in the table for rollback, but no client role can see or change them.
--- The owner changes PINs through the pin-admin Edge Function (service role).
+-- crew_inactive can be read by the app (so inactive people drop off the schedule)
+-- but only an owner or office token can write it. Crew cannot un-deactivate themselves.
 CREATE POLICY fp_settings_select ON public.settings
   FOR SELECT TO authenticated
-  USING (key <> 'admin_pin' AND key <> 'crew_pins' AND key <> 'office_users');
+  USING (
+    private.fp_member()
+    AND key <> 'admin_pin' AND key <> 'crew_pins' AND key <> 'office_users'
+  );
 
 CREATE POLICY fp_settings_insert ON public.settings
   FOR INSERT TO authenticated
-  WITH CHECK (key <> 'admin_pin' AND key <> 'crew_pins' AND key <> 'office_users');
+  WITH CHECK (
+    private.fp_member()
+    AND key <> 'admin_pin' AND key <> 'crew_pins' AND key <> 'office_users'
+    AND (
+      key <> 'crew_inactive'
+      OR (auth.jwt() -> 'app_metadata' ->> 'fp_role') IN ('owner', 'office')
+    )
+  );
 
 CREATE POLICY fp_settings_update ON public.settings
   FOR UPDATE TO authenticated
-  USING (key <> 'admin_pin' AND key <> 'crew_pins' AND key <> 'office_users')
-  WITH CHECK (key <> 'admin_pin' AND key <> 'crew_pins' AND key <> 'office_users');
+  USING (
+    private.fp_member()
+    AND key <> 'admin_pin' AND key <> 'crew_pins' AND key <> 'office_users'
+    AND (
+      key <> 'crew_inactive'
+      OR (auth.jwt() -> 'app_metadata' ->> 'fp_role') IN ('owner', 'office')
+    )
+  )
+  WITH CHECK (
+    private.fp_member()
+    AND key <> 'admin_pin' AND key <> 'crew_pins' AND key <> 'office_users'
+    AND (
+      key <> 'crew_inactive'
+      OR (auth.jwt() -> 'app_metadata' ->> 'fp_role') IN ('owner', 'office')
+    )
+  );
 
 CREATE POLICY fp_settings_delete ON public.settings
   FOR DELETE TO authenticated
-  USING (key <> 'admin_pin' AND key <> 'crew_pins' AND key <> 'office_users');
+  USING (
+    private.fp_member()
+    AND key <> 'admin_pin' AND key <> 'crew_pins' AND key <> 'office_users'
+    AND (
+      key <> 'crew_inactive'
+      OR (auth.jwt() -> 'app_metadata' ->> 'fp_role') IN ('owner', 'office')
+    )
+  );
 
 -- Photos. Existing JSON keeps the old public URL strings. The app derives the
 -- path from that string and asks for a signed URL. No data rewrite.
@@ -224,10 +320,8 @@ INSERT INTO storage.buckets (id, name, public)
 VALUES ('vehicle-docs', 'vehicle-docs', false)
 ON CONFLICT (id) DO UPDATE SET public = false;
 
--- Supabase already enables row security on storage.objects. This keeps a
--- fresh database from ignoring the policy below.
-ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
-
+-- storage.objects is not owned by the migration role (error 42501). Row security
+-- is already on for that table on Supabase. Do not ALTER it here.
 DROP POLICY IF EXISTS "vehicle-docs anon all" ON storage.objects;
 DROP POLICY IF EXISTS "vehicle-docs authenticated all" ON storage.objects;
 
@@ -235,5 +329,5 @@ CREATE POLICY "vehicle-docs authenticated all"
   ON storage.objects
   FOR ALL
   TO authenticated
-  USING (bucket_id = 'vehicle-docs')
-  WITH CHECK (bucket_id = 'vehicle-docs');
+  USING (bucket_id = 'vehicle-docs' AND private.fp_member())
+  WITH CHECK (bucket_id = 'vehicle-docs' AND private.fp_member());

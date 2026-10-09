@@ -52,6 +52,17 @@ function recreate(db, sql) {
 const FIXTURE = `
 CREATE SCHEMA IF NOT EXISTS extensions;
 CREATE SCHEMA IF NOT EXISTS storage;
+CREATE SCHEMA IF NOT EXISTS auth;
+
+CREATE OR REPLACE FUNCTION auth.jwt() RETURNS jsonb
+LANGUAGE sql STABLE AS $$
+  SELECT COALESCE(NULLIF(current_setting('request.jwt.claims', true), ''), '{}')::jsonb;
+$$;
+
+CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid
+LANGUAGE sql STABLE AS $$
+  SELECT NULLIF(auth.jwt() ->> 'sub', '')::uuid;
+$$;
 
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN CREATE ROLE anon NOLOGIN; END IF;
@@ -74,6 +85,7 @@ CREATE TABLE storage.objects (
 );
 GRANT ALL ON storage.buckets TO anon, authenticated, service_role;
 GRANT ALL ON storage.objects TO anon, authenticated, service_role;
+ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
 
 CREATE TABLE public.settings (key text PRIMARY KEY, value text);
 CREATE TABLE public.crew (
@@ -152,8 +164,34 @@ test('security migration hashes PINs and locks out the anon key', { skip: hasPsq
   }
   assert.match(anonWrite, /row-level security|permission denied/i);
 
+  const crewId = '11111111-1111-1111-1111-111111111111';
+  const ownerId = '22222222-2222-2222-2222-222222222222';
+  psql(db, ['-c', `UPDATE public.pin_accounts SET auth_user_id = '${crewId}' WHERE kind = 'crew' AND crew_idx = 0`]);
+  psql(db, ['-c', `UPDATE public.pin_accounts SET auth_user_id = '${ownerId}' WHERE kind = 'owner'`]);
+  psql(db, ['-c', `INSERT INTO public.settings (key, value) VALUES ('crew_inactive', '{}') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`]);
+
+  const stranger = psqlTuples(db, `
+    BEGIN;
+    SELECT set_config('request.jwt.claims', '{"sub":"33333333-3333-3333-3333-333333333333","app_metadata":{"fp_role":"owner","fp_nonce":0}}', true);
+    SET LOCAL ROLE authenticated;
+    SELECT 'jobs=' || count(*)::text FROM public.jobs;
+    ROLLBACK;
+  `);
+  assert.match(stranger, /jobs=0/);
+
+  const metadataOnly = psqlTuples(db, `
+    BEGIN;
+    SELECT set_config('request.jwt.claims', '{"sub":"${ownerId}","user_metadata":{"fp_role":"owner","fp_nonce":0}}', true);
+    SET LOCAL ROLE authenticated;
+    SELECT 'jobs=' || count(*)::text FROM public.jobs;
+    ROLLBACK;
+  `);
+  assert.match(metadataOnly, /jobs=0/);
+
+  const crewClaims = `{"sub":"${crewId}","app_metadata":{"fp_role":"crew","fp_nonce":0}}`;
   const authView = psqlTuples(db, `
     BEGIN;
+    SELECT set_config('request.jwt.claims', '${crewClaims}', true);
     SET LOCAL ROLE authenticated;
     SELECT 'jobs=' || count(*)::text FROM public.jobs;
     SELECT 'job_records=' || count(*)::text FROM public.settings WHERE key = 'job_records';
@@ -165,6 +203,54 @@ test('security migration hashes PINs and locks out the anon key', { skip: hasPsq
   assert.match(authView, /job_records=1/);
   assert.match(authView, /pins=0/);
   assert.match(authView, /objects=1/);
+
+  let crewInactiveWrite = '';
+  try {
+    crewInactiveWrite = psqlTuples(db, `
+      BEGIN;
+      SELECT set_config('request.jwt.claims', '${crewClaims}', true);
+      SET LOCAL ROLE authenticated;
+      UPDATE public.settings SET value = '{"0":{"since":"2026-01-01"}}' WHERE key = 'crew_inactive';
+      SELECT value FROM public.settings WHERE key = 'crew_inactive';
+      ROLLBACK;
+    `);
+  } catch (err) {
+    crewInactiveWrite = String(err.stderr || err.stdout || err.message);
+  }
+  assert.equal(crewInactiveWrite.includes('2026-01-01'), false);
+  assert.match(crewInactiveWrite, /\{\}|row-level security|permission denied/i);
+
+  const ownerClaims = `{"sub":"${ownerId}","app_metadata":{"fp_role":"owner","fp_nonce":0}}`;
+  const ownerWrite = psqlTuples(db, `
+    BEGIN;
+    SELECT set_config('request.jwt.claims', '${ownerClaims}', true);
+    SET LOCAL ROLE authenticated;
+    UPDATE public.settings SET value = '{"0":{"since":"2026-01-01","name":"Seth West"}}' WHERE key = 'crew_inactive';
+    SELECT value FROM public.settings WHERE key = 'crew_inactive';
+    ROLLBACK;
+  `);
+  assert.match(ownerWrite, /Seth West/);
+
+  psql(db, ['-c', `UPDATE public.settings SET value = '{"0":{"since":"2026-01-01"}}' WHERE key = 'crew_inactive'`]);
+  const inactiveCrew = psqlTuples(db, `
+    BEGIN;
+    SELECT set_config('request.jwt.claims', '${crewClaims}', true);
+    SET LOCAL ROLE authenticated;
+    SELECT 'jobs=' || count(*)::text FROM public.jobs;
+    ROLLBACK;
+  `);
+  assert.match(inactiveCrew, /jobs=0/);
+  psql(db, ['-c', `UPDATE public.settings SET value = '{}' WHERE key = 'crew_inactive'`]);
+
+  psql(db, ['-c', `UPDATE public.pin_accounts SET auth_user_id = NULL WHERE kind = 'crew' AND crew_idx = 0`]);
+  const unlinked = psqlTuples(db, `
+    BEGIN;
+    SELECT set_config('request.jwt.claims', '${crewClaims}', true);
+    SET LOCAL ROLE authenticated;
+    SELECT 'jobs=' || count(*)::text FROM public.jobs;
+    ROLLBACK;
+  `);
+  assert.match(unlinked, /jobs=0/);
 
   let pinRead = '';
   try {

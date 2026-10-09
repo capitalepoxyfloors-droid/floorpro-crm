@@ -20,18 +20,20 @@ We did not turn the PIN into the Supabase password. A PIN is only 4 digits, and 
 
 The other approach — a Supabase user whose password is the PIN padded out to 6 characters — is simpler to host but weaker. The PIN would still be the password, and guessing would hit Auth directly. The function is a little more to deploy. That is the cost of keeping a 4-digit keypad.
 
-**Who can see data.** Row security is on for every app table. The anonymous key can do nothing. Anyone who has signed in can do what the app already does today, including crew, because Crew View loads jobs, schedules, and day logs. Payroll and leads are still hidden in the crew menu. They are not hidden from a crew member who knows how to call the API, because the app already downloads that data for them. PIN rows are hidden from every signed-in user, including the owner. Only the `pin-admin` function (service role, owner session required) can change them.
+**Who can see data.** Row security is on for every app table. The anonymous key can do nothing. A normal Auth signup can do nothing either: policies only allow a token whose `app_metadata.fp_role` is owner, office, or crew, and whose user is still linked to a PIN record. People cannot set `app_metadata` themselves. Anyone who signed in through the keypad can do what the app already does today, including crew, because Crew View loads jobs, schedules, and day logs. Payroll and leads are still hidden in the crew menu. They are not hidden from a crew member who knows how to call the API, because the app already downloads that data for them. PIN rows are hidden from every signed-in user, including the owner. Only the `pin-admin` function (service role, owner session required) can change them. Only owner and office can change who is inactive. Marking someone inactive, clearing their PIN, or removing office staff deletes that Auth user and signs out every session, so the old refresh token stops working.
 
 **Photos.** The `vehicle-docs` bucket becomes private. The app reads the file path out of the public URL already saved in JSON and requests a 12-hour signed link when it draws the picture. Saved job records are not rewritten.
 
-**Accounts.** There is no separate import. The first time a PIN is accepted, the function creates that person's Supabase Auth user and remembers them. You do not create users by hand in the dashboard.
+**Accounts.** There is no separate import. The first time a PIN is accepted, the function creates that person's Supabase Auth user and remembers them. Changing a PIN keeps that same user and signs their old sessions out. You do not create users by hand in the dashboard. If a crew member has no name on file, the label is Crew 1 for the first position, Crew 2 for the next. The position number stored on schedules is unchanged.
+
+**Public signups.** Turn off “Allow new users to sign up” (Authentication → general configuration). Supabase’s own description of that switch is that only existing users can sign in. `pin-login` does not use the public signup form. It creates the person with the admin API first, then signs that existing user in, so the first PIN login still works after the switch. Leave “Allow anonymous sign-ins” off. Prove it on the test project: turn the switch off, then sign in with a PIN that has never been used.
 
 ## What was checked here, and what was not
 
 Checked on this branch, without touching either Supabase project:
 
 - The live project was only read. Row security is off on leads, jobs, materials, crew, pto_blocks, scheduled_slots, settings, and audit_log. Vehicles already had row security with a policy that allowed everyone. The photo bucket policy allowed the anon key. There is no `admin_pin` row. `crew_pins` and `office_users` exist. `google_photos_synced` does not contain website file links.
-- The migration was applied, in one transaction, to a local PostgreSQL 16 database with the same table names. That was not the live project and not floorpro-crm-test. Hashes from `crypt()` match bcryptjs, which is what the Edge Function uses. The anon role cannot read or insert jobs, settings, or photos. A signed-in role can read a job and a normal setting, cannot see the PIN rows, and is denied the hash table. If the manager code was not saved first, the migration stops and leaves nothing behind.
+- The migration was applied, in one transaction, to a local PostgreSQL 16 database with the same table names. That was not the live project and not floorpro-crm-test. Hashes from `crypt()` match bcryptjs, which is what the Edge Function uses. The anon role cannot read or insert jobs, settings, or photos. A token with no app-issued role cannot read jobs. A linked crew token can read a job and a normal setting, cannot see the PIN rows, cannot change who is inactive, and is denied the hash table. An owner token can change who is inactive. A crew token for someone marked inactive, or whose login was unlinked, cannot read jobs. If the manager code was not saved first, the migration stops and leaves nothing behind. The migration does not try to turn row security on for `storage.objects` (that line is not allowed on Supabase; it is already on).
 - The existing app tests still pass, including payroll and the whole-day overtime checkbox.
 - The page script parses.
 
@@ -74,7 +76,11 @@ Paste `supabase/migrations/20261009143000_rls_pin_auth_private_storage.sql` into
 
 If it stops with "No usable admin_pin", step 2 did not stick. Fix that and run this again.
 
-From this moment the old website cannot load data. Do not stop for the night between this step and step 6.
+From this moment the old website cannot load data. Do not stop for the night between this step and the website deploy.
+
+The photo bucket is private after this step, but Supabase’s CDN can keep serving a public URL it already cached. In a private browser window, open one old public photo link. If the picture still loads, wait (often about an hour) and try that same link again before you decide the switch failed. A hard refresh of the app does not clear that cache.
+
+If the migration stops because a saved PIN is not exactly 4 digits, that code could not be typed on the keypad anyway (it sends the code at 4 digits). Change that PIN to 4 digits in the old app, then run the migration again. The whole file rolls back when it stops, so a failed run does not leave row security half-on.
 
 ### 4. Deploy the functions
 
@@ -100,6 +106,8 @@ You want "not recognized", not a missing-function error.
 
 You do not create crew in the dashboard. Step 3 already scrambled every PIN that was on file. Each person's Auth user is created the first time that PIN is accepted. After the site is up, sign in once as the owner so you know your code works before anyone else needs it.
 
+Then turn off **Allow new users to sign up** (Authentication settings). Sign in again with a crew PIN that has not been used yet. That proves the first-login account create still works with public signups off. A random person using the public signup page should get an error, and even a signup that already happened cannot read jobs.
+
 ### 6. Deploy the website
 
 Merge this branch to `main` only after the test checklist passed and steps 3–4 succeeded on live. GitHub Pages deploys on that push. Hard-refresh (Ctrl+Shift+R) after a minute.
@@ -124,9 +132,11 @@ Tell crew: the app will ask for their PIN again. Same PIN. If they were in the m
 2. Revert the website commit and push `main` so GitHub Pages serves the old page. Hard-refresh.
 3. Sign in with the manager code from step 2 (or the new one only if you did not change it). Codes changed in the new Security page after cutover are not put back into the old store. Set those again in the old Security page if you need them.
 
+After this rollback the anon key can read `settings` again, including `admin_pin`, `crew_pins`, and `office_users`. Those plaintext codes were left in the table so the old keypad still works. Treat them as exposed again. Change the manager code in the old Security page the same night.
+
 Edge Functions can stay. The old page does not call them.
 
-To turn the new protections back on the same night without hashing PINs again, run the migration **from the line that says `POLICIES ONLY BELOW THIS LINE`** through the end, then put the new website back. Do not run the whole migration a second time.
+To turn the new protections back on the same night without hashing PINs again, run the migration **from the line that says `POLICIES ONLY BELOW THIS LINE`** through the end, then put the new website back. Do not run the whole migration a second time. That section does not turn row security on for `storage.objects`. It is already on, and the migration role is not allowed to change that.
 
 ### 10. Rotate the JWT secret (last, not required to close the hole)
 
@@ -152,5 +162,4 @@ Until you do this, the old anon key is still inside the previous website and thi
 1. Where is the Wave watcher, and is it using the anon key? It will stop at step 3 until it uses the service role.
 2. Is anything outside this repo still uploading job photos to Google Photos by public URL?
 3. Crew and office can still read the same tables the owner can, once signed in, because that is what the app loads today. Say if crew should be blocked from leads, payroll figures, or gate codes at the database — that would be a follow-up and can change Crew View.
-4. Removed office staff keep access on an already-open tab for up to about an hour (until the access token expires). Reload kicks them out immediately. Say if that window needs to be shorter.
-5. The 4-digit PIN is still guessable by a patient attacker who can use many networks. The rate limit slows that down. Longer crew PINs would be a product change.
+4. PINs are exactly 4 digits, matching the keypad. A 4-digit PIN is still guessable by a patient attacker who can use many networks. The rate limit slows that down.
