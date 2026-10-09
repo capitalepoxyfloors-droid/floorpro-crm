@@ -224,6 +224,35 @@ GRANT EXECUTE ON FUNCTION private.fp_member() TO authenticated;
 REVOKE ALL ON SCHEMA private FROM PUBLIC;
 GRANT USAGE ON SCHEMA private TO authenticated;
 
+-- Changing a PIN has to delete that user's Auth sessions. There is no
+-- admin logout route: POST /auth/v1/admin/users/{id}/logout returns 404.
+-- Bumping app_metadata.fp_nonce is not enough on its own. A leftover refresh
+-- token is exchanged for a new access token that already contains the new nonce.
+-- auth.refresh_tokens.user_id is varchar, not uuid. Deleting auth.sessions
+-- cascades refresh tokens that point at a session, and MFA claims. The
+-- explicit refresh_tokens delete also removes rows whose session_id is null.
+-- This function stays owned by postgres (the SQL editor role). That role
+-- bypasses row security, which auth.sessions has enabled with no policies.
+-- Do not change the owner. anon and authenticated cannot execute it.
+CREATE OR REPLACE FUNCTION public.fp_revoke_sessions(target_user uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  IF target_user IS NULL THEN
+    RAISE EXCEPTION 'missing user';
+  END IF;
+  DELETE FROM auth.refresh_tokens WHERE user_id = target_user::text;
+  DELETE FROM auth.sessions WHERE user_id = target_user;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.fp_revoke_sessions(uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.fp_revoke_sessions(uuid) FROM anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.fp_revoke_sessions(uuid) TO service_role;
+
 -- Authenticated app users can keep doing what the app does today.
 -- anon has no policy. A signed-in user with no app-issued fp_role has none either.
 DO $$
@@ -280,7 +309,7 @@ CREATE POLICY fp_settings_insert ON public.settings
     AND key <> 'admin_pin' AND key <> 'crew_pins' AND key <> 'office_users'
     AND (
       key <> 'crew_inactive'
-      OR (auth.jwt() -> 'app_metadata' ->> 'fp_role') IN ('owner', 'office')
+      OR ((select auth.jwt()) -> 'app_metadata' ->> 'fp_role') IN ('owner', 'office')
     )
   );
 
@@ -291,7 +320,7 @@ CREATE POLICY fp_settings_update ON public.settings
     AND key <> 'admin_pin' AND key <> 'crew_pins' AND key <> 'office_users'
     AND (
       key <> 'crew_inactive'
-      OR (auth.jwt() -> 'app_metadata' ->> 'fp_role') IN ('owner', 'office')
+      OR ((select auth.jwt()) -> 'app_metadata' ->> 'fp_role') IN ('owner', 'office')
     )
   )
   WITH CHECK (
@@ -299,7 +328,7 @@ CREATE POLICY fp_settings_update ON public.settings
     AND key <> 'admin_pin' AND key <> 'crew_pins' AND key <> 'office_users'
     AND (
       key <> 'crew_inactive'
-      OR (auth.jwt() -> 'app_metadata' ->> 'fp_role') IN ('owner', 'office')
+      OR ((select auth.jwt()) -> 'app_metadata' ->> 'fp_role') IN ('owner', 'office')
     )
   );
 
@@ -310,7 +339,7 @@ CREATE POLICY fp_settings_delete ON public.settings
     AND key <> 'admin_pin' AND key <> 'crew_pins' AND key <> 'office_users'
     AND (
       key <> 'crew_inactive'
-      OR (auth.jwt() -> 'app_metadata' ->> 'fp_role') IN ('owner', 'office')
+      OR ((select auth.jwt()) -> 'app_metadata' ->> 'fp_role') IN ('owner', 'office')
     )
   );
 
@@ -331,3 +360,6 @@ CREATE POLICY "vehicle-docs authenticated all"
   TO authenticated
   USING (bucket_id = 'vehicle-docs' AND private.fp_member())
   WITH CHECK (bucket_id = 'vehicle-docs' AND private.fp_member());
+
+-- So pin-admin can call fp_revoke_sessions as soon as this section is applied.
+NOTIFY pgrst, 'reload schema';

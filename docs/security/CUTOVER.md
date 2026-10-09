@@ -24,22 +24,33 @@ The other approach — a Supabase user whose password is the PIN padded out to 6
 
 **Photos.** The `vehicle-docs` bucket becomes private. The app reads the file path out of the public URL already saved in JSON and requests a 12-hour signed link when it draws the picture. Saved job records are not rewritten.
 
-**Accounts.** There is no separate import. The first time a PIN is accepted, the function creates that person's Supabase Auth user and remembers them. Changing a PIN keeps that same user and signs their old sessions out. You do not create users by hand in the dashboard. If a crew member has no name on file, the label is Crew 1 for the first position, Crew 2 for the next. The position number stored on schedules is unchanged.
+**Accounts.** There is no separate import. The first time a PIN is accepted, the function creates that person's Supabase Auth user and remembers them. Changing a PIN keeps that same user. It deletes that user's rows in `auth.sessions` and `auth.refresh_tokens` (the service-role function `fp_revoke_sessions`), then stores a new nonce. The old refresh token cannot mint another access token. An access token already in hand fails the nonce check, including on the PIN admin function, until it expires. You do not create users by hand in the dashboard. If a crew member has no name on file, the label is Crew 1 for the first position, Crew 2 for the next. The position number stored on schedules is unchanged.
 
-**Public signups.** Turn off “Allow new users to sign up” (Authentication → general configuration). Supabase’s own description of that switch is that only existing users can sign in. `pin-login` does not use the public signup form. It creates the person with the admin API first, then signs that existing user in, so the first PIN login still works after the switch. Leave “Allow anonymous sign-ins” off. Prove it on the test project: turn the switch off, then sign in with a PIN that has never been used.
+**Public signups.** Disabling signups is a manual dashboard step. Nothing in the SQL file can flip it. Do it by hand, and do not turn off the Email provider while you are there (that is a different switch and would block PIN sign-in).
+
+1. Open the project in the Supabase dashboard.
+2. In the left sidebar, click **Authentication**.
+3. Click **Sign In / Providers**. The item may be labeled **Providers**. The address ends in `/auth/providers`.
+4. Find the section titled **User Signups**, at the top of that page, above the list of providers.
+5. Turn **off** the switch labeled **Allow new users to sign up**. The line under it says that new users will not be able to sign up. Supabase’s docs say that with this off, only existing users can sign in.
+6. On that same card, leave **Allow anonymous sign-ins** off.
+7. Click **Save changes**. That button shows up after the switch changes. The change is not saved until you click it.
+
+`pin-login` does not use the public signup form. It creates the person with the admin API first, then signs that existing user in, so the first PIN login still works after the switch. Prove it on the test project: turn the switch off, save, then sign in with a PIN that has never been used.
 
 ## What was checked here, and what was not
 
-Checked on this branch, without touching either Supabase project:
+Checked on this branch. The live project was not modified.
 
-- The live project was only read. Row security is off on leads, jobs, materials, crew, pto_blocks, scheduled_slots, settings, and audit_log. Vehicles already had row security with a policy that allowed everyone. The photo bucket policy allowed the anon key. There is no `admin_pin` row. `crew_pins` and `office_users` exist. `google_photos_synced` does not contain website file links.
-- The migration was applied, in one transaction, to a local PostgreSQL 16 database with the same table names. That was not the live project and not floorpro-crm-test. Hashes from `crypt()` match bcryptjs, which is what the Edge Function uses. The anon role cannot read or insert jobs, settings, or photos. A token with no app-issued role cannot read jobs. A linked crew token can read a job and a normal setting, cannot see the PIN rows, cannot change who is inactive, and is denied the hash table. An owner token can change who is inactive. A crew token for someone marked inactive, or whose login was unlinked, cannot read jobs. If the manager code was not saved first, the migration stops and leaves nothing behind. The migration does not try to turn row security on for `storage.objects` (that line is not allowed on Supabase; it is already on).
-- The existing app tests still pass, including payroll and the whole-day overtime checkbox.
+- The live project was only read, before this change. Row security is off on leads, jobs, materials, crew, pto_blocks, scheduled_slots, settings, and audit_log. Vehicles already had row security with a policy that allowed everyone. The photo bucket policy allowed the anon key. There is no `admin_pin` row. `crew_pins` and `office_users` exist. `google_photos_synced` does not contain website file links.
+- The migration was applied, in one transaction, to a local PostgreSQL 16 database with the same table names. Hashes from `crypt()` match bcryptjs, which is what the Edge Function uses. The anon role cannot read or insert jobs, settings, or photos. A token with no app-issued role cannot read jobs. A linked crew token can read a job and a normal setting, cannot see the PIN rows, cannot change who is inactive, and is denied the hash table. An owner token can change who is inactive. A crew token for someone marked inactive, or whose login was unlinked, cannot read jobs. If the manager code was not saved first, the migration stops and leaves nothing behind. The migration does not try to turn row security on for `storage.objects` (that line is not allowed on Supabase; it is already on).
+- On that same local database, `fp_revoke_sessions` run as `service_role` deletes only that user's session, both of their refresh tokens (including one with no session id), and the MFA claim on that session. The other user's session and refresh token stay. `anon` and `authenticated` get permission denied. The existing app tests still pass, including payroll and the whole-day overtime checkbox.
+- On floorpro-crm-test only, the Auth tables were read and then the same function was installed. A throwaway user with one session, two refresh tokens (one of them not tied to a session), and one MFA claim was created. The function removed those rows and left the other 5 sessions and 6 refresh tokens. The throwaway user was then deleted. `anon` and `authenticated` cannot execute the function. `service_role` can. It is owned by `postgres` and is `SECURITY DEFINER`. Refresh tokens on that project are 12 characters, which is the value GoTrue looks up. The three settings write policies were replaced so `auth.jwt()` is inside `(select ...)`. After that, the performance advisor no longer lists those policies. This was not a browser sign-in, and pin-admin was not redeployed from here, so a real refresh-token HTTP call after a PIN change still belongs on the test checklist.
 - The page script parses.
 
 Not checked, and still required on **floorpro-crm-test** before the live evening:
 
-- Deploying the two Edge Functions and signing in with a real PIN.
+- Redeploy `pin-admin` from this branch, then change a PIN and confirm the other browser's refresh token is rejected (checklist step 11b). The database function is already installed on the test project. Redeploy is what makes pin-admin call it and reject a stale nonce.
 - Clicking through every screen in `TEST-CHECKLIST.md`.
 - Opening an existing photo and uploading a new one against the private bucket.
 - The Wave watcher on the office PC, and any Google Photos sync that lives outside this repo.
@@ -106,7 +117,7 @@ You want "not recognized", not a missing-function error.
 
 You do not create crew in the dashboard. Step 3 already scrambled every PIN that was on file. Each person's Auth user is created the first time that PIN is accepted. After the site is up, sign in once as the owner so you know your code works before anyone else needs it.
 
-Then turn off **Allow new users to sign up** (Authentication settings). Sign in again with a crew PIN that has not been used yet. That proves the first-login account create still works with public signups off. A random person using the public signup page should get an error, and even a signup that already happened cannot read jobs.
+Then turn off public signups by hand. This is not part of the SQL. In the dashboard: **Authentication → Sign In / Providers** (the address ends in `/auth/providers`) → section **User Signups** → turn off **Allow new users to sign up** → click **Save changes**. Leave the Email provider enabled, and leave **Allow anonymous sign-ins** off. Sign in again with a crew PIN that has not been used yet. That proves the first-login account create still works with public signups off. A random person using the public signup page should get an error, and even a signup that already happened cannot read jobs.
 
 ### 6. Deploy the website
 
@@ -134,9 +145,13 @@ Tell crew: the app will ask for their PIN again. Same PIN. If they were in the m
 
 After this rollback the anon key can read `settings` again, including `admin_pin`, `crew_pins`, and `office_users`. Those plaintext codes were left in the table so the old keypad still works. Treat them as exposed again. Change the manager code in the old Security page the same night.
 
+`rollback.sql` leaves `pin_accounts`, `pin_attempts`, the private helper functions, `fp_revoke_sessions`, and the Auth users from PIN sign-in in place. That is intentional. The old website does not use them.
+
 Edge Functions can stay. The old page does not call them.
 
-To turn the new protections back on the same night without hashing PINs again, run the migration **from the line that says `POLICIES ONLY BELOW THIS LINE`** through the end, then put the new website back. Do not run the whole migration a second time. That section does not turn row security on for `storage.objects`. It is already on, and the migration role is not allowed to change that.
+To turn the new protections back on the same night without hashing PINs again, run the migration **from the line that says `POLICIES ONLY BELOW THIS LINE`** through the end, then put the new website back. Do not run the whole migration a second time. The top of the file stops if an owner PIN row already exists. That policies section does not turn row security on for `storage.objects`. It is already on, and the migration role is not allowed to change that.
+
+`docs/security/full-reset.sql` deletes those Auth users and drops the PIN tables. Run it only when you want a clean slate before applying the migration from the top. It is not part of the minute-scale rollback.
 
 ### 10. Rotate the JWT secret (last, not required to close the hole)
 
@@ -156,6 +171,8 @@ Until you do this, the old anon key is still inside the previous website and thi
 ### Later, optional
 
 `docs/security/wipe-plaintext-pins.sql` blanks the old PIN rows. Do not run it on cutover night. Your backup from step 1 will still contain them.
+
+`docs/security/full-reset.sql` drops the PIN tables and deletes the keypad Auth users. Do not run it on cutover night.
 
 ## Open questions
 

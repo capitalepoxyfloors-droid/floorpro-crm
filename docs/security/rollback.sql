@@ -7,6 +7,18 @@
 --
 -- Codes changed in the new Security page after cutover are NOT copied back.
 -- Those people keep the previous code until you set it again in the old app.
+--
+-- This script does not drop public.pin_accounts, public.pin_attempts, the private
+-- helper functions, public.fp_revoke_sessions, or the Auth users created by PIN
+-- sign-in. Those leftovers do not affect the old website. Leave them.
+--
+-- To turn the new protections back on the same night, re-apply ONLY the section of
+-- supabase/migrations/20261009143000_rls_pin_auth_private_storage.sql that starts at
+-- the line "-- POLICIES ONLY BELOW THIS LINE." Do not run the whole migration again.
+-- The top of that file hashes PINs and stops if an owner row already exists.
+--
+-- docs/security/full-reset.sql removes the PIN tables and those Auth users. That is
+-- not this rollback. Do not run it when you only need the old site back tonight.
 
 ALTER TABLE public.leads DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.jobs DISABLE ROW LEVEL SECURITY;

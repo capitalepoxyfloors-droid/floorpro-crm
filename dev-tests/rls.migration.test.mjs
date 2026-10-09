@@ -290,6 +290,79 @@ test('security migration hashes PINs and locks out the anon key', { skip: hasPsq
 
   const label = psqlTuples(db, `SELECT label FROM public.pin_accounts WHERE kind = 'crew' AND crew_idx = 0`);
   assert.equal(label, 'Seth West');
+
+  const insertPolicy = psqlTuples(db, `
+    SELECT pg_get_expr(polwithcheck, polrelid)
+    FROM pg_policy WHERE polname = 'fp_settings_insert'
+  `);
+  assert.match(insertPolicy, /SELECT auth\.jwt\(\)/);
+
+  const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  const userB = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  const sessA = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+  const sessB = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+  psql(db, ['-c', `
+    CREATE TABLE auth.users (id uuid PRIMARY KEY);
+    CREATE TABLE auth.sessions (
+      id uuid PRIMARY KEY,
+      user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE
+    );
+    CREATE TABLE auth.refresh_tokens (
+      id bigserial PRIMARY KEY,
+      token varchar(255),
+      user_id varchar(255),
+      session_id uuid REFERENCES auth.sessions(id) ON DELETE CASCADE
+    );
+    CREATE TABLE auth.mfa_amr_claims (
+      id uuid PRIMARY KEY,
+      session_id uuid NOT NULL REFERENCES auth.sessions(id) ON DELETE CASCADE
+    );
+    INSERT INTO auth.users VALUES ('${userA}'), ('${userB}');
+    INSERT INTO auth.sessions VALUES ('${sessA}', '${userA}'), ('${sessB}', '${userB}');
+    INSERT INTO auth.refresh_tokens (token, user_id, session_id) VALUES
+      ('tok-a', '${userA}', '${sessA}'),
+      ('tok-a-nosession', '${userA}', NULL),
+      ('tok-b', '${userB}', '${sessB}');
+    INSERT INTO auth.mfa_amr_claims VALUES ('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee', '${sessA}');
+  `]);
+
+  const revoked = psqlTuples(db, `
+    BEGIN;
+    SET LOCAL ROLE service_role;
+    SELECT public.fp_revoke_sessions('${userA}'::uuid);
+    RESET ROLE;
+    SELECT 'sessions_a=' || count(*)::text FROM auth.sessions WHERE user_id = '${userA}';
+    SELECT 'refresh_a=' || count(*)::text FROM auth.refresh_tokens WHERE user_id = '${userA}';
+    SELECT 'amr_a=' || count(*)::text FROM auth.mfa_amr_claims;
+    SELECT 'sessions_b=' || count(*)::text FROM auth.sessions WHERE user_id = '${userB}';
+    SELECT 'refresh_b=' || count(*)::text FROM auth.refresh_tokens WHERE user_id = '${userB}';
+    ROLLBACK;
+  `);
+  assert.match(revoked, /sessions_a=0/);
+  assert.match(revoked, /refresh_a=0/);
+  assert.match(revoked, /amr_a=0/);
+  assert.match(revoked, /sessions_b=1/);
+  assert.match(revoked, /refresh_b=1/);
+
+  for (const role of ['anon', 'authenticated']) {
+    let denied = '';
+    try {
+      psqlTuples(db, `
+        BEGIN;
+        SET LOCAL ROLE ${role};
+        SELECT public.fp_revoke_sessions('${userB}'::uuid);
+        ROLLBACK;
+      `);
+    } catch (err) {
+      denied = String(err.stderr || err.stdout || err.message);
+    }
+    assert.match(denied, /permission denied/i, role);
+  }
+
+  const stillThere = psqlTuples(db, `
+    SELECT count(*) FROM auth.sessions WHERE user_id = '${userB}'
+  `);
+  assert.equal(stillThere, '1');
 });
 
 test('migration refuses to run when the manager code was not saved', { skip: hasPsql() ? false : 'psql is not installed' }, () => {

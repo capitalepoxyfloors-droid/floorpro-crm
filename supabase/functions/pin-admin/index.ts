@@ -19,6 +19,7 @@ type Account = {
   office_id: string | null;
   label: string;
   auth_user_id: string | null;
+  session_nonce: number | null;
 };
 
 Deno.serve(async (req) => {
@@ -39,11 +40,17 @@ Deno.serve(async (req) => {
   const db = createClient(url, service, { auth: { persistSession: false, autoRefreshToken: false } });
   const { data: self, error: selfErr } = await db
     .from('pin_accounts')
-    .select('id, kind, crew_idx, office_id, label, auth_user_id')
+    .select('id, kind, crew_idx, office_id, label, auth_user_id, session_nonce')
     .eq('auth_user_id', user.id)
     .maybeSingle();
   if (selfErr) return json({ error: 'Could not check this sign-in.' }, 503);
   if (!self) return json({ error: 'This sign-in is no longer valid.' }, 401);
+  // The nonce lives on the PIN row. An access token issued before a PIN change
+  // still verifies for up to an hour, and this function uses the service role,
+  // so row security does not stop it. Reject that token here, including whoami.
+  if (!nonceMatches(user.app_metadata?.fp_nonce, self.session_nonce)) {
+    return json({ error: 'This sign-in is no longer valid.' }, 401);
+  }
   if (self.kind === 'crew') {
     const blocked = await crewIsInactive(db, self.crew_idx);
     if (blocked) return json({ error: 'This sign-in is no longer valid.' }, 401);
@@ -87,6 +94,10 @@ Deno.serve(async (req) => {
     return json({ error: message }, status);
   }
 });
+
+function nonceMatches(tokenNonce: unknown, rowNonce: number | null) {
+  return typeof tokenNonce === 'number' && Number.isInteger(tokenNonce) && tokenNonce === (rowNonce ?? 0);
+}
 
 function publicAccount(row: Account) {
   return {
@@ -164,7 +175,7 @@ async function clearCrewPin(
   const crewIdx = requireIndex(body.crew_idx);
   const { data: existing } = await db.from('pin_accounts')
     .select('id, auth_user_id').eq('kind', 'crew').eq('crew_idx', crewIdx).maybeSingle();
-  if (existing?.auth_user_id) await revokeAuthUser(url, service, existing.auth_user_id, true);
+  if (existing?.auth_user_id) await revokeAuthUser(url, service, existing.auth_user_id);
   if (existing) {
     const { error } = await db.from('pin_accounts').delete().eq('id', existing.id);
     if (error) throw new Error('Could not clear that PIN.');
@@ -182,7 +193,7 @@ async function revokeCrew(
   const { data: existing } = await db.from('pin_accounts')
     .select('id, auth_user_id').eq('kind', 'crew').eq('crew_idx', crewIdx).maybeSingle();
   if (existing?.auth_user_id) {
-    await revokeAuthUser(url, service, existing.auth_user_id, true);
+    await revokeAuthUser(url, service, existing.auth_user_id);
     const { error } = await db.from('pin_accounts').update({
       auth_user_id: null,
       email: null,
@@ -241,13 +252,15 @@ async function removeOffice(
   const { data: row } = await db.from('pin_accounts').select('auth_user_id').eq('kind', 'office').eq('office_id', officeId).maybeSingle();
   const { error } = await db.from('pin_accounts').delete().eq('kind', 'office').eq('office_id', officeId);
   if (error) throw new Error('Could not remove that person.');
-  if (row?.auth_user_id) await revokeAuthUser(url, service, row.auth_user_id, true);
+  if (row?.auth_user_id) await revokeAuthUser(url, service, row.auth_user_id);
   return { ok: true };
 }
 
-// Keeps the same Auth user when a PIN changes. Bumps the nonce and signs every
-// session out so the previous refresh token cannot mint a new access token, and
-// the previous access token no longer matches private.fp_member().
+// Keeps the same Auth user when a PIN changes. Deletes every session and refresh
+// token first, then publishes the new nonce, then deletes again. A refresh that
+// slips through between those steps would otherwise mint a token that already
+// carries the new nonce. The previous access token fails the nonce check above
+// and private.fp_member() until it expires.
 async function replacePin(
   db: ReturnType<typeof createClient>,
   url: string,
@@ -258,6 +271,7 @@ async function replacePin(
   crewIdx: number | null = null,
 ) {
   const nextNonce = (existing.session_nonce || 0) + 1;
+  if (existing.auth_user_id) await revokeSessions(db, existing.auth_user_id);
   const { error } = await db.from('pin_accounts').update({
     ...patch,
     session_nonce: nextNonce,
@@ -274,23 +288,15 @@ async function replacePin(
     },
   });
   if (updated.error) throw new Error(updated.error.message);
-  await revokeAuthUser(url, service, existing.auth_user_id, false);
+  await revokeSessions(db, existing.auth_user_id);
 }
 
-async function revokeAuthUser(url: string, service: string, userId: string, deleteUser: boolean) {
-  const logout = await fetch(`${url}/auth/v1/admin/users/${userId}/logout`, {
-    method: 'POST',
-    headers: {
-      apikey: service,
-      Authorization: `Bearer ${service}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ scope: 'global' }),
-  });
-  if (!deleteUser) {
-    if (!logout.ok && logout.status !== 404) throw new Error('Could not sign that person out.');
-    return;
-  }
+async function revokeSessions(db: ReturnType<typeof createClient>, userId: string) {
+  const { error } = await db.rpc('fp_revoke_sessions', { target_user: userId });
+  if (error) throw new Error('Could not sign that person out.');
+}
+
+async function revokeAuthUser(url: string, service: string, userId: string) {
   const admin = createClient(url, service, { auth: { persistSession: false, autoRefreshToken: false } });
   const deleted = await admin.auth.admin.deleteUser(userId);
   if (deleted.error && !/not found/i.test(deleted.error.message || '')) {

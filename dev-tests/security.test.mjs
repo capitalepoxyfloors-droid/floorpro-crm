@@ -84,11 +84,18 @@ test('the page does not fetch or contain the old client-side PIN check', () => {
   assert.match(migration, /private\.fp_member\(\)/);
   assert.match(migration, /crew_inactive/);
   assert.match(migration, /Crew ' \|\| \(v_key::int \+ 1\)/);
+  assert.match(migration, /CREATE OR REPLACE FUNCTION public\.fp_revoke_sessions\(target_user uuid\)/);
+  assert.match(migration, /GRANT EXECUTE ON FUNCTION public\.fp_revoke_sessions\(uuid\) TO service_role/);
+  assert.match(migration, /REVOKE ALL ON FUNCTION public\.fp_revoke_sessions\(uuid\) FROM anon, authenticated/);
+  assert.match(migration, /\(\(select auth\.jwt\(\)\) -> 'app_metadata' ->> 'fp_role'\) IN \('owner', 'office'\)/);
   const adminSrc = fs.readFileSync(path.join(root, 'supabase/functions/pin-admin/index.ts'), 'utf8');
   assert.match(adminSrc, /Crew \$\{crewIdx \+ 1\}/);
-  assert.match(adminSrc, /scope: 'global'/);
+  assert.match(adminSrc, /fp_revoke_sessions/);
+  assert.match(adminSrc, /nonceMatches/);
   assert.match(adminSrc, /deleteUser/);
   assert.match(adminSrc, /session_nonce/);
+  assert.equal(adminSrc.includes('/auth/v1/admin/users/'), false);
+  assert.equal(adminSrc.includes('status !== 404'), false);
   assert.equal(adminSrc.includes('requirePin(body.pin, 4, 6)'), false);
 });
 

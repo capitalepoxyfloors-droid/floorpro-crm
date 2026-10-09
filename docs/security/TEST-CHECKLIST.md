@@ -7,7 +7,7 @@ Use a copy of the new `index.html` pointed at the test project: set `SUPABASE_UR
 ## Setup
 
 1. Dashboard → SQL: run `docs/security/00-save-owner-pin.sql` with a manager code you will remember (exactly 4 digits). On a copy of live data there is no saved manager code until you do this. If any saved crew or office PIN is not 4 digits, change it to 4 digits before the migration. The keypad cannot type a longer code.
-2. Run `supabase/migrations/20261009143000_rls_pin_auth_private_storage.sql` in the SQL editor. It should finish without an error.
+2. Run `supabase/migrations/20261009143000_rls_pin_auth_private_storage.sql` in the SQL editor. It should finish without an error. If this project already has `pin_accounts` from an earlier run, do not run the whole file again (it stops because the owner row exists). Run from the line `-- POLICIES ONLY BELOW THIS LINE.` through the end. That re-applies policies and installs `fp_revoke_sessions`. Then redeploy `pin-admin`.
 3. Deploy functions from this repo (JWT check **off** for pin-login only):
 
    ```bash
@@ -31,8 +31,9 @@ Use a copy of the new `index.html` pointed at the test project: set `SUPABASE_UR
 9. An inactive crew member's PIN is rejected.
 10. Sign out returns to the keypad. Refresh keeps you in for the same session. After you sign out, refresh shows the keypad.
 11. Security page: crew rows say "PIN on file" or "No PIN" and the box is empty. A 5-digit code is rejected. Saving a new 4-digit crew PIN, then signing out, works with the new PIN and fails with the old one. In Authentication → Users, that person is still one user, not a second account. Their old tab cannot keep loading jobs. Clearing a PIN (empty box + Save + confirm) blocks that person, and their old tab cannot load jobs either.
+11b. PIN change signs the other session out. Stay signed in as a crew member in one browser (or keep that browser's refresh token). In another browser, as the owner, set a new 4-digit PIN for that same person. In the first browser, reloading jobs must fail, and calling `pin-admin` (`whoami` or `list`) with the old access token must return 401. Using the old refresh token at `POST /auth/v1/token?grant_type=refresh_token` must not return a new access token. Do the same for the manager code: change it from a second owner session, and the first owner session's refresh token must die the same way. The person is still one Auth user.
 12. Add an office person, sign in as them, remove them as the owner. Their open tab cannot save or reload data. Reload shows the keypad.
-12b. Turn off “Allow new users to sign up”. Sign in with a crew PIN that has never been used. It should still open Crew View. A public signup (`POST /auth/v1/signup`) should be rejected. If a signup from before the switch still has a token, `GET /rest/v1/jobs` with that token returns nothing.
+12b. Turn off public signups by hand: **Authentication → Sign In / Providers** (address ends in `/auth/providers`) → **User Signups** → switch off **Allow new users to sign up** → **Save changes**. Leave Email enabled and **Allow anonymous sign-ins** off. Sign in with a crew PIN that has never been used. It should still open Crew View. A public signup (`POST /auth/v1/signup`) should be rejected. If a signup from before the switch still has a token, `GET /rest/v1/jobs` with that token returns nothing.
 12c. Mark a test crew member inactive. Their PIN is rejected. Their already-open tab cannot load jobs, and they cannot turn themselves back on by writing `settings` key `crew_inactive`. Reactivate them and confirm the PIN works again.
 
 ## Screens (owner)
