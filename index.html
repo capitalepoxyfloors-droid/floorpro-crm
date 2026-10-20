@@ -10265,11 +10265,18 @@ async function saveLeadQuotedDates(){
   LEAD_QUOTED_DATES = await _saveKVMerged('lead_quoted_dates', LEAD_QUOTED_DATES);
 }
 
-// ── Cross-check: a pipeline lead whose customer already has a Job (estimate approved) ──────────
-// When an active lead's customer name matches a job on the board (approved/scheduled/in-progress/
-// complete), the estimate was probably approved and the lead is a leftover. We can't always
-// auto-remove it (a same-name lead might be a separate estimate — e.g. George Belchik has several),
-// so we ASK on load. "Keep — separate" is remembered in KV lead_dup_acks so it won't re-ask.
+// ── Cross-check: a pipeline lead that is very likely the same work as a Job ──────────────────
+// A repeat customer has many jobs, and a new estimate at a different price is a different
+// piece of work. We ASK on load only when:
+//   • the lead and the job share a Wave estimate number, or
+//   • the customer name matches AND the amounts are within 2% or $25, or
+//   • the customer name matches, neither side has a Wave number, and the lead or the job
+//     has no amount (blank or 0) — there is no price to compare.
+// Wave numbers live on the row as "Wave #123" in notes. A "#123" counts only at the end of
+// the name ("Customer #123"), not in the middle ("Lot #32 Smith"). If both sides have a
+// number and the numbers differ, they are different estimates even when the name and the
+// price line up. "Keep — separate" is remembered in KV lead_dup_acks so an acknowledged
+// lead stays quiet.
 let LEAD_DUP_ACKS = {};   // {leadKey: true} — matches the user marked as separate
 let _leadDupMatches = [];
 async function loadLeadDupAcks(){
@@ -10285,24 +10292,54 @@ async function loadLeadDupAcks(){
 async function saveLeadDupAcks(){
   LEAD_DUP_ACKS = await _saveKVMerged('lead_dup_acks', LEAD_DUP_ACKS);
 }
+// Estimate number stamped by the Wave sync. Notes use "Wave #123". A "#123" left at the
+// end of the customer/lead name is the same number (the board badge used to get saved
+// into the name). "Lot #32 Smith" is a lot number, not an estimate.
+function _waveEstimateNum(notes, name){
+  const tagged=String(notes||'').match(/Wave #(\d+)/i);
+  if(tagged) return tagged[1];
+  const baked=String(name||'').match(/#(\d+)\s*$/);
+  return baked?baked[1]:'';
+}
+function _leadMoney(v){
+  const n=parseFloat(String(v==null?'':v).replace(/[$,\s]/g,''));
+  return n>0?n:0;
+}
+// Same price: the difference is at most $25, or at most 2% of the larger amount.
+function _leadJobAmountsClose(a, b){
+  const x=_leadMoney(a), y=_leadMoney(b);
+  if(!(x>0)||!(y>0)) return false;
+  const diff=Math.abs(x-y);
+  return diff<=25 || diff<=0.02*Math.max(x,y);
+}
+function _leadIsSameWorkAsJob(lead, job){
+  if(!lead||!job) return false;
+  const ln=_waveEstimateNum(lead.notes, lead.name);
+  const jn=_waveEstimateNum(job.notes, job.customer);
+  if(ln&&jn) return ln===jn;
+  const lk=_jobMatchKey(lead.name||''), jk=_jobMatchKey(job.customer||'');
+  if(!lk||lk!==jk) return false;
+  // No estimate number on either side, and one price is blank: the name is all we have.
+  if(!ln&&!jn&&(!(_leadMoney(lead.value)>0)||!(_leadMoney(job.value)>0))) return true;
+  return _leadJobAmountsClose(lead.value, job.value);
+}
 function crossCheckLeadsVsJobs(){
   if(!Array.isArray(LEADS) || !Array.isArray(_lastJobRows)) return;
   const jobLabels={approved:'Approved',scheduled:'Scheduled',inprogress:'In Progress',complete:'Complete'};
-  const jobByKey={};
-  _lastJobRows.forEach(r=>{
-    if(!r || !jobLabels[r.status]) return;   // active/won jobs only (skip invoiced/archived)
-    const k=_jobMatchKey(r.customer||'');
-    if(k && !jobByKey[k]) jobByKey[k]=r;
-  });
+  const jobs=_lastJobRows.filter(r=>r && jobLabels[r.status]);   // active/won jobs only (skip invoiced/archived)
   const stageLabels={new:'New',scheduled:'Scheduled',quoted:'Estimate Sent',followup:'Follow-Up'};
   _leadDupMatches=[];
   LEADS.forEach(l=>{
     if(!l || l.stage==='lost') return;
     const leadKey=String(l.db_id||l.name);
     if(LEAD_DUP_ACKS[leadKey]) return;
-    const job=jobByKey[_jobMatchKey(l.name||'')];
+    const ln=_waveEstimateNum(l.notes, l.name);
+    // Same estimate number wins over a same-name price match, so a repeat customer's
+    // other job doesn't steal the popup.
+    const job=jobs.find(r=>ln && ln===_waveEstimateNum(r.notes, r.customer))
+      || jobs.find(r=>_leadIsSameWorkAsJob(l, r));
     if(!job) return;
-    const _v=parseFloat(job.value)||0;
+    const _v=parseFloat(String(job.value==null?'':job.value).replace(/[$,\s]/g,''))||0;
     _leadDupMatches.push({ leadKey, name:l.name||'(unnamed)', stageLabel:(stageLabels[l.stage]||l.stage),
       jobLabel:jobLabels[job.status], jobVal:_v>0?'$'+_v.toLocaleString('en-US',{maximumFractionDigits:0}):'' });
   });
