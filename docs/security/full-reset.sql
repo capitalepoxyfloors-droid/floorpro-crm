@@ -26,6 +26,9 @@ END $$;
 
 DROP TABLE IF EXISTS public.pin_attempts;
 DROP TABLE IF EXISTS public.pin_accounts;
-DROP FUNCTION IF EXISTS private.fp_member();
+
 DROP FUNCTION IF EXISTS private.fp_crew_inactive(integer);
 DROP FUNCTION IF EXISTS public.fp_revoke_sessions(uuid);
+DROP FUNCTION IF EXISTS private.fp_role();
+DROP FUNCTION IF EXISTS public.fp_pin_fail(uuid);
+DROP FUNCTION IF EXISTS private.fp_member();

@@ -12,6 +12,20 @@ Everyone will have to enter their PIN once more. After that, the app remembers t
 
 The manager code was never saved in the database. The page itself contained it. Part of this cutover copies that code into a scrambled form so you are not locked out, and you should set a new manager code the same night.
 
+## Oct 19 changes (after the IT review) — these override the older text below
+
+The branch was rebuilt on current main (`secure-pin-auth-v2`, adds the archived Google Photos tiles). Then:
+
+- **Name first, then PIN.** The sign-in screen lists names. You tap yours, then type your PIN. A phone remembers who signed in last and goes straight to that person's keypad ("Not you?" goes back to the list). Each guess is now against one person instead of everyone at once.
+- **Per-person lockout.** 5 wrong PINs in a row locks that one person for 15 minutes. The third lockout within 24 hours holds a crew or office account until the owner taps **🔒 Unlock** on the Security page. The owner's own account is never held, only locked (1 hour on the third lockout), so you can't be shut out for good. There is no longer a global cap, so a stranger can't lock the whole crew out at once. A per-network backstop stays (20 misses in 15 minutes).
+- **6-digit codes for owner and office.** Crew stay at 4 digits. The migration still hashes the current 4-digit owner and office codes, and marks them "must change". The first time you or office staff sign in after cutover, the keypad asks for a new 6-digit code (typed twice). That new code **is** the new manager code for cutover night.
+- **Alerts.** Every lockout, every spike (20 wrong PINs across all accounts in 15 minutes, at most once an hour), and every first-sign-in code change writes a `security_alert` row to the Audit Log, and shows a red banner on the Dashboard for owner/office until someone taps Dismiss.
+- **Crew can only save five settings entries:** `job_records`, `job_photos`, `slot_job_map`, `pto_requests`, `material_requests`. Crew can never delete a settings row. Owner and office can still save everything except the PIN rows. Until phase 2 moves `job_records` and `job_photos` into their own tables, the Audit Log and the nightly Drive backup are what protect against a bad save from a crew phone.
+- **`ops_backups`** gets row security: the owner can read it through the app, nobody else. The bots use the service role and are not affected.
+- **Speed fix.** Every policy calls its check as `(select ...)` so Postgres runs it once per query, not once per row.
+- **The migration refuses to finish if any table in `public` still has row security off.** It names the table. Add it to the migration and run again. (On Oct 19 live had exactly the 11 tables the migration covers.)
+- **PC scripts** use the service_role key from an encrypted file (DPAPI, this Windows user only). See step 8.
+
 ## What we chose, and the tradeoffs
 
 **Sign-in.** An Edge Function (`pin-login`) checks the PIN and hands back a normal Supabase login. The keypad does not ask for a name. The server still figures out who it is, owner first, then office, then crew, same as the keypad did.
@@ -73,7 +87,7 @@ supabase db dump --project-ref cngbsmmdfxmerlqnkate -f floorpro-live-before-rls.
 
 That file contains customer data and the old PINs. Keep it off GitHub and off the website.
 
-The Drive script `backup-data-to-drive.ps1` can no longer use the anon key after step 3. Run it **before** the migration if you want one more JSON snapshot, while the anon key still works. After cutover it reads `SUPABASE_SERVICE_ROLE_KEY` from the environment on that PC.
+The Drive script `backup-data-to-drive.ps1` can no longer use the anon key after step 3. Run it **before** the migration if you want one more JSON snapshot, while the anon key still works. After cutover it reads the service_role key from the encrypted file set up in step 8a.
 
 **Restore:** in an emergency, create a new Supabase project and load `floorpro-live-before-rls.sql`, or use the dashboard's point-in-time restore. For a bad policy rather than bad data, you do not need this file — use the rollback in step 9, which is faster. Use the dump if rows were damaged.
 
@@ -86,6 +100,8 @@ Run `docs/security/00-save-owner-pin.sql` in the SQL editor after replacing the 
 Paste `supabase/migrations/20261009143000_rls_pin_auth_private_storage.sql` into the SQL editor and run it once.
 
 If it stops with "No usable admin_pin", step 2 did not stick. Fix that and run this again.
+
+If it stops with "Row security is still off on: …", a table was added since this file was written. Add it to the migration (and to `rollback.sql`), then run again. Nothing was applied.
 
 From this moment the old website cannot load data. Do not stop for the night between this step and the website deploy.
 
@@ -108,10 +124,10 @@ Quick check (replace the anon key):
 ```bash
 curl -s -X POST "https://cngbsmmdfxmerlqnkate.supabase.co/functions/v1/pin-login" \
   -H "apikey: ANON_KEY" -H "Authorization: Bearer ANON_KEY" \
-  -H "Content-Type: application/json" -d '{"pin":"0000"}'
+  -H "Content-Type: application/json" -d '{"action":"roster"}'
 ```
 
-You want "not recognized", not a missing-function error.
+You want a list of names (no PINs), not a missing-function error.
 
 ### 5. Accounts
 
@@ -127,15 +143,33 @@ If the keypad says it cannot reach the server, the functions from step 4 are not
 
 ### 7. Smoke test
 
-Owner signs in. Open schedule, one job, one existing photo, payroll. Change the manager code on the Security page the same night (the old one was in the public page source). Sign out and back in with the new code.
+Owner signs in: tap your name, type the old 4-digit code, and the keypad asks for a new 6-digit code twice. That is the new manager code (the old one was in the public page source). Open schedule, one job, one existing photo, payroll. Sign out and back in with the new code. Office staff (including the Grok bot's office sign-in, if it uses one) get the same 6-digit prompt the first time.
 
-Tell crew: the app will ask for their PIN again. Same PIN. If they were in the middle of a day log, finish the save before you start step 3, or after you finish step 6.
+Tell crew: the app will ask them to tap their name, then their PIN. Same PIN tonight; ask them to change it that week (owner sets it on the Security page). If they were in the middle of a day log, finish the save before you start step 3, or after you finish step 6.
 
 ### 8. Other programs that used the anon key
 
-- **Wave sync.** The Jobs button only writes a flag. A watcher on the office PC reads it. The comment in the app says that watcher runs every couple of minutes. After step 3 the anon key cannot see `settings`, so Wave import stops until that watcher sends the **service_role** key (kept on that PC, never in the website). Confirm where that script lives. This repo does not contain it.
-- **Google Photos.** Settings has `google_photos_album_id` and `google_photos_synced`. They are Google ids, not links to our files, and this repo never reads them. Making the bucket private does not rewrite them. If a separate sync downloads photos by the old public link, that download will fail and needs a signed URL or the service role. In-app photos do not.
-- **backup-data-to-drive.ps1** now requires `SUPABASE_SERVICE_ROLE_KEY` in the environment.
+Do 8a and 8b any day **before** cutover night. The service key works with the old site too, so nothing breaks early.
+
+**8a. Save the key once:** `C:\Users\Will Bradford\tools\supabase-cli\save-service-key.ps1` (paste the legacy `service_role` key) or `save-service-key.ps1 -FromCli` (fetches it with the saved CLI token, no pasting). It refuses anything that isn't this project's service_role key, and checks it can read the database.
+
+**8b. Switch the PC scripts:** `switch-pc-scripts-to-service-key.ps1` (same folder). It changes the one key line in `FloorPro Automation\sync-wave-estimates.ps1` and `wave-sync-watcher.ps1` (keeps `.pre-cutover` copies), and moves the retired photo scripts (`sync-photos-to-google.ps1`, `cleanup-old-photos.ps1`, `restore-archived-photos.ps1`) and the one-off `seed-wave-numbers.ps1` into `FloorPro Automation\retired`. `-Undo` puts it all back.
+
+Everything on the office PC that talks to Supabase (checked Oct 19):
+
+| Scheduled task / script | After cutover |
+|---|---|
+| FloorPro Wave Sync (daily) and FloorPro Wave Sync Watcher (hourly) → `sync-wave-estimates.ps1` | service key via 8b. It reads/writes `settings`, `jobs` **and `leads`**. |
+| `wave-sync-watcher.ps1` (the Jobs-page sync button) | service key via 8b. Note: no task runs this file today — the "Watcher" task runs the full sync hourly instead. Separate bug. |
+| FloorPro CRM - Nightly Data Backup → `floorpro-crm\backup-data-to-drive.ps1` | service key; switches when this branch is merged to main (step 6). |
+| FloorPro CRM - Nightly Storage Backup → `floorpro-crm\backup-storage-to-drive.ps1` | same. Was missing from git; now tracked on this branch. |
+| Google Photos Sync / Photo Cleanup tasks (disabled) | retired; the `photo-jobs` cloud function does this with the service role and needs no change. Restore = `tools\supabase-cli\photo-jobs.ps1 -Action restore`. |
+| Claude Code sessions fixing live data | use the same encrypted key file. |
+| Sales / Mechanic / Operations / IT bots | their own Supabase management connectors (bypass row security). Grok ops bot: IT is confirming whether it signs in to CrewBoard; if so, it gets the name + 6-digit flow. |
+
+The two backup scripts run from the `Desktop\floorpro-crm` folder itself (and so does the git post-commit hook). Keep that folder on `main`. Branch work lives in `Desktop\floorpro-crm-secure`.
+
+**Google Photos.** `google_photos_synced` / `google_photos_items` hold Google ids and filenames, not links to our files. photo-jobs reads and writes Storage with the service role through the non-public endpoints, so the private bucket doesn't affect sync, cleanup, or restore.
 
 ### 9. Rollback (minutes)
 
@@ -162,7 +196,7 @@ That invalidates the anon key, the service_role key, and every signed-in session
 Then:
 
 1. Copy the new anon key into `SUPABASE_KEY` in `index.html` and push `main` again.
-2. Put the new service_role key in the Wave watcher and in `SUPABASE_SERVICE_ROLE_KEY` for the backup script.
+2. Run `tools\supabase-cli\save-service-key.ps1` again with the new service_role key (the PC scripts and backups all read that one file).
 3. Redeploy is not usually required for the functions; they read the project key from Supabase. Sign in once to confirm. If pin-login returns a configuration error, redeploy both functions.
 4. Everyone enters their PIN again.
 
@@ -176,7 +210,8 @@ Until you do this, the old anon key is still inside the previous website and thi
 
 ## Open questions
 
-1. Where is the Wave watcher, and is it using the anon key? It will stop at step 3 until it uses the service role.
-2. Is anything outside this repo still uploading job photos to Google Photos by public URL?
-3. Crew and office can still read the same tables the owner can, once signed in, because that is what the app loads today. Say if crew should be blocked from leads, payroll figures, or gate codes at the database — that would be a follow-up and can change Crew View.
-4. PINs are exactly 4 digits, matching the keypad. A 4-digit PIN is still guessable by a patient attacker who can use many networks. The rate limit slows that down.
+1. ~~Wave watcher~~ — answered Oct 19, see step 8.
+2. ~~Google Photos by public URL~~ — no; photo-jobs uses the service role.
+3. **Phase 2 (about a week after cutover):** crew can still *read* every table and settings key once signed in (pay, crew personal info, costing, leads, audit log). Split policies by role so crew get jobs, schedule, day logs, photos and materials only. Moving pay and `job_records` / `job_photos` out of shared settings keys is part of that.
+4. ~~4-digit guessing~~ — name-first + per-person lockout + 6-digit owner/office (Oct 19).
+5. The per-network backstop reads the first `X-Forwarded-For` value. Check on the test project whether a caller can set that header themselves (test checklist step 9c). It's only a backstop now; the per-person lockout doesn't depend on it.

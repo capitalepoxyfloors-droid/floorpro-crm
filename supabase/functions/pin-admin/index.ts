@@ -9,7 +9,7 @@
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import bcrypt from 'npm:bcryptjs@2.4.3';
-import { isInactiveCrew, normalizePin } from '../_shared/pins.mjs';
+import { isInactiveCrew, isLocked, normalizePin } from '../_shared/pins.mjs';
 import { corsHeaders, envKeys, json } from '../_shared/http.ts';
 
 type Account = {
@@ -77,6 +77,10 @@ Deno.serve(async (req) => {
       if (!isOwner && !isOffice) return json({ error: 'Only the office can deactivate a crew member.' }, 403);
       return json(await revokeCrew(db, url, service, body));
     }
+    if (action === 'unlock') {
+      if (!isOwner && !isOffice) return json({ error: 'Only the office can unlock a sign-in.' }, 403);
+      return json(await unlockAccount(db, body));
+    }
     if (!isOwner) return json({ error: 'Only the manager code can change PINs.' }, 403);
     if (action === 'list') return json(await listAccounts(db));
     if (action === 'set_owner_pin') return json(await setOwnerPin(db, url, service, body));
@@ -111,20 +115,28 @@ function publicAccount(row: Account) {
 async function listAccounts(db: ReturnType<typeof createClient>) {
   const { data, error } = await db
     .from('pin_accounts')
-    .select('kind, crew_idx, office_id, label');
+    .select('id, kind, crew_idx, office_id, label, locked_until');
   if (error) throw new Error('Could not load the PIN list.');
   const rows = data || [];
+  const now = Date.now();
+  const lockInfo = (r: { id: string; locked_until: string | null }) => ({
+    account_id: r.id,
+    locked: isLocked(r, now),
+    held: r.locked_until === 'infinity',
+  });
   return {
     owner: { has_pin: rows.some((r) => r.kind === 'owner') },
     crew: rows.filter((r) => r.kind === 'crew').map((r) => ({
       crew_idx: r.crew_idx,
       label: r.label,
       has_pin: true,
+      ...lockInfo(r),
     })),
     office: rows.filter((r) => r.kind === 'office').map((r) => ({
       office_id: r.office_id,
       name: r.label,
       has_pin: true,
+      ...lockInfo(r),
     })),
   };
 }
@@ -135,12 +147,11 @@ async function setOwnerPin(
   service: string,
   body: Record<string, unknown>,
 ) {
-  const pin = requirePin(body.pin, 4, 4);
-  await assertPinFree(db, pin, { kind: 'owner' });
+  const pin = requirePin(body.pin, 6, 6);
   const { data: existing, error: readErr } = await db.from('pin_accounts')
     .select('id, auth_user_id, session_nonce').eq('kind', 'owner').maybeSingle();
   if (readErr || !existing) throw new Error('Could not save the manager code.');
-  await replacePin(db, url, service, existing, { pin_hash: bcrypt.hashSync(pin, 8) }, 'owner');
+  await replacePin(db, url, service, existing, newPinPatch(pin), 'owner');
   return { ok: true };
 }
 
@@ -152,15 +163,13 @@ async function setCrewPin(
 ) {
   const crewIdx = requireIndex(body.crew_idx);
   const pin = requirePin(body.pin, 4, 4);
-  await assertPinFree(db, pin, { kind: 'crew', crew_idx: crewIdx });
   const label = await crewLabel(db, crewIdx);
-  const hash = bcrypt.hashSync(pin, 8);
   const { data: existing } = await db.from('pin_accounts')
     .select('id, auth_user_id, session_nonce').eq('kind', 'crew').eq('crew_idx', crewIdx).maybeSingle();
   if (existing) {
-    await replacePin(db, url, service, existing, { pin_hash: hash, label }, 'crew', crewIdx);
+    await replacePin(db, url, service, existing, { ...newPinPatch(pin), label }, 'crew', crewIdx);
   } else {
-    const { error } = await db.from('pin_accounts').insert({ kind: 'crew', crew_idx: crewIdx, label, pin_hash: hash });
+    const { error } = await db.from('pin_accounts').insert({ kind: 'crew', crew_idx: crewIdx, label, ...newPinPatch(pin) });
     if (error) throw new Error('Could not save that crew PIN.');
   }
   return { ok: true };
@@ -207,18 +216,18 @@ async function revokeCrew(
 async function addOffice(db: ReturnType<typeof createClient>, body: Record<string, unknown>) {
   const name = String(body.name || '').trim();
   if (!name) throw new Error('Enter a name.');
-  const pin = requirePin(body.pin, 4, 4);
-  const { data: existing } = await db.from('pin_accounts').select('id, label').eq('kind', 'office');
-  if ((existing || []).some((row) => row.label.toLowerCase() === name.toLowerCase())) {
-    throw new Error('There is already office staff named ' + name + '.');
+  const pin = requirePin(body.pin, 6, 6);
+  const { data: existing } = await db.from('pin_accounts').select('id, label');
+  // Names are what people tap on the sign-in screen, so they must be unique across everyone.
+  if ((existing || []).some((row) => String(row.label || '').toLowerCase() === name.toLowerCase())) {
+    throw new Error('There is already someone named ' + name + ' on the sign-in list.');
   }
-  await assertPinFree(db, pin, { kind: 'office' });
   const officeId = (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36)).slice(0, 8);
   const { error } = await db.from('pin_accounts').insert({
     kind: 'office',
     office_id: officeId,
     label: name,
-    pin_hash: bcrypt.hashSync(pin, 8),
+    ...newPinPatch(pin),
   });
   if (error) throw new Error('Could not add office staff.');
   return { ok: true, office_id: officeId };
@@ -232,12 +241,11 @@ async function setOfficePin(
 ) {
   const officeId = String(body.office_id || '');
   if (!officeId) throw new Error('Missing office staff.');
-  const pin = requirePin(body.pin, 4, 4);
-  await assertPinFree(db, pin, { kind: 'office', office_id: officeId });
+  const pin = requirePin(body.pin, 6, 6);
   const { data: existing, error: readErr } = await db.from('pin_accounts')
     .select('id, auth_user_id, session_nonce').eq('kind', 'office').eq('office_id', officeId).maybeSingle();
   if (readErr || !existing) throw new Error('Could not save that PIN.');
-  await replacePin(db, url, service, existing, { pin_hash: bcrypt.hashSync(pin, 8) }, 'office');
+  await replacePin(db, url, service, existing, newPinPatch(pin), 'office');
   return { ok: true };
 }
 
@@ -325,23 +333,6 @@ async function crewLabel(db: ReturnType<typeof createClient>, crewIdx: number) {
   return data?.full_name || `Crew ${crewIdx + 1}`;
 }
 
-async function assertPinFree(
-  db: ReturnType<typeof createClient>,
-  pin: string,
-  except: { kind: string; crew_idx?: number; office_id?: string },
-) {
-  const { data, error } = await db.from('pin_accounts').select('id, kind, crew_idx, office_id, label, pin_hash');
-  if (error) throw new Error('Could not check that PIN.');
-  for (const row of data || []) {
-    if (except.kind === row.kind && except.kind === 'owner') continue;
-    if (except.kind === 'crew' && row.kind === 'crew' && row.crew_idx === except.crew_idx) continue;
-    if (except.kind === 'office' && row.kind === 'office' && row.office_id === except.office_id) continue;
-    if (!bcrypt.compareSync(pin, row.pin_hash)) continue;
-    if (row.kind === 'owner') throw new Error('That PIN is already used by the manager code.');
-    if (row.kind === 'crew') throw new Error('That PIN is already used by ' + (row.label || 'a crew member') + '.');
-    throw new Error('That PIN is already used by office staff (' + (row.label || 'someone') + ').');
-  }
-}
 
 async function crewIsInactive(db: ReturnType<typeof createClient>, crewIdx: number | null) {
   if (crewIdx == null) return false;
@@ -349,4 +340,28 @@ async function crewIsInactive(db: ReturnType<typeof createClient>, crewIdx: numb
   let parsed: unknown = null;
   try { parsed = data?.value ? JSON.parse(data.value) : null; } catch { parsed = null; }
   return isInactiveCrew(crewIdx, parsed);
+}
+
+// Columns written whenever someone gets a new PIN: the hash, its length, and a clean
+// lock state, so a person locked out by wrong guesses is unlocked by a new PIN too.
+function newPinPatch(pin: string) {
+  return {
+    pin_hash: bcrypt.hashSync(pin, 8),
+    pin_len: pin.length,
+    must_change_pin: false,
+    failed_count: 0,
+    lock_count: 0,
+    first_lock_at: null,
+    locked_until: null,
+  };
+}
+
+async function unlockAccount(db: ReturnType<typeof createClient>, body: Record<string, unknown>) {
+  const id = String(body.account_id || '');
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Unknown account.');
+  const { data, error } = await db.from('pin_accounts')
+    .update({ failed_count: 0, lock_count: 0, first_lock_at: null, locked_until: null })
+    .eq('id', id).select('label');
+  if (error || !data || !data.length) throw new Error('Could not unlock that sign-in.');
+  return { ok: true, label: data[0].label };
 }

@@ -416,13 +416,16 @@
   <div id="login-card" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:36px 26px 28px;width:100%;max-width:290px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,.5);">
     <div style="font-size:11px;letter-spacing:2.5px;text-transform:uppercase;color:var(--text3);font-family:'DM Mono',monospace;margin-bottom:6px;">FloorPro</div>
     <div style="font-size:26px;font-weight:800;letter-spacing:-.5px;margin-bottom:2px;">CRM</div>
-    <div style="font-size:12px;color:var(--text3);margin-bottom:28px;">Enter manager code to continue</div>
-    <div style="display:flex;justify-content:center;gap:14px;margin-bottom:6px;">
-      <div class="pin-dot" id="pd0"></div>
-      <div class="pin-dot" id="pd1"></div>
-      <div class="pin-dot" id="pd2"></div>
-      <div class="pin-dot" id="pd3"></div>
+    <!-- Step 1: tap your name. Step 2: your PIN. A phone remembers who used it last. -->
+    <div id="login-who" style="display:none;">
+      <div style="font-size:12px;color:var(--text3);margin-bottom:16px;">Tap your name to sign in</div>
+      <div id="login-roster" style="display:flex;flex-direction:column;gap:7px;max-height:52vh;overflow-y:auto;text-align:left;"></div>
+      <div id="login-roster-error" style="display:none;color:#ef4444;font-size:12px;margin-top:10px;"></div>
     </div>
+    <div id="login-pin">
+    <div id="login-who-line" style="font-size:13px;color:var(--text);font-weight:600;margin-bottom:2px;"></div>
+    <div id="login-pin-hint" style="font-size:12px;color:var(--text3);margin-bottom:24px;">Enter your PIN</div>
+    <div id="pin-dots" style="display:flex;justify-content:center;gap:14px;margin-bottom:6px;"></div>
     <div id="pin-error" style="display:none;color:#ef4444;font-size:12px;margin:8px 0 2px;">Incorrect PIN — try again.</div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:20px;">
       <button class="pin-key" onclick="pinKey(1)">1</button>
@@ -437,6 +440,8 @@
       <button class="pin-key danger" onclick="pinDel()">⌫</button>
       <button class="pin-key" onclick="pinKey(0)">0</button>
       <button class="pin-key accent" onclick="pinSubmit()">↵</button>
+    </div>
+    <button type="button" onclick="pinShowRoster()" style="margin-top:16px;background:none;border:none;color:var(--text3);font-size:12px;cursor:pointer;text-decoration:underline;">Not you? Pick a different name</button>
     </div>
   </div>
 </div>
@@ -581,6 +586,7 @@
           <span>✏️ Drag sections to reorder. Click <strong>Done</strong> when finished.</span>
           <button class="btn btn-primary" style="margin-left:auto;padding:5px 14px;" onclick="toggleDashEdit()">Done</button>
         </div>
+        <div id="dash-security-alerts" style="display:none;"></div>
         <div id="dash-grid"></div>
       </div>
     </div>
@@ -970,7 +976,7 @@
           <div style="padding:20px 18px;display:flex;flex-direction:column;gap:16px;">
             <div class="form-group" style="margin:0;">
               <label class="form-label">Manager Code <span style="color:var(--text3);font-weight:400;">(full access — keep private)</span></label>
-              <input class="form-input" id="pin-new-admin" type="password" inputmode="numeric" maxlength="4" placeholder="New manager code" style="width:200px;font-size:18px;letter-spacing:4px;font-family:'DM Mono',monospace;"/>
+              <input class="form-input" id="pin-new-admin" type="password" inputmode="numeric" maxlength="6" placeholder="New manager code" style="width:200px;font-size:18px;letter-spacing:4px;font-family:'DM Mono',monospace;"/>
             </div>
             <div style="font-size:11.5px;color:var(--text2);line-height:1.4;">Crew sign in with their own personal PINs (set below) — there is no shared crew code.</div>
             <div>
@@ -981,19 +987,19 @@
         <div class="jobs-block" style="padding:0;margin-bottom:16px;">
           <div style="padding:14px 18px;border-bottom:1px solid var(--border);">
             <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);">Personal Crew Sign-In PINs</div>
-            <div style="font-size:11.5px;color:var(--text2);margin-top:5px;line-height:1.4;">Give each crew member their own 4-digit PIN. When they sign in with it, the app identifies them automatically — no need to tap a name. The saved PIN is not shown. Leave the box blank and save to turn their PIN off.</div>
+            <div style="font-size:11.5px;color:var(--text2);margin-top:5px;line-height:1.4;">Give each crew member their own 4-digit PIN. They tap their name on the sign-in screen, then enter it. 5 wrong tries locks that one person for 15 minutes; a third lockout in a day holds it until you tap Unlock here. The saved PIN is not shown. Leave the box blank and save to turn their PIN off.</div>
           </div>
           <div id="pin-crew-list" style="padding:6px 18px 14px;"></div>
         </div>
         <div class="jobs-block" style="padding:0;margin-bottom:16px;">
           <div style="padding:14px 18px;border-bottom:1px solid var(--border);">
             <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);">Office Staff</div>
-            <div style="font-size:11.5px;color:var(--text2);margin-top:5px;line-height:1.4;">Office staff get the same full access as the manager code, with their own 4-digit PIN. Everything they change is logged under their name in the Audit Log. Only the manager code can open this Security page.</div>
+            <div style="font-size:11.5px;color:var(--text2);margin-top:5px;line-height:1.4;">Office staff get the same full access as the manager code, with their own 6-digit PIN. Everything they change is logged under their name in the Audit Log. Only the manager code can open this Security page.</div>
           </div>
           <div id="pin-office-list" style="padding:6px 18px 4px;"></div>
           <div style="display:flex;align-items:center;gap:8px;padding:10px 18px 16px;flex-wrap:wrap;">
             <input class="form-input" id="office-new-name" type="text" placeholder="Name (e.g. Grok – Ops Manager)" style="flex:1;min-width:160px;font-size:13px;"/>
-            <input class="form-input" id="office-new-pin" type="text" inputmode="numeric" maxlength="4" placeholder="PIN" style="width:84px;font-size:16px;letter-spacing:3px;text-align:center;font-family:'DM Mono',monospace;"/>
+            <input class="form-input" id="office-new-pin" type="text" inputmode="numeric" maxlength="6" placeholder="6-digit PIN" style="width:84px;font-size:16px;letter-spacing:3px;text-align:center;font-family:'DM Mono',monospace;"/>
             <button class="btn btn-primary" onclick="addOfficeUser()" style="font-size:12px;padding:7px 14px;">+ Add</button>
           </div>
         </div>
@@ -1002,7 +1008,7 @@
             <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);">Session</div>
           </div>
           <div style="padding:16px 18px;">
-            <p style="font-size:13px;color:var(--text2);margin-bottom:12px;">The app locks automatically after 20 minutes of inactivity, and always locks on page refresh. No one can access any part of the app without the manager code.</p>
+            <p style="font-size:13px;color:var(--text2);margin-bottom:12px;">The app locks after 24 hours without use. Everyone signs in with their name and their own PIN; wrong-PIN lockouts and spikes show up as security alerts on the Dashboard and in the Audit Log.</p>
             <button class="btn btn-ghost" onclick="pinLogout()" style="color:var(--red);border-color:var(--red);">Sign Out</button>
           </div>
         </div>
@@ -2122,6 +2128,8 @@ async function logAudit(action,entity,details){
 
 let AUDIT_LOG_CACHE=null;
 const AUDIT_ACTION_META={
+  security_alert:{icon:'🛡️',label:'Sign-in security alert',color:'var(--red)'},
+  pin_unlocked:{icon:'🔓',label:'Sign-in unlocked',color:'var(--blue)'},
   schedule_added:{icon:'📅',label:'Added to schedule',color:'var(--green)'},
   schedule_removed:{icon:'🗑️',label:'Removed from schedule',color:'var(--red)'},
   schedule_updated:{icon:'📅',label:'Schedule slot updated',color:'var(--blue)'},
@@ -2381,7 +2389,39 @@ const DASH_WIDGETS = {
   }
 };
 
+// Security alerts written by pin-login (audit_log action 'security_alert'): an account
+// locked by wrong PINs, a spike of misses, or a first-sign-in code change. Shown to
+// owner/office until dismissed; dismissal is shared (KV security_alerts_seen = ISO time).
+async function renderSecurityAlerts(){
+  const host=document.getElementById('dash-security-alerts'); if(!host) return;
+  if(!_sessionAuthed||!_isOwnerSession()){ host.style.display='none'; return; }
+  let rows=[], seen='';
+  try{
+    const since=new Date(Date.now()-7*86400000).toISOString();
+    [rows, seen]=await Promise.all([
+      sb.get('audit_log','action=eq.security_alert&created_at=gte.'+encodeURIComponent(since)+'&order=created_at.desc&limit=20'),
+      sb.getKV('security_alerts_seen')
+    ]);
+  }catch(e){ return; }
+  rows=(Array.isArray(rows)?rows:[]).filter(r=>!seen||String(r.created_at)>String(seen));
+  if(!rows.length){ host.style.display='none'; host.innerHTML=''; return; }
+  host.style.display='';
+  host.innerHTML=`<div class="jobs-block" style="border:1px solid var(--red);margin-bottom:14px;padding:12px 16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px;">
+      <div style="font-weight:700;color:var(--red);">🛡️ Sign-in security alert${rows.length>1?'s':''}</div>
+      <button class="btn btn-ghost" onclick="dismissSecurityAlerts('${_alEsc(String(rows[0].created_at))}')" style="font-size:12px;padding:5px 12px;">Dismiss</button>
+    </div>
+    ${rows.slice(0,6).map(r=>`<div style="font-size:12.5px;color:var(--text2);padding:2px 0;"><b style="color:var(--text);">${_alEsc(r.entity||'')}</b> — ${_alEsc(r.details||'')} <span style="color:var(--text3);">· ${new Date(r.created_at).toLocaleString()}</span></div>`).join('')}
+    <div style="font-size:11.5px;color:var(--text3);margin-top:6px;">If this wasn't someone fumbling their own PIN, change that person's PIN under Security.</div>
+  </div>`;
+}
+async function dismissSecurityAlerts(latest){
+  try{ await sb.setKV('security_alerts_seen', latest); }catch(e){}
+  renderSecurityAlerts();
+}
+
 function renderDashboard(){
+  renderSecurityAlerts();
   const grid = document.getElementById('dash-grid');
   if(!grid) return;
   grid.innerHTML = dashOrder.map(id=>{
@@ -8364,22 +8404,71 @@ function _accountFromBlob(){
   return { kind:b.kind, crew_idx:b.crew_idx??null, office_id:b.office_id||null, display_name:b.display_name||'' };
 }
 
-async function fpPinLogin(pin){
+async function fpPinLogin(accountId, pin, newPin){
   let res;
+  const payload={ account_id:String(accountId||''), pin:String(pin) };
+  if(newPin!=null) payload.new_pin=String(newPin);
   try{
     res=await fetch(`${SUPABASE_URL}/functions/v1/pin-login`,{
       method:'POST',
       headers:fpAuthHeaders(false),
-      body:JSON.stringify({ pin:String(pin) })
+      body:JSON.stringify(payload)
     });
   }catch(e){
     return { ok:false, message:'Could not reach the server. Check your signal and try again.' };
   }
   let data=null;
   try{ data=await res.json(); }catch(e){ data=null; }
-  if(res.status===429) return { ok:false, message:(data&&data.error)||'Too many tries. Wait 15 minutes and try again.' };
+  if(data&&data.must_change&&!data.access_token) return { ok:false, mustChange:true, pinLen:data.pin_len||6, message:data.error||'' };
+  if(res.status===429||res.status===423) return { ok:false, locked:true, message:(data&&data.error)||'Too many tries. Wait 15 minutes and try again.' };
   if(!res.ok||!data||!data.access_token) return { ok:false, message:(data&&data.error)||'Incorrect PIN — try again.' };
   return { ok:true, session:data, account:data.account||{} };
+}
+
+// ── Sign-in name list ──
+// The roster is names only (no PINs, no lock details). The last person who signed in on
+// this device is remembered so a crew phone goes straight to its owner's keypad.
+let _loginRoster=null, _loginAcct=null, _loginStage='pin', _loginOldPin='', _loginNewPin='';
+function _rememberedAcct(){ try{ return JSON.parse(localStorage.getItem('fpLoginAcct')||'null'); }catch(e){ return null; } }
+function _rememberAcct(a){ try{ localStorage.setItem('fpLoginAcct', JSON.stringify({ id:a.id, label:a.label, kind:a.kind, pin_len:a.pin_len })); }catch(e){} }
+async function _fetchRoster(){
+  const res=await fetch(`${SUPABASE_URL}/functions/v1/pin-login`,{ method:'POST', headers:fpAuthHeaders(false), body:JSON.stringify({ action:'roster' }) });
+  const data=await res.json().catch(()=>null);
+  if(!res.ok||!data||!Array.isArray(data.accounts)) throw new Error((data&&data.error)||'Could not load names.');
+  return data.accounts;
+}
+async function pinShowRoster(){
+  _loginAcct=null; _loginStage='pin'; _pinBuf=''; _pinRender();
+  document.getElementById('login-pin').style.display='none';
+  document.getElementById('login-who').style.display='';
+  const host=document.getElementById('login-roster'), err=document.getElementById('login-roster-error');
+  err.style.display='none';
+  if(!_loginRoster){
+    host.innerHTML='<div style="color:var(--text3);font-size:13px;text-align:center;padding:10px;">Loading…</div>';
+    try{ _loginRoster=await _fetchRoster(); }
+    catch(e){ host.innerHTML=''; err.textContent='Could not load the sign-in list. Check your signal, then tap here to retry.'; err.style.display='block'; err.onclick=()=>{ err.onclick=null; pinShowRoster(); }; return; }
+  }
+  const tag={ owner:'Owner', office:'Office', crew:'' };
+  host.innerHTML=_loginRoster.map((a,i)=>`<button type="button" class="pin-key" onclick="pinPickAccount(${i})" style="aspect-ratio:auto;font-size:15px;padding:12px 14px;text-align:left;display:flex;justify-content:space-between;align-items:center;">
+      <span>${_alEsc(a.label||'')}</span><span style="font-size:11px;color:var(--text3);font-weight:500;">${tag[a.kind]||''}</span></button>`).join('')
+    || '<div style="color:var(--text3);font-size:13px;text-align:center;">No one has a PIN yet.</div>';
+}
+function pinPickAccount(i){
+  const a=_loginRoster&&_loginRoster[i]; if(!a) return;
+  _loginAcct=a; _loginStage='pin';
+  _showPinStep();
+}
+function _pinLen(){ return _loginStage==='pin' ? ((_loginAcct&&_loginAcct.pin_len)||4) : 6; }
+function _showPinStep(){
+  document.getElementById('login-who').style.display='none';
+  document.getElementById('login-pin').style.display='';
+  document.getElementById('login-who-line').textContent=_loginAcct?_loginAcct.label:'';
+  const hint={ pin:'Enter your PIN', newpin:'Choose a new 6-digit code', confirm:'Enter the new code again' }[_loginStage];
+  document.getElementById('login-pin-hint').textContent=hint;
+  _pinBuf='';
+  const dots=document.getElementById('pin-dots');
+  dots.innerHTML=Array.from({length:_pinLen()},(_,i)=>`<div class="pin-dot" id="pd${i}"></div>`).join('');
+  _pinRender();
 }
 
 async function fpWhoAmI(){
@@ -8486,11 +8575,14 @@ function fpRevokeServerSession(){
 }
 
 async function showLoginScreen(){
-  _pinBuf=''; _pinBusy=false; _pinRender();
+  _pinBuf=''; _pinBusy=false; _loginOldPin=''; _loginNewPin='';
   const err=document.getElementById('pin-error');
   if(err){ err.style.display='none'; err.textContent='Incorrect PIN — try again.'; }
   const ls=document.getElementById('login-screen');
   if(ls) ls.style.display='flex';
+  const last=_rememberedAcct();
+  if(last&&last.id){ _loginAcct=last; _loginStage='pin'; _showPinStep(); }
+  else pinShowRoster();
 }
 
 function _hideLoginScreen(){
@@ -8498,29 +8590,48 @@ function _hideLoginScreen(){
 }
 
 function _pinRender(){
-  for(let i=0;i<4;i++){
+  for(let i=0;i<6;i++){
     const d=document.getElementById('pd'+i);
     if(d){ if(i<_pinBuf.length){d.classList.add('filled');}else{d.classList.remove('filled');} }
   }
 }
 
 function pinKey(d){
-  if(_pinBusy||_pinBuf.length>=4) return;
+  if(_pinBusy||!_loginAcct||_pinBuf.length>=_pinLen()) return;
   _pinBuf+=String(d); _pinRender();
-  if(_pinBuf.length>=4) setTimeout(pinSubmit,180);
+  if(_pinBuf.length>=_pinLen()) setTimeout(pinSubmit,180);
 }
 
 function pinDel(){ if(_pinBusy) return; if(_pinBuf.length){_pinBuf=_pinBuf.slice(0,-1);_pinRender();} }
 
 async function pinSubmit(){
-  if(_pinBusy||!_pinBuf) return;
-  _pinBusy=true;
-  const pin=_pinBuf;
+  if(_pinBusy||!_loginAcct||_pinBuf.length!==_pinLen()) return;
+  const entered=_pinBuf;
   const err=document.getElementById('pin-error');
+  // Owner/office first sign-in after cutover: pick a new 6-digit code, typed twice.
+  if(_loginStage==='newpin'){ _loginNewPin=entered; _loginStage='confirm'; _showPinStep(); return; }
+  if(_loginStage==='confirm'&&entered!==_loginNewPin){
+    _loginStage='newpin'; _showPinStep(); _pinFail('Those two codes did not match. Choose your new code again.'); return;
+  }
+  _pinBusy=true;
   if(err){ err.textContent='Checking…'; err.style.display='block'; }
   try{
-    const result=await fpPinLogin(pin);
-    if(!result.ok){ _pinFail(result.message); return; }
+    const result=_loginStage==='confirm'
+      ? await fpPinLogin(_loginAcct.id, _loginOldPin, _loginNewPin)
+      : await fpPinLogin(_loginAcct.id, entered);
+    if(result.mustChange){
+      if(_loginStage==='pin') _loginOldPin=entered;
+      _loginStage='newpin'; _showPinStep();
+      if(err){ err.textContent=result.message||'Your code is changing to 6 digits. Choose a new one.'; err.style.display='block'; err.style.color='var(--text2)'; }
+      return;
+    }
+    if(!result.ok){
+      if(_loginStage!=='pin'){ _loginStage='pin'; _loginOldPin=''; _showPinStep(); }
+      _pinFail(result.message); return;
+    }
+    _rememberAcct(Object.assign({}, _loginAcct, { pin_len: _loginStage==='pin' ? _loginAcct.pin_len : 6 }));
+    _loginRoster=null; _loginStage='pin'; _loginOldPin=''; _loginNewPin='';
+    if(err) err.style.color='';
     fpRememberTokens(result.session, result.account);
     fpApplyAccount(result.account);
     if(result.account.kind==='office') logAudit('signed_in', result.account.display_name, 'Office staff sign-in');
@@ -8560,7 +8671,7 @@ function _pinSuccess(account){
 function _pinFail(message){
   _pinBuf=''; _pinRender();
   const err=document.getElementById('pin-error');
-  if(err){ err.textContent=message||'Incorrect PIN — try again.'; err.style.display='block'; }
+  if(err){ err.style.color=''; err.textContent=message||'Incorrect PIN — try again.'; err.style.display='block'; }
   const card=document.getElementById('login-card');
   if(card){ card.style.animation='pin-shake .4s ease'; setTimeout(()=>{ card.style.animation=''; },400); }
   setTimeout(()=>{ if(err && err.textContent!=='Checking…') err.style.display='none'; },2500);
@@ -8576,7 +8687,7 @@ function pinLogout(){
 async function pinSaveSettings(){
   const na=document.getElementById('pin-new-admin').value.trim();
   if(!na){ showToast('Enter a new manager code.'); return; }
-  if(!/^\d{4}$/.test(na)){ showToast('Manager code must be exactly 4 digits.'); return; }
+  if(!/^\d{6}$/.test(na)){ showToast('Manager code must be exactly 6 digits.'); return; }
   const res=await fpPinAdmin('set_owner_pin',{ pin:na });
   if(!res.ok){ showToast(res.error); return; }
   document.getElementById('pin-new-admin').value='';
@@ -8589,10 +8700,22 @@ async function pinSaveSettings(){
 async function _loadPinDirectory(){
   const res=await fpPinAdmin('list');
   if(!res.ok){ showToast(res.error); return false; }
-  CREW_PIN_SET={};
-  (res.data.crew||[]).forEach(row=>{ if(row&&row.has_pin) CREW_PIN_SET[row.crew_idx]=true; });
-  OFFICE_USERS=(res.data.office||[]).map(row=>({ id:row.office_id, name:row.name, has_pin:!!row.has_pin }));
+  CREW_PIN_SET={}; CREW_PIN_LOCK={};
+  (res.data.crew||[]).forEach(row=>{ if(row&&row.has_pin){ CREW_PIN_SET[row.crew_idx]=true; if(row.locked) CREW_PIN_LOCK[row.crew_idx]={ account_id:row.account_id, held:!!row.held }; } });
+  OFFICE_USERS=(res.data.office||[]).map(row=>({ id:row.office_id, name:row.name, has_pin:!!row.has_pin, account_id:row.account_id, locked:!!row.locked, held:!!row.held }));
   return true;
+}
+let CREW_PIN_LOCK={};  // { crewIdx: {account_id, held} } — only people locked out right now
+function _unlockBtnHtml(accountId, held){
+  return `<button class="btn btn-ghost" onclick="unlockSignIn('${accountId}')" title="${held?'Locked until you unlock it':'Locked for 15 minutes after 5 wrong PINs'}" style="font-size:12px;padding:6px 10px;color:var(--amber,#f59e0b);border-color:var(--amber,#f59e0b);">🔒 Unlock</button>`;
+}
+async function unlockSignIn(accountId){
+  const res=await fpPinAdmin('unlock',{ account_id:accountId });
+  if(!res.ok){ showToast(res.error); return; }
+  logAudit('pin_unlocked',(res.data&&res.data.label)||'Sign-in','Sign-in unlocked after wrong-PIN lockout');
+  showToast('🔓 Unlocked'+(res.data&&res.data.label?' — '+res.data.label:'')+'.');
+  OFFICE_USERS=[];
+  renderCrewPins(); renderOfficeUsers();
 }
 
 async function renderCrewPins(){
@@ -8607,7 +8730,7 @@ async function renderCrewPins(){
     return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);">
       <span style="width:9px;height:9px;border-radius:50%;background:${col};flex-shrink:0;"></span>
       <span style="flex:1;font-size:13px;color:var(--text);">${(cd.full||('Crew '+(i+1))).replace(/</g,'&lt;')}${isCrewInactive(i)?' <span style="font-size:11px;color:var(--text3);">(inactive — sign-in blocked)</span>':''}</span>
-      <span style="font-size:11px;color:var(--text3);width:58px;">${on?'PIN on file':'No PIN'}</span>
+      ${CREW_PIN_LOCK[i]?_unlockBtnHtml(CREW_PIN_LOCK[i].account_id,CREW_PIN_LOCK[i].held):`<span style="font-size:11px;color:var(--text3);width:58px;">${on?'PIN on file':'No PIN'}</span>`}
       <input class="form-input" id="cpin-${i}" type="password" inputmode="numeric" maxlength="4" value="" placeholder="${on?'new PIN':'set PIN'}" style="width:104px;font-size:16px;letter-spacing:3px;text-align:center;font-family:'DM Mono',monospace;"/>
       <button class="btn btn-ghost" onclick="saveCrewPin(${i})" style="font-size:12px;padding:6px 12px;">Save</button>
     </div>`;
@@ -8644,8 +8767,8 @@ async function renderOfficeUsers(){
   if(!OFFICE_USERS.length){ host.innerHTML='<div style="color:var(--text3);font-size:13px;padding:8px 0;">No office staff yet — add one below.</div>'; return; }
   host.innerHTML=OFFICE_USERS.map(u=>`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);">
       <span style="flex:1;font-size:13px;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">🧑‍💼 ${_alEsc(u.name)}</span>
-      <span style="font-size:11px;color:var(--text3);">PIN on file</span>
-      <input class="form-input" id="opin-${u.id}" type="password" inputmode="numeric" maxlength="4" value="" placeholder="new" style="width:84px;font-size:16px;letter-spacing:3px;text-align:center;font-family:'DM Mono',monospace;"/>
+      ${u.locked?_unlockBtnHtml(u.account_id,u.held):'<span style="font-size:11px;color:var(--text3);">PIN on file</span>'}
+      <input class="form-input" id="opin-${u.id}" type="password" inputmode="numeric" maxlength="6" value="" placeholder="new" style="width:84px;font-size:16px;letter-spacing:3px;text-align:center;font-family:'DM Mono',monospace;"/>
       <button class="btn btn-ghost" onclick="saveOfficeUserPin('${u.id}')" style="font-size:12px;padding:6px 12px;">Save</button>
       <button class="btn btn-ghost" onclick="removeOfficeUser('${u.id}')" title="Remove access" style="font-size:12px;padding:6px 10px;color:var(--red);border-color:var(--red);">Remove</button>
     </div>`).join('');
@@ -8654,7 +8777,7 @@ async function addOfficeUser(){
   const nameEl=document.getElementById('office-new-name'), pinEl=document.getElementById('office-new-pin');
   const name=(nameEl.value||'').trim(), pin=(pinEl.value||'').trim();
   if(!name){ showToast('Enter a name.'); return; }
-  if(!/^\d{4}$/.test(pin)){ showToast('PIN must be exactly 4 digits.'); return; }
+  if(!/^\d{6}$/.test(pin)){ showToast('Office PINs must be exactly 6 digits.'); return; }
   const saved=await fpPinAdmin('add_office',{ name, pin });
   if(!saved.ok){ showToast(saved.error); return; }
   logAudit('office_user_added',name,'Office staff access granted');
@@ -8666,7 +8789,7 @@ async function addOfficeUser(){
 async function saveOfficeUserPin(id){
   const u=OFFICE_USERS.find(x=>x.id===id);
   const pin=(document.getElementById('opin-'+id)?.value||'').trim();
-  if(!/^\d{4}$/.test(pin)){ showToast('PIN must be exactly 4 digits.'); return; }
+  if(!/^\d{6}$/.test(pin)){ showToast('Office PINs must be exactly 6 digits.'); return; }
   const saved=await fpPinAdmin('set_office_pin',{ office_id:id, pin });
   if(!saved.ok){ showToast(saved.error); return; }
   logAudit('pin_changed',(u&&u.name)||'Office staff','Office staff PIN updated');

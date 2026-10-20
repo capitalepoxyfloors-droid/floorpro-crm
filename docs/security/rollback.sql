@@ -28,6 +28,7 @@ ALTER TABLE public.pto_blocks DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.scheduled_slots DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.settings DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_log DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.ops_backups DISABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS fp_auth_all ON public.leads;
 DROP POLICY IF EXISTS fp_auth_all ON public.jobs;
@@ -43,6 +44,7 @@ DROP POLICY IF EXISTS fp_settings_select ON public.settings;
 DROP POLICY IF EXISTS fp_settings_insert ON public.settings;
 DROP POLICY IF EXISTS fp_settings_update ON public.settings;
 DROP POLICY IF EXISTS fp_settings_delete ON public.settings;
+DROP POLICY IF EXISTS fp_ops_backups_owner_read ON public.ops_backups;
 
 -- Vehicles already had row security, with a policy that allowed everyone.
 ALTER TABLE public.vehicles ENABLE ROW LEVEL SECURITY;

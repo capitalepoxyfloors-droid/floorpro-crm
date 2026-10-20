@@ -101,6 +101,7 @@ CREATE TABLE public.pto_blocks (id serial PRIMARY KEY, crew_idx int);
 CREATE TABLE public.scheduled_slots (id serial PRIMARY KEY, label text);
 CREATE TABLE public.vehicles (id serial PRIMARY KEY, name text);
 CREATE TABLE public.vehicle_maintenance (id serial PRIMARY KEY, vehicle_id int);
+CREATE TABLE public.ops_backups (id serial PRIMARY KEY, note text);
 CREATE TABLE public.audit_log (
   id serial PRIMARY KEY,
   actor text,
@@ -220,6 +221,43 @@ test('security migration hashes PINs and locks out the anon key', { skip: hasPsq
   assert.equal(crewInactiveWrite.includes('2026-01-01'), false);
   assert.match(crewInactiveWrite, /\{\}|row-level security|permission denied/i);
 
+  // Crew can save only the entries their work needs, and can never delete a settings row.
+  const crewAllowed = psqlTuples(db, `
+    BEGIN;
+    SELECT set_config('request.jwt.claims', '${crewClaims}', true);
+    SET LOCAL ROLE authenticated;
+    INSERT INTO public.settings (key, value) VALUES ('job_photos', '{"crew":1}')
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+    SELECT 'photos=' || value FROM public.settings WHERE key = 'job_photos';
+    DELETE FROM public.settings WHERE key = 'job_records';
+    SELECT 'job_records_left=' || count(*)::text FROM public.settings WHERE key = 'job_records';
+    ROLLBACK;
+  `);
+  assert.match(crewAllowed, /photos=\{"crew":1\}/);
+  assert.match(crewAllowed, /job_records_left=1/, 'a crew delete must not remove job_records');
+  let crewOther = '';
+  try {
+    crewOther = psqlTuples(db, `
+      BEGIN;
+      SELECT set_config('request.jwt.claims', '${crewClaims}', true);
+      SET LOCAL ROLE authenticated;
+      INSERT INTO public.settings (key, value) VALUES ('overhead', '{"crew":"was here"}');
+      ROLLBACK;
+    `);
+  } catch (err) {
+    crewOther = String(err.stderr || err.stdout || err.message);
+  }
+  assert.match(crewOther, /row-level security/i);
+  psql(db, ['-c', `INSERT INTO public.ops_backups (note) VALUES ('bot backup')`]);
+  const crewOps = psqlTuples(db, `
+    BEGIN;
+    SELECT set_config('request.jwt.claims', '${crewClaims}', true);
+    SET LOCAL ROLE authenticated;
+    SELECT 'ops=' || count(*)::text FROM public.ops_backups;
+    ROLLBACK;
+  `);
+  assert.match(crewOps, /ops=0/);
+
   const ownerClaims = `{"sub":"${ownerId}","app_metadata":{"fp_role":"owner","fp_nonce":0}}`;
   const ownerWrite = psqlTuples(db, `
     BEGIN;
@@ -295,7 +333,33 @@ test('security migration hashes PINs and locks out the anon key', { skip: hasPsq
     SELECT pg_get_expr(polwithcheck, polrelid)
     FROM pg_policy WHERE polname = 'fp_settings_insert'
   `);
-  assert.match(insertPolicy, /SELECT auth\.jwt\(\)/);
+  assert.match(insertPolicy, /SELECT private\.fp_role\(\)/);
+
+  // Owner and office start on their old 4-digit code and must pick a 6-digit one.
+  const mustChange = psqlTuples(db, `SELECT kind || ':' || must_change_pin || ':' || pin_len FROM public.pin_accounts ORDER BY kind, crew_idx`);
+  assert.match(mustChange, /owner:true:4/);
+  assert.match(mustChange, /office:true:4/);
+  assert.match(mustChange, /crew:false:4/);
+
+  // Per-person lockout: 5 misses locks; the third lock in a day holds a crew account.
+  const crewAcct = psqlTuples(db, `SELECT id FROM public.pin_accounts WHERE kind = 'crew' AND crew_idx = 1`);
+  let lockOut = '';
+  for (let i = 0; i < 5; i++) lockOut = psqlTuples(db, `SELECT public.fp_pin_fail('${crewAcct}')::text`);
+  assert.match(lockOut, /"locked": true/);
+  assert.match(lockOut, /"held": false/);
+  for (let round = 0; round < 2; round++) {
+    for (let i = 0; i < 5; i++) lockOut = psqlTuples(db, `SELECT public.fp_pin_fail('${crewAcct}')::text`);
+  }
+  assert.match(lockOut, /"held": true/);
+  assert.equal(psqlTuples(db, `SELECT locked_until = 'infinity' FROM public.pin_accounts WHERE id = '${crewAcct}'`), 't');
+  psql(db, ['-c', `UPDATE public.pin_accounts SET failed_count = 0, lock_count = 0, first_lock_at = NULL, locked_until = NULL WHERE id = '${crewAcct}'`]);
+  let failAsAnon = '';
+  try {
+    psqlTuples(db, `BEGIN; SET LOCAL ROLE anon; SELECT public.fp_pin_fail('${crewAcct}'); ROLLBACK;`);
+  } catch (err) {
+    failAsAnon = String(err.stderr || err.stdout || err.message);
+  }
+  assert.match(failAsAnon, /permission denied/i);
 
   const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
   const userB = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';

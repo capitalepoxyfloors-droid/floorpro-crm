@@ -10,57 +10,63 @@ import { JSDOM, VirtualConsole } from 'jsdom';
 import {
   clientIpFromHeaders,
   isInactiveCrew,
-  matchPin,
+  isLocked,
   normalizePin,
+  pinLengthFor,
   rateLimitExceeded,
+  rosterFrom,
   sortAccounts,
-  PIN_MAX_FAILS_GLOBAL,
+  spikeCount,
   PIN_MAX_FAILS_PER_IP,
+  PIN_SPIKE_ALERT,
   PIN_WINDOW_MS,
 } from '../supabase/functions/_shared/pins.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 
-test('PIN matching prefers owner, then office, then crew, and always checks every hash', () => {
+test('PIN helpers: lengths, roster order, per-account locks, network backstop', () => {
   assert.equal(normalizePin('1234'), '1234');
   assert.equal(normalizePin(' 1234 '), '1234');
+  assert.equal(normalizePin('123456'), '123456');
   assert.equal(normalizePin('123'), '');
   assert.equal(normalizePin('12345'), '');
-  assert.equal(normalizePin('123456'), '');
   assert.equal(normalizePin('12a4'), '');
+  assert.equal(normalizePin('1234', 6), '', 'owner/office codes are 6 digits once changed');
+  assert.equal(normalizePin('123456', 4), '');
+  assert.equal(pinLengthFor('owner'), 6);
+  assert.equal(pinLengthFor('office'), 6);
+  assert.equal(pinLengthFor('crew'), 4);
 
   const rows = [
-    { kind: 'crew', crew_idx: 1, label: 'Brendon', pin_hash: 'c1' },
-    { kind: 'office', office_id: 'ab', label: 'Pat', pin_hash: 'o' },
-    { kind: 'crew', crew_idx: 0, label: 'Seth', pin_hash: 'c0' },
-    { kind: 'owner', label: 'Will', pin_hash: 'own' },
+    { id: 'c1', kind: 'crew', crew_idx: 1, label: 'Brendon', pin_hash: 'h', pin_len: 4 },
+    { id: 'o', kind: 'office', office_id: 'ab', label: 'Pat', pin_hash: 'h', pin_len: 6 },
+    { id: 'c0', kind: 'crew', crew_idx: 0, label: 'Seth', pin_hash: 'h', pin_len: 4 },
+    { id: 'w', kind: 'owner', label: 'Will', pin_hash: 'h', pin_len: 4 },
   ];
   assert.deepEqual(sortAccounts(rows).map(r => r.label), ['Will', 'Pat', 'Seth', 'Brendon']);
+  const roster = rosterFrom(rows, { '1': true });
+  assert.deepEqual(roster.map(r => r.label), ['Will', 'Pat', 'Seth'], 'inactive crew are left off the sign-in list');
+  assert.deepEqual(Object.keys(roster[0]).sort(), ['id', 'kind', 'label', 'pin_len'], 'roster never carries hashes or lock state');
 
-  const seen = [];
-  const found = matchPin('1111', rows, (pin, hash) => {
-    seen.push(hash);
-    return hash === 'own' || hash === 'c0';
-  });
-  assert.equal(found.label, 'Will');
-  assert.deepEqual(seen, ['own', 'o', 'c0', 'c1']);
-  assert.equal(matchPin('9999', rows, () => false), null);
+  const now = Date.parse('2026-10-19T12:00:00Z');
+  assert.equal(isLocked({ locked_until: null }, now), false);
+  assert.equal(isLocked({ locked_until: '2026-10-19T12:05:00Z' }, now), true);
+  assert.equal(isLocked({ locked_until: '2026-10-19T11:55:00Z' }, now), false);
+  assert.equal(isLocked({ locked_until: 'infinity' }, now), true);
 
   assert.equal(isInactiveCrew(0, { '0': true }), true);
   assert.equal(isInactiveCrew(1, { '0': true }), false);
   assert.equal(isInactiveCrew(0, null), false);
   assert.equal(isInactiveCrew(0, ['0']), false);
 
-  const now = 1_000_000;
   const fails = Array.from({ length: PIN_MAX_FAILS_PER_IP }, () => ({ ip: '1.2.3.4', ok: false, at: now - 1000 }));
   assert.equal(rateLimitExceeded(fails, now, '1.2.3.4'), true);
   assert.equal(rateLimitExceeded(fails, now, '9.9.9.9'), false);
   assert.equal(rateLimitExceeded(fails.map(a => ({ ...a, at: now - PIN_WINDOW_MS - 1 })), now, '1.2.3.4'), false);
-  const globalFails = Array.from({ length: PIN_MAX_FAILS_GLOBAL }, (_, i) => ({ ip: 'ip-' + i, ok: false, at: now - 1000 }));
-  assert.equal(rateLimitExceeded(globalFails, now, 'fresh'), true);
-  const nine = fails.slice(0, PIN_MAX_FAILS_PER_IP - 1);
-  assert.equal(rateLimitExceeded([...nine, { ip: '1.2.3.4', ok: true, at: now - 1000 }], now, '1.2.3.4'), false);
+  const spread = Array.from({ length: 500 }, (_, i) => ({ ip: 'ip-' + i, ok: false, at: now - 1000 }));
+  assert.equal(rateLimitExceeded(spread, now, 'fresh'), false, 'no global cap: strangers cannot lock the whole crew out');
+  assert.equal(spikeCount(spread, now) >= PIN_SPIKE_ALERT, true);
 
   const headers = new Headers({ 'x-forwarded-for': ' 8.8.8.8 , 1.1.1.1 ' });
   assert.equal(clientIpFromHeaders(headers), '8.8.8.8');
@@ -136,7 +142,13 @@ test('login goes through the server and stored photo URLs are signed without rew
     calls.push({ url: u, method, body, authorization: headers.Authorization || headers.authorization || '' });
 
     if (u.includes('/functions/v1/pin-login')) {
-      if (body && body.pin === '4821') {
+      if (body && body.action === 'roster') {
+        return Promise.resolve(jsonResponse({ accounts: [
+          { id: 'acct-owner', kind: 'owner', label: 'Will Bradford', pin_len: 4 },
+          { id: 'acct-seth', kind: 'crew', label: 'Seth West', pin_len: 4 },
+        ] }));
+      }
+      if (body && body.account_id === 'acct-owner' && body.pin === '4821') {
         return Promise.resolve(jsonResponse({
           access_token: 'tok-owner',
           refresh_token: 'ref-owner',
@@ -144,7 +156,7 @@ test('login goes through the server and stored photo URLs are signed without rew
           account: { kind: 'owner', crew_idx: null, office_id: null, display_name: 'Will Bradford' },
         }));
       }
-      if (body && body.pin === '1111') {
+      if (body && body.account_id === 'acct-seth' && body.pin === '1111') {
         return Promise.resolve(jsonResponse({
           access_token: 'tok-crew',
           refresh_token: 'ref-crew',
@@ -200,10 +212,18 @@ test('login goes through the server and stored photo URLs are signed without rew
     assert.equal(call('fpMediaUrl', drive), drive);
     assert.equal(call('fpMediaUrl', publicUrl), publicUrl);
 
+    // No remembered device: the sign-in screen asks for a name first.
+    assert.notEqual(w.document.getElementById('login-who').style.display, 'none');
+    assert.ok(calls.some(c => c.url.includes('/functions/v1/pin-login') && c.body && c.body.action === 'roster'));
+    assert.equal(w.document.querySelectorAll('#login-roster button').length, 2);
+    w.document.querySelectorAll('#login-roster button')[0].click();
+    assert.equal(w.document.querySelectorAll('#pin-dots .pin-dot').length, 4);
+
     w.eval("_pinBuf='0000'");
     await call('pinSubmit');
     assert.equal(w.document.getElementById('login-screen').style.display, 'flex');
-    assert.equal(calls.some(c => c.url.includes('/functions/v1/pin-login') && c.body && c.body.pin === '0000'), true);
+    assert.equal(calls.some(c => c.url.includes('/functions/v1/pin-login') && c.body
+      && c.body.account_id === 'acct-owner' && c.body.pin === '0000'), true);
 
     calls.length = 0;
     w.eval("_pinBuf='4821'");

@@ -53,6 +53,19 @@ CREATE TABLE IF NOT EXISTS public.pin_attempts (
 
 CREATE INDEX IF NOT EXISTS pin_attempts_created_at ON public.pin_attempts (created_at);
 
+-- Name-first sign-in (Oct 19 review). The keypad now asks who you are, then your PIN,
+-- so misses are counted per person: 5 misses locks that one account for 15 minutes,
+-- and the third lock inside 24 hours holds it until the owner unlocks it (the owner's
+-- own account is never held, only locked for an hour). must_change_pin makes the
+-- owner and office pick a new 6-digit code on their first sign-in after cutover.
+ALTER TABLE public.pin_accounts ADD COLUMN IF NOT EXISTS pin_len integer NOT NULL DEFAULT 4;
+ALTER TABLE public.pin_accounts ADD COLUMN IF NOT EXISTS must_change_pin boolean NOT NULL DEFAULT false;
+ALTER TABLE public.pin_accounts ADD COLUMN IF NOT EXISTS failed_count integer NOT NULL DEFAULT 0;
+ALTER TABLE public.pin_accounts ADD COLUMN IF NOT EXISTS locked_until timestamptz;
+ALTER TABLE public.pin_accounts ADD COLUMN IF NOT EXISTS lock_count integer NOT NULL DEFAULT 0;
+ALTER TABLE public.pin_accounts ADD COLUMN IF NOT EXISTS first_lock_at timestamptz;
+ALTER TABLE public.pin_attempts ADD COLUMN IF NOT EXISTS account_id uuid;
+
 ALTER TABLE public.pin_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.pin_attempts ENABLE ROW LEVEL SECURITY;
 
@@ -91,8 +104,8 @@ BEGIN
     RAISE EXCEPTION 'No usable admin_pin in settings. It must be exactly 4 digits (the keypad submits at 4). Run docs/security/00-save-owner-pin.sql first so the owner is not locked out.';
   END IF;
 
-  INSERT INTO public.pin_accounts (kind, label, pin_hash)
-  VALUES ('owner', 'Will Bradford', extensions.crypt(v_pin, extensions.gen_salt('bf', 8)));
+  INSERT INTO public.pin_accounts (kind, label, pin_hash, must_change_pin)
+  VALUES ('owner', 'Will Bradford', extensions.crypt(v_pin, extensions.gen_salt('bf', 8)), true);
 
   SELECT CASE WHEN value IS NULL OR btrim(value) = '' THEN NULL ELSE value::jsonb END
     INTO v_crew
@@ -143,12 +156,13 @@ BEGIN
       IF COALESCE(v_item->>'id', '') = '' OR COALESCE(v_item->>'name', '') = '' THEN
         RAISE EXCEPTION 'An office user is missing an id or a name.';
       END IF;
-      INSERT INTO public.pin_accounts (kind, office_id, label, pin_hash)
+      INSERT INTO public.pin_accounts (kind, office_id, label, pin_hash, must_change_pin)
       VALUES (
         'office',
         v_item->>'id',
         v_item->>'name',
-        extensions.crypt(v_val, extensions.gen_salt('bf', 8))
+        extensions.crypt(v_val, extensions.gen_salt('bf', 8)),
+        true
       );
     END LOOP;
   END IF;
@@ -253,6 +267,74 @@ REVOKE ALL ON FUNCTION public.fp_revoke_sessions(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.fp_revoke_sessions(uuid) FROM anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.fp_revoke_sessions(uuid) TO service_role;
 
+-- The signed-in person's app role ('owner', 'office', 'crew'), or NULL when the token
+-- is not a live keypad session. Policies call it as (select private.fp_role()) so
+-- Postgres works it out once per query instead of once per row.
+CREATE OR REPLACE FUNCTION private.fp_role()
+RETURNS text
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+  SELECT CASE WHEN private.fp_member()
+    THEN auth.jwt() -> 'app_metadata' ->> 'fp_role'
+  END;
+$$;
+REVOKE ALL ON FUNCTION private.fp_role() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION private.fp_role() TO authenticated;
+
+-- Atomic miss counter for pin-login. Returns the account's lock state after the miss.
+-- 5 misses in a row -> locked 15 minutes. The third lock inside 24 hours holds the
+-- account until the owner unlocks it (owner: locked 1 hour instead, never held, so
+-- the owner can't be shut out of their own app for good).
+CREATE OR REPLACE FUNCTION public.fp_pin_fail(acct uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  r public.pin_accounts%ROWTYPE;
+  v_locks integer;
+  v_first timestamptz;
+  v_until timestamptz;
+  v_held boolean := false;
+BEGIN
+  SELECT * INTO r FROM public.pin_accounts WHERE id = acct FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('found', false);
+  END IF;
+  IF r.failed_count + 1 < 5 THEN
+    UPDATE public.pin_accounts SET failed_count = r.failed_count + 1 WHERE id = acct;
+    RETURN jsonb_build_object('found', true, 'locked', false, 'failed_count', r.failed_count + 1);
+  END IF;
+  IF r.first_lock_at IS NULL OR r.first_lock_at < now() - interval '24 hours' THEN
+    v_locks := 1;
+    v_first := now();
+  ELSE
+    v_locks := r.lock_count + 1;
+    v_first := r.first_lock_at;
+  END IF;
+  IF r.kind = 'owner' THEN
+    v_until := now() + CASE WHEN v_locks >= 3 THEN interval '1 hour' ELSE interval '15 minutes' END;
+  ELSIF v_locks >= 3 THEN
+    v_until := 'infinity';
+    v_held := true;
+  ELSE
+    v_until := now() + interval '15 minutes';
+  END IF;
+  UPDATE public.pin_accounts
+     SET failed_count = 0, lock_count = v_locks, first_lock_at = v_first, locked_until = v_until
+   WHERE id = acct;
+  RETURN jsonb_build_object('found', true, 'locked', true, 'held', v_held,
+                            'lock_count', v_locks, 'locked_until', v_until);
+END;
+$$;
+REVOKE ALL ON FUNCTION public.fp_pin_fail(uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.fp_pin_fail(uuid) FROM anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.fp_pin_fail(uuid) TO service_role;
+
 -- Authenticated app users can keep doing what the app does today.
 -- anon has no policy. A signed-in user with no app-issued fp_role has none either.
 DO $$
@@ -267,10 +349,23 @@ BEGIN
     EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t);
     EXECUTE format('DROP POLICY IF EXISTS fp_auth_all ON public.%I', t);
     EXECUTE format(
-      'CREATE POLICY fp_auth_all ON public.%I FOR ALL TO authenticated USING (private.fp_member()) WITH CHECK (private.fp_member())',
+      'CREATE POLICY fp_auth_all ON public.%I FOR ALL TO authenticated USING ((select private.fp_member())) WITH CHECK ((select private.fp_member()))',
       t
     );
   END LOOP;
+END $$;
+
+-- Ops backups are written by the bots / service role. Only the owner can read them
+-- through the app's key. Nobody else, including office and crew.
+DO $$
+BEGIN
+  IF to_regclass('public.ops_backups') IS NOT NULL THEN
+    ALTER TABLE public.ops_backups ENABLE ROW LEVEL SECURITY;
+    DROP POLICY IF EXISTS fp_ops_backups_owner_read ON public.ops_backups;
+    CREATE POLICY fp_ops_backups_owner_read ON public.ops_backups
+      FOR SELECT TO authenticated
+      USING ((select private.fp_role()) = 'owner');
+  END IF;
 END $$;
 
 ALTER TABLE public.audit_log ENABLE ROW LEVEL SECURITY;
@@ -278,69 +373,65 @@ DROP POLICY IF EXISTS fp_audit_select ON public.audit_log;
 DROP POLICY IF EXISTS fp_audit_insert ON public.audit_log;
 -- Crew still writes audit rows (the insert asks the row back, which needs SELECT).
 -- The Audit Log page stays owner/office in the app. A crew token can also read it
--- through the API; hiding it here would make crew audit inserts fail.
+-- through the API until phase 2; hiding it here would make crew audit inserts fail.
 CREATE POLICY fp_audit_select ON public.audit_log
   FOR SELECT TO authenticated
-  USING (private.fp_member());
+  USING ((select private.fp_member()));
 CREATE POLICY fp_audit_insert ON public.audit_log
   FOR INSERT TO authenticated
-  WITH CHECK (private.fp_member());
+  WITH CHECK ((select private.fp_member()));
 
 ALTER TABLE public.settings ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS fp_settings_select ON public.settings;
 DROP POLICY IF EXISTS fp_settings_insert ON public.settings;
 DROP POLICY IF EXISTS fp_settings_update ON public.settings;
 DROP POLICY IF EXISTS fp_settings_delete ON public.settings;
-
 -- PIN rows stay in the table for rollback, but no client role can see or change them.
--- crew_inactive can be read by the app (so inactive people drop off the schedule)
--- but only an owner or office token can write it. Crew cannot un-deactivate themselves.
+-- Owner and office can write every other key. Crew can write only the five entries
+-- their Crew View work saves into, and can never delete a settings row:
+--   job_records (day logs), job_photos, slot_job_map (opening a job from the
+--   schedule), pto_requests, material_requests.
+-- crew_inactive is readable (inactive people drop off the schedule) but owner/office only.
+-- If a new Crew View feature saves into another settings key, add it to all three lists.
 CREATE POLICY fp_settings_select ON public.settings
   FOR SELECT TO authenticated
   USING (
-    private.fp_member()
-    AND key <> 'admin_pin' AND key <> 'crew_pins' AND key <> 'office_users'
+    (select private.fp_member())
+    AND key NOT IN ('admin_pin', 'crew_pins', 'office_users')
   );
-
 CREATE POLICY fp_settings_insert ON public.settings
   FOR INSERT TO authenticated
   WITH CHECK (
-    private.fp_member()
-    AND key <> 'admin_pin' AND key <> 'crew_pins' AND key <> 'office_users'
+    key NOT IN ('admin_pin', 'crew_pins', 'office_users')
     AND (
-      key <> 'crew_inactive'
-      OR ((select auth.jwt()) -> 'app_metadata' ->> 'fp_role') IN ('owner', 'office')
+      (select private.fp_role()) IN ('owner', 'office')
+      OR ((select private.fp_role()) = 'crew'
+          AND key IN ('job_records', 'job_photos', 'slot_job_map', 'pto_requests', 'material_requests'))
     )
   );
-
 CREATE POLICY fp_settings_update ON public.settings
   FOR UPDATE TO authenticated
   USING (
-    private.fp_member()
-    AND key <> 'admin_pin' AND key <> 'crew_pins' AND key <> 'office_users'
+    key NOT IN ('admin_pin', 'crew_pins', 'office_users')
     AND (
-      key <> 'crew_inactive'
-      OR ((select auth.jwt()) -> 'app_metadata' ->> 'fp_role') IN ('owner', 'office')
+      (select private.fp_role()) IN ('owner', 'office')
+      OR ((select private.fp_role()) = 'crew'
+          AND key IN ('job_records', 'job_photos', 'slot_job_map', 'pto_requests', 'material_requests'))
     )
   )
   WITH CHECK (
-    private.fp_member()
-    AND key <> 'admin_pin' AND key <> 'crew_pins' AND key <> 'office_users'
+    key NOT IN ('admin_pin', 'crew_pins', 'office_users')
     AND (
-      key <> 'crew_inactive'
-      OR ((select auth.jwt()) -> 'app_metadata' ->> 'fp_role') IN ('owner', 'office')
+      (select private.fp_role()) IN ('owner', 'office')
+      OR ((select private.fp_role()) = 'crew'
+          AND key IN ('job_records', 'job_photos', 'slot_job_map', 'pto_requests', 'material_requests'))
     )
   );
-
 CREATE POLICY fp_settings_delete ON public.settings
   FOR DELETE TO authenticated
   USING (
-    private.fp_member()
-    AND key <> 'admin_pin' AND key <> 'crew_pins' AND key <> 'office_users'
-    AND (
-      key <> 'crew_inactive'
-      OR ((select auth.jwt()) -> 'app_metadata' ->> 'fp_role') IN ('owner', 'office')
-    )
+    key NOT IN ('admin_pin', 'crew_pins', 'office_users')
+    AND (select private.fp_role()) IN ('owner', 'office')
   );
 
 -- Photos. Existing JSON keeps the old public URL strings. The app derives the
@@ -358,8 +449,23 @@ CREATE POLICY "vehicle-docs authenticated all"
   ON storage.objects
   FOR ALL
   TO authenticated
-  USING (bucket_id = 'vehicle-docs' AND private.fp_member())
-  WITH CHECK (bucket_id = 'vehicle-docs' AND private.fp_member());
+  USING (bucket_id = 'vehicle-docs' AND (select private.fp_member()))
+  WITH CHECK (bucket_id = 'vehicle-docs' AND (select private.fp_member()));
+
+-- Last check: every table the app's key can reach must have row security on. A table
+-- added after this file was written (as vehicles and ops_backups were) would otherwise
+-- stay wide open. Stops the whole run, so nothing is half-applied; add the table above.
+DO $$
+DECLARE
+  open_tables text;
+BEGIN
+  SELECT string_agg(c.relname, ', ' ORDER BY c.relname) INTO open_tables
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relrowsecurity;
+  IF open_tables IS NOT NULL THEN
+    RAISE EXCEPTION 'Row security is still off on: %. Add these tables to this migration before running it.', open_tables;
+  END IF;
+END $$;
 
 -- So pin-admin can call fp_revoke_sessions as soon as this section is applied.
 NOTIFY pgrst, 'reload schema';

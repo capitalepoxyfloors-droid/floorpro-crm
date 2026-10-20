@@ -1,25 +1,56 @@
-// Verifies a keypad PIN and returns a Supabase Auth session.
+// Name-first PIN sign-in. Returns a Supabase Auth session.
 // Deploy with JWT verification OFF. This function is the login step, so the
 // caller does not have a user token yet. It rate-limits and never returns hashes.
 //
 //   supabase functions deploy pin-login --no-verify-jwt
 //
-// Tradeoff, short version: a 4-digit PIN is too short to be a Supabase password
-// (Auth rejects passwords under 6 characters) and too easy to guess if the
-// browser can try it directly. Checking it here lets us hash the PIN, hide the
-// hash from the app, slow guessing, and still hand the app a normal Auth session.
+// Requests (POST JSON):
+//   { action: "roster" }                       -> { accounts: [{id, kind, label, pin_len}] }
+//   { account_id, pin }                        -> session, or { must_change: true, pin_len: 6 }
+//   { account_id, pin, new_pin }               -> owner/office first sign-in after cutover:
+//                                                 checks the old code, saves the new 6-digit
+//                                                 one, then returns a session.
+//
+// Why name-first (Oct 19 review): with ~10 people sharing one 4-digit space and no
+// name, a random guess matched *someone* about 1 time in 1,000, and the old global
+// miss cap let one stranger lock the whole crew out. Now each guess is against one
+// person, 5 misses locks only that person (public.fp_pin_fail), and the owner gets a
+// security alert in the Audit Log + dashboard for every lock and for miss spikes.
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import bcrypt from 'npm:bcryptjs@2.4.3';
 import {
+  PIN_SPIKE_ALERT,
   PIN_WINDOW_MS,
   clientIpFromHeaders,
   isInactiveCrew,
-  matchPin,
+  isLocked,
   normalizePin,
+  pinLengthFor,
   rateLimitExceeded,
+  rosterFrom,
+  spikeCount,
 } from '../_shared/pins.mjs';
 import { corsHeaders, envKeys, json } from '../_shared/http.ts';
+
+type Db = ReturnType<typeof createClient>;
+type Row = {
+  id: string;
+  kind: string;
+  crew_idx: number | null;
+  office_id: string | null;
+  label: string;
+  pin_hash: string;
+  pin_len: number | null;
+  must_change_pin: boolean | null;
+  locked_until: string | null;
+  auth_user_id: string | null;
+  email: string | null;
+  session_nonce: number | null;
+};
+
+const NOT_RECOGNIZED = 'That PIN was not recognized.';
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
@@ -28,69 +59,101 @@ Deno.serve(async (req) => {
   const { url, service, anon } = envKeys();
   if (!url || !service || !anon) return json({ error: 'Sign-in is not configured on the server.' }, 503);
 
-  let body: { pin?: string } = {};
+  let body: { action?: string; account_id?: string; pin?: string; new_pin?: string } = {};
   try {
     const text = await req.text();
-    if (text.length > 200) return json({ error: 'Bad request' }, 400);
+    if (text.length > 300) return json({ error: 'Bad request' }, 400);
     body = text ? JSON.parse(text) : {};
   } catch {
     return json({ error: 'Bad request' }, 400);
   }
-  const pin = normalizePin(body.pin);
-  if (!pin) return json({ error: 'That PIN was not recognized.' }, 401);
 
   const db = createClient(url, service, { auth: { persistSession: false, autoRefreshToken: false } });
+
+  if (body.action === 'roster') {
+    const { data, error } = await db.from('pin_accounts').select('id, kind, crew_idx, label, pin_len');
+    if (error) return json({ error: 'Sign-in is unavailable. Try again in a minute.' }, 503);
+    return json({ accounts: rosterFrom(data || [], await crewInactiveMap(db)) });
+  }
+
   const ip = clientIpFromHeaders(req.headers);
   const since = new Date(Date.now() - PIN_WINDOW_MS).toISOString();
   const { data: recent, error: recentErr } = await db
     .from('pin_attempts')
     .select('ip, ok, created_at')
     .gte('created_at', since)
-    .limit(500);
+    .limit(1000);
   if (recentErr) {
     console.error('pin attempt read failed', recentErr.message);
     return json({ error: 'Sign-in is unavailable. Try again in a minute.' }, 503);
   }
-  const attempts = (recent || []).map((row) => ({
-    ip: row.ip,
-    ok: row.ok,
-    at: new Date(row.created_at).getTime(),
-  }));
+  const attempts = (recent || []).map((row) => ({ ip: row.ip, ok: row.ok, at: new Date(row.created_at).getTime() }));
   if (rateLimitExceeded(attempts, Date.now(), ip)) {
-    return json({ error: 'Too many tries. Wait 15 minutes and try again.' }, 429);
+    return json({ error: 'Too many tries from this network. Wait 15 minutes and try again.' }, 429);
   }
 
-  const { data: accounts, error: acctErr } = await db
-    .from('pin_accounts')
-    .select('id, kind, crew_idx, office_id, label, pin_hash, auth_user_id, email, session_nonce');
-  if (acctErr) {
-    console.error('pin account read failed', acctErr.message);
-    return json({ error: 'Sign-in is unavailable. Try again in a minute.' }, 503);
+  const accountId = String(body.account_id || '');
+  let row: Row | null = null;
+  if (UUID_RE.test(accountId)) {
+    const { data, error } = await db
+      .from('pin_accounts')
+      .select('id, kind, crew_idx, office_id, label, pin_hash, pin_len, must_change_pin, locked_until, auth_user_id, email, session_nonce')
+      .eq('id', accountId)
+      .maybeSingle();
+    if (error) {
+      console.error('pin account read failed', error.message);
+      return json({ error: 'Sign-in is unavailable. Try again in a minute.' }, 503);
+    }
+    row = data as Row | null;
+  }
+  if (row && row.kind === 'crew' && isInactiveCrew(row.crew_idx, await crewInactiveMap(db))) row = null;
+  if (!row) {
+    await recordMiss(db, ip, null, attempts);
+    return json({ error: NOT_RECOGNIZED }, 401);
   }
 
-  const match = matchPin(pin, accounts || [], (candidate, hash) => bcrypt.compareSync(candidate, hash));
-  let inactive = false;
-  if (match && match.kind === 'crew') {
-    const { data: inactiveRow } = await db.from('settings').select('value').eq('key', 'crew_inactive').maybeSingle();
-    let parsed: unknown = null;
-    try { parsed = inactiveRow?.value ? JSON.parse(inactiveRow.value) : null; } catch { parsed = null; }
-    inactive = isInactiveCrew(match.crew_idx, parsed);
+  // A locked account is not checked at all, so a lock can't be used to test guesses.
+  if (isLocked(row, Date.now())) return json({ error: lockedMessage(row.locked_until), locked: true }, 423);
+
+  const pin = normalizePin(body.pin, row.pin_len || 4);
+  const ok = !!pin && safeCompare(pin, row.pin_hash);
+  if (!ok) {
+    const lock = await recordMiss(db, ip, row, attempts);
+    if (lock?.locked) return json({ error: lockedMessage(lock.locked_until), locked: true }, 423);
+    return json({ error: NOT_RECOGNIZED }, 401);
   }
 
-  if (!match || inactive) {
-    await db.from('pin_attempts').insert({ ip, ok: false });
-    return json({ error: 'That PIN was not recognized.' }, 401);
+  await db.from('pin_attempts').insert({ ip, ok: true, account_id: row.id });
+  await db.from('pin_accounts').update({ failed_count: 0, lock_count: 0, first_lock_at: null, locked_until: null }).eq('id', row.id);
+
+  if (row.must_change_pin) {
+    if (body.new_pin == null) return json({ must_change: true, pin_len: pinLengthFor(row.kind) });
+    const next = normalizePin(body.new_pin, pinLengthFor(row.kind));
+    if (!next) return json({ error: `Your new code must be exactly ${pinLengthFor(row.kind)} digits.`, must_change: true }, 400);
+    if (next.startsWith(pin)) return json({ error: 'Pick a new code that does not start with your old one.', must_change: true }, 400);
+    const nextNonce = (row.session_nonce || 0) + 1;
+    if (row.auth_user_id) await db.rpc('fp_revoke_sessions', { target_user: row.auth_user_id });
+    const saved = await db.from('pin_accounts').update({
+      pin_hash: bcrypt.hashSync(next, 8),
+      pin_len: next.length,
+      must_change_pin: false,
+      session_nonce: nextNonce,
+      updated_at: new Date().toISOString(),
+    }).eq('id', row.id);
+    if (saved.error) return json({ error: 'Could not save your new code. Try again.', must_change: true }, 503);
+    row = { ...row, session_nonce: nextNonce, pin_len: next.length, must_change_pin: false };
+    await alert(db, row.label, 'Code changed to 6 digits on first sign-in');
   }
 
   try {
-    const session = await ensureSession(db, url, service, anon, match);
+    const session = await ensureSession(db, url, service, anon, row);
     await db.from('pin_attempts').delete().lt('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
     return json({
       access_token: session.access_token,
       refresh_token: session.refresh_token,
       expires_in: session.expires_in,
       token_type: session.token_type || 'bearer',
-      account: publicAccount(match),
+      account: publicAccount(row),
     });
   } catch (err) {
     console.error('session issue failed', err instanceof Error ? err.message : 'unknown');
@@ -98,12 +161,63 @@ Deno.serve(async (req) => {
   }
 });
 
-function publicAccount(row: {
-  kind: string;
-  crew_idx: number | null;
-  office_id: string | null;
-  label: string;
-}) {
+function safeCompare(pin: string, hash: string) {
+  try { return bcrypt.compareSync(pin, hash); } catch { return false; }
+}
+
+function lockedMessage(until: string | null | undefined) {
+  if (!until || until === 'infinity') return 'This sign-in is locked after too many wrong PINs. Ask Will to unlock it.';
+  const mins = Math.max(1, Math.ceil((new Date(until).getTime() - Date.now()) / 60000));
+  return `Too many wrong PINs. This sign-in is locked for ${mins} more minute${mins === 1 ? '' : 's'}.`;
+}
+
+// Logs the miss, counts it against the account, and raises owner alerts.
+async function recordMiss(
+  db: Db,
+  ip: string,
+  row: Row | null,
+  attempts: { ok: boolean; at: number }[],
+): Promise<{ locked?: boolean; held?: boolean; locked_until?: string } | null> {
+  await db.from('pin_attempts').insert({ ip, ok: false, account_id: row?.id ?? null });
+  let lock: { locked?: boolean; held?: boolean; locked_until?: string } | null = null;
+  if (row) {
+    const res = await db.rpc('fp_pin_fail', { acct: row.id });
+    if (res.error) console.error('fp_pin_fail failed', res.error.message);
+    else lock = res.data;
+    if (lock?.locked) {
+      await alert(db, row.label, lock.held
+        ? 'Locked until you unlock it (Security page): 3 lockouts in 24 hours'
+        : 'Locked for a while after 5 wrong PINs in a row');
+    }
+  }
+  // +1 for the miss just recorded. Alert once per hour at most.
+  if (spikeCount(attempts, Date.now()) + 1 === PIN_SPIKE_ALERT) {
+    const hourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const { data: prior } = await db.from('audit_log').select('id')
+      .eq('action', 'security_alert').eq('entity', 'Failed sign-in spike').gte('created_at', hourAgo).limit(1);
+    if (!prior || !prior.length) {
+      await alert(db, 'Failed sign-in spike', `${PIN_SPIKE_ALERT} wrong PINs across all accounts in 15 minutes`);
+    }
+  }
+  return lock;
+}
+
+async function alert(db: Db, entity: string, details: string) {
+  const { error } = await db.from('audit_log').insert({
+    actor: 'Sign-in security',
+    action: 'security_alert',
+    entity: entity || 'Sign-in',
+    details,
+  });
+  if (error) console.error('security alert insert failed', error.message);
+}
+
+async function crewInactiveMap(db: Db) {
+  const { data } = await db.from('settings').select('value').eq('key', 'crew_inactive').maybeSingle();
+  try { return data?.value ? JSON.parse(data.value) : null; } catch { return null; }
+}
+
+function publicAccount(row: Row) {
   return {
     kind: row.kind,
     crew_idx: row.kind === 'crew' ? row.crew_idx : null,
@@ -112,21 +226,7 @@ function publicAccount(row: {
   };
 }
 
-async function ensureSession(
-  db: ReturnType<typeof createClient>,
-  url: string,
-  service: string,
-  anon: string,
-  row: {
-    id: string;
-    kind: string;
-    crew_idx: number | null;
-    label: string;
-    auth_user_id: string | null;
-    email: string | null;
-    session_nonce: number | null;
-  },
-) {
+async function ensureSession(db: Db, url: string, service: string, anon: string, row: Row) {
   const admin = createClient(url, service, { auth: { persistSession: false, autoRefreshToken: false } });
   const email = row.email || `p${row.id.replace(/-/g, '')}@pin.floorpro.invalid`;
   const appMetadata = {

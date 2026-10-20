@@ -14,13 +14,10 @@
 #                     custom_job_types, holidays, PINs, and more
 
 # After row security is on, the public anon key can no longer read these tables.
-# Put the service_role key in the environment on this PC only. Do not paste it into the app.
+# The service_role key is kept encrypted on this PC only (tools\supabase-cli\save-service-key.ps1).
 $SUPABASE_URL = 'https://cngbsmmdfxmerlqnkate.supabase.co'
-$SUPABASE_KEY = $env:SUPABASE_SERVICE_ROLE_KEY
-if (-not $SUPABASE_KEY) {
-    Write-Error 'Set SUPABASE_SERVICE_ROLE_KEY in this window first (Dashboard, Settings, API, service_role). The anon key can no longer read the database.'
-    exit 1
-}
+try { $SUPABASE_KEY = & 'C:\Users\Will Bradford\tools\supabase-cli\get-service-key.ps1' }
+catch { Write-Error $_.Exception.Message; exit 1 }
 $destDir = 'G:\My Drive\FloorPro CRM Backups'
 $keep    = 30
 
