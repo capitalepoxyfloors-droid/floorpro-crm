@@ -227,6 +227,100 @@ test('prevailing wage, cash and owner rules on direct-model days', async () => {
   assert.equal(r2(re.overhead), 15.32);
 });
 
+// ── Part B: job P&L lines, report, data guards ──
+function putJob(job) {
+  w.__job = job;
+  ev('JOB_RECORDS.push(window.__job); _jcId=window.__job.id; _jrBaseline=JSON.parse(JSON.stringify(JOB_RECORDS));');
+  state.settings.job_records = JSON.stringify(plain(ev('JOB_RECORDS')));
+}
+const lines = (id, mode) => plain(ev(`jcJobCostLines(getJobRecord(${JSON.stringify(id)}),${JSON.stringify(mode || 'recorded')})`));
+
+test('job P&L: direct cost, gross margin, overhead, net, break-even, price for target, flag', async () => {
+  await freshCrewAndSettings();
+  const ds = '2026-10-20';
+  ev(`window.__s={crewIdx:0,name:'Seth West'}; jcStampEntryRates(window.__s,'${ds}');`);
+  putJob({ id: 'p1', customer: 'Flake Garage', status: 'complete', jobType: 'flake-good', value: '2000', startDate: ds, endDate: ds,
+    supplierInvoices: [{ vendor: 'Supplier', amount: '500' }],
+    dayLogs: { [ds]: { fullDay: true, crewPresent: [plain(w.__s)] } } });
+  const L = lines('p1');
+  assert.equal(L.labor, r2(8 * 40.27));
+  assert.equal(L.overhead, r2(8 * 15.32));
+  assert.equal(L.consPct, 16, 'flake default from settings (no 10% on the job)');
+  assert.equal(L.consumables, 80);
+  assert.equal(L.directCost, r2(322.16 + 500 + 80));
+  assert.equal(L.grossProfit, r2(2000 - 902.16));
+  assert.equal(L.netProfit, r2(2000 - 902.16 - 122.56));
+  assert.equal(L.breakEven, r2(902.16 + 122.56));
+  assert.equal(L.ownerCost, r2(8 * 17.25));
+  assert.equal(L.priceForTarget, r2((902.16 + 122.56 + 138) / 0.85));
+  assert.equal(L.flag, 'profitable');
+  assert.equal(ev(`getJobRecord('p1').consumablesPct`), undefined, 'rendering never writes a default % onto the job');
+  ev(`document.body.insertAdjacentHTML('beforeend','<div id=jc-costing-content></div>'); renderJobCosting();`);
+  assert.equal(ev(`getJobRecord('p1').consumablesPct`), undefined);
+  assert.ok(ev(`document.getElementById('jc-costing-content').textContent`).includes('Net after overhead'));
+  assert.equal(ev('jcProfitFlag(9.9)'), 'thin');
+  assert.equal(ev('jcProfitFlag(-0.1)'), 'losing');
+});
+
+test('consumables: a saved % wins as recorded; re-cost uses settings by system; old jobs keep 10%', async () => {
+  await freshCrewAndSettings();
+  putJob({ id: 'c1', customer: 'Old Polish', status: 'complete', jobType: 'concrete', value: '1000', consumablesPct: 10, startDate: '2026-08-03', endDate: '2026-08-03', dayLogs: {} });
+  putJob({ id: 'c2', customer: 'Old Flake', status: 'complete', jobType: 'flake-good', value: '1000', startDate: '2026-08-03', endDate: '2026-08-03', dayLogs: {} });
+  assert.equal(lines('c1').consPct, 10);
+  assert.equal(lines('c1', 'recost').consPct, 51);
+  assert.equal(lines('c2').consPct, 10, 'a job from before the model keeps the old default');
+  assert.equal(lines('c2', 'recost').consPct, 16);
+  assert.equal(ev(`jcCostCategory(getJobRecord('c1'))`), 'polishing');
+  assert.equal(ev(`jcCostCategory({jobType:'flake-good',prevailingWage:true})`), 'commercial');
+  assert.equal(ev(`jcCostCategory({jobType:'flake-better'})`), 'res_flake');
+  assert.equal(ev(`jcCostCategory({jobType:'overlay'})`), 'res_other');
+  assert.equal(ev(`jcScopeSqft({scope:'848 SF Garage with small stem walls.'})`), 848);
+  assert.equal(ev(`jcScopeSqft({scope:'about 1,250 sq ft'})`), 1250);
+});
+
+test('report: re-cost writes nothing, combined phases sum, worst-first sort', async () => {
+  await freshCrewAndSettings();
+  const mk = (id, cust, value, br, link) => putJob({ id, customer: cust, status: 'complete', jobType: 'flake-good', value: String(value), consumablesPct: 0, costLinkId: link,
+    startDate: '2026-09-01', endDate: '2026-09-01', endDateX: 0, dayLogs: { '2026-09-01': { fullDay: true, crewPresent: [{ crewIdx: 0, name: 'Seth West', burdenedRate: br }] } } });
+  mk('r1', 'GC Phase 1', 1000, '41.12', 'grp'); mk('r2', 'GC Phase 2', 500, '41.12', 'grp'); mk('r3', 'Loser', 100, '41.12');
+  ev(`document.body.insertAdjacentHTML('beforeend','<div id=jc-cost-page-content></div>')`);
+  const before = JSON.stringify(state.settings);
+  ev('_jcrRecost=true; _jcrSort="worst"; renderJobCostingPage();');
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(JSON.stringify(state.settings), before, 're-cost mode saves nothing');
+  const text = ev(`document.getElementById('jc-cost-page-content').textContent`);
+  assert.ok(text.indexOf('Loser') < text.indexOf('GC Phase 1'), 'worst net % first');
+  assert.ok(text.includes('Combined — 2 phases'));
+  ev('_jcrRecost=false; _jcrSort="finish"; renderJobCostingPage();');
+  // Combined row = sum of its phases (as recorded: 8h × (41.12 − 4.83) labor + 8h × 4.83 overhead each)
+  const a = lines('r1'), b = lines('r2');
+  const s = plain(ev(`_jcSumCostRows([jcJobCostLines(getJobRecord('r1')),jcJobCostLines(getJobRecord('r2'))])`));
+  assert.equal(s.revenue, 1500);
+  assert.equal(s.overhead, r2(a.overhead + b.overhead));
+  assert.equal(s.netProfit, r2(a.netProfit + b.netProfit));
+  assert.equal(r2(a.labor + a.overhead), r2(8 * 41.12), 'as recorded: same all-in cost as before');
+});
+
+test('data guard: a solo day offers "Owner on site?", which adds the owner at the override rate', async () => {
+  await freshCrewAndSettings();
+  putJob({ id: 'g1', customer: 'Solo', status: 'in_progress', jobType: 'flake-good', value: '3000', startDate: '2026-09-02', endDate: '2026-09-02',
+    dayLogs: { '2026-09-02': { startTime: '7:00 AM', endTime: '3:00 PM', crewPresent: [{ crewIdx: 4, name: 'Hunter Schuler', burdenedRate: '33.59' }] } } });
+  assert.deepEqual(lines('g1').soloDays, ['2026-09-02']);
+  ev(`document.body.insertAdjacentHTML('beforeend','<div id=jc-costing-content></div>'); renderJobCosting();`);
+  assert.ok(ev(`document.getElementById('jc-costing-content').textContent`).includes('Owner on site?'));
+  await ev(`jcAddOwnerToDay('2026-09-02')`);
+  const crew = plain(ev(`getJobRecord('g1').dayLogs['2026-09-02'].crewPresent`));
+  assert.equal(crew.length, 2);
+  assert.equal(crew[1].name, 'Will Bradford');
+  assert.equal(crew[1].directRate, 40.27);
+  assert.equal(crew[1].overheadRate, 4.83, 'an older day keeps that day\'s overhead');
+  const L = lines('g1');
+  assert.deepEqual(L.soloDays, []);
+  assert.equal(L.ownerHours, 8);
+  // Estimated break-even GM for an unfinished job uses scheduled hours × overhead ÷ price
+  assert.ok(ev(`document.getElementById('jc-costing-content').textContent`).includes('Minimum GM to break even'));
+});
+
 test('saving a crew member writes back every existing column value', async () => {
   await freshCrewAndSettings();
   for (let i = 0; i < CREW_ROWS.length; i++) {

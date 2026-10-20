@@ -5648,6 +5648,24 @@ function jcLogPickCrewMember(ds,idx,sel){
   saveJobRecords();
 }
 
+// Data guard "Owner on site?": add the owner to a day where only one person was logged, with that
+// person's times, costed at the owner's field rate (a direct-rate stamp even on an older day).
+async function jcAddOwnerToDay(ds){
+  const job=getJobRecord(_jcId); if(!job||!job.dayLogs||!job.dayLogs[ds]) return;
+  const oi=jcOwnerIdx(); if(oi<0||!CREW_DATA[oi]) return;
+  const log=job.dayLogs[ds];
+  _jcMigrateCrewPresent(log);
+  if(log.crewPresent.some(c=>parseInt(c.crewIdx)===oi)) return;
+  const solo=log.crewPresent.find(c=>c&&(c.name||c.crewIdx>=0))||{};
+  const c={crewIdx:oi,name:CREW_DATA[oi].full,startTime:solo.startTime||'',endTime:solo.endTime||''};
+  jcStampEntryRates(c,ds,{forceDirect:true});
+  log.crewPresent.push(c);
+  await saveJobRecords();
+  renderJobCosting();
+  if(document.getElementById('jc-day-logs')) jcRenderDayLogs();
+  showToast('✓ Added '+CREW_DATA[oi].full+' on '+jcFmtDate(ds));
+}
+
 function jcLogSetCrew(ds,idx,field,val){
   const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
   _jcMigrateCrewPresent(job.dayLogs[ds]);
@@ -5912,6 +5930,26 @@ function jcSetConsumablesPct(val){
   saveJobRecords();
   renderJobCosting();
 }
+// Drop the job's own consumables % so it follows the costing settings (by system) again.
+function jcResetConsumablesPct(){
+  const job=getJobRecord(_jcId); if(!job) return;
+  delete job.consumablesPct;
+  saveJobRecords();
+  renderJobCosting();
+}
+function jcSetSqft(val){
+  const job=getJobRecord(_jcId); if(!job) return;
+  const n=parseFloat(val);
+  if(n>0) job.sqft=n; else delete job.sqft;
+  saveJobRecords();
+  renderJobCosting();
+}
+function jcSetCostCategory(val){
+  const job=getJobRecord(_jcId); if(!job) return;
+  if(val&&JC_COST_CATEGORIES.some(([k])=>k===val)) job.costCategory=val; else delete job.costCategory;
+  saveJobRecords();
+  renderJobCosting();
+}
 
 function jcSetMileageOneWay(val){
   const job=getJobRecord(_jcId); if(!job) return;
@@ -6089,7 +6127,7 @@ function jcHours(key,ds){
   const el=document.getElementById('jch-'+key); if(el) el.textContent=log.fullDay?'8.0 hrs':(log.startTime&&log.endTime?jcCalcHrs(log.startTime,log.endTime):'—');
 }
 
-/// ── DAY-LOG RATE STAMPS (effective-dated; never rewritten) ──
+// ── DAY-LOG RATE STAMPS (effective-dated; never rewritten) ──
 // Each crew entry on a day log carries the rates in effect on that WORK date, so a later raise or
 // a new costing rate set never re-costs past days:
 //   directRate   labor $/hr (calcDirectRate, or the old burden math for someone not set up yet)
@@ -6101,11 +6139,18 @@ function jcHours(key,ds){
 //   burdenedRate kept = direct + overhead, so older code paths still see an all-in rate.
 // Days before the direct-rate model only get burdenedRate, exactly like the old code stamped it.
 const JC_RATE_STAMP_KEYS=['directRate','otRate','baseRate','statMult','overheadRate','rateVersion','fieldOverride'];
-function jcStampEntryRates(c,ds){
+// opts.forceDirect: stamp with the direct-rate model even on a day before it (today's crew rates,
+// that day's legacy overhead) — used when the owner is added to an older day after the fact.
+function jcStampEntryRates(c,ds,opts){
   JC_RATE_STAMP_KEYS.forEach(k=>delete c[k]);
   const cd=(c&&c.crewIdx>=0)?CREW_DATA[c.crewIdx]:null;
   if(!cd){ c.burdenedRate=''; return; }
-  const {entry,version}=costingSetFor(ds);
+  let {entry,version}=costingSetFor(ds);
+  let ohOverride=null;
+  if(opts&&opts.forceDirect&&_costingSettingsLoadOk&&!_csIsModel(entry)){
+    ({entry,version}=costingCurrentModel());
+    ohOverride=_csLegacyOverheadFor(ds);
+  }
   if(!_costingSettingsLoadOk||!_csIsModel(entry)){
     // Settings not loaded yet (stamped later, on save), or a day before the direct-rate model:
     // the old stamp (old burden math + the overhead old code added on top).
@@ -6115,7 +6160,7 @@ function jcStampEntryRates(c,ds){
   }
   const r=crewLaborRates(cd,entry);
   if(!r){ c.burdenedRate=''; return; }
-  const oh=_r2(overheadPerHour(entry));
+  const oh=_r2(ohOverride!==null?ohOverride:overheadPerHour(entry));
   c.directRate=r.direct; c.otRate=r.ot; c.baseRate=_r2(r.base); c.statMult=Math.round(r.statMult*1e4)/1e4;
   c.overheadRate=oh; c.rateVersion=version;
   if(r.override) c.fieldOverride=true;
@@ -6180,7 +6225,7 @@ function jcEntryRate(c,job,log,ds,mode){
     }
   }
   // 2. Cash wages — base pay (plus SS/Medicare/WC if the rate set says "statutory"). The owner's
-  //    field rate override applies on cash and overtime days too (he isn't paid cash or OT).
+  //    field rate override applies on cash and overtime days too (the owner isn't paid cash or OT).
   if(cash){
     if(override>0) return out(override,oh,'cash');
     const base=(stamped&&parseFloat(c.baseRate)>0)?parseFloat(c.baseRate):(cd?(parseFloat(cd.hourly)||0):0);
@@ -6311,195 +6356,358 @@ function jcUnlinkFromCostGroup(){
   showToast('✓ Un-combined — each phase is its own job again.');
 }
 
+// ── JOB P&L (shared by the Job Card Costing tab and the Job Costing report) ──────────────
+// One calculator for both screens so they can't drift apart:
+//   labor        Σ hours × each entry's labor rate (OT days at the OT rate) — see jcEntryRate
+//   materials    day-log materials + supplier invoices (unchanged)
+//   consumables  materials × (job.consumablesPct ?? settings by system ?? settings default)
+//   mileage, commissions — unchanged
+//   directCost   sum of the above;  grossProfit = revenue − directCost
+//   overhead     Σ hours (everyone, incl. the owner's field hours) × each entry's overhead rate
+//   netProfit    grossProfit − overhead;  ownerCost = hours × ownerCostPerHour (optional)
+//   breakEven    directCost + overhead;  priceForTarget = (breakEven + ownerCost) ÷ (1 − target%)
+// mode 'recorded' (default) uses the rates stamped on each day; 'recost' prices every hour at
+// today's rates and today's consumables %, in memory only (nothing here ever saves).
+const JC_JOBTYPE_SYSTEM={'flake-good':'flake','flake-better':'flake','flake-best':'flake','neat-epoxy-floor':'epoxy','metallic':'metallic','overlay':'overlay','clean-and-seal':'clean_seal','concrete':'polish'};
+const JC_SYSTEM_LABELS={flake:'Flake',epoxy:'Epoxy',metallic:'Metallic',overlay:'Overlay',clean_seal:'Clean & Seal',polish:'Polishing'};
+function jcJobSystem(job){
+  if(!job) return null;
+  if(job.system&&JC_SYSTEM_LABELS[job.system]) return job.system;
+  const t=String(job.jobType||'');
+  return JC_JOBTYPE_SYSTEM[t]||(/flake/i.test(t)?'flake':null);
+}
+// Consumables % for a job: {pct, source:'job'|'system'|'default'|'legacy', sys}. A % saved on the job
+// wins (as recorded). Otherwise the rate set in effect when the job started; a job that started
+// before the direct-rate model keeps the old 10% default. Re-cost ignores the job's own % and uses
+// today's settings (that's how the CFO's report priced consumables).
+function jcConsumablesPct(job,mode){
+  const sys=jcJobSystem(job);
+  if(mode!=='recost'&&job&&job.consumablesPct!==undefined&&job.consumablesPct!==null&&job.consumablesPct!=='')
+    return {pct:parseFloat(job.consumablesPct)||0,source:'job',sys};
+  const set=mode==='recost'?costingCurrentModel().entry:costingSetFor(_jcJobStartDate(job)).entry;
+  if(!_csIsModel(set)) return {pct:10,source:'legacy',sys};
+  const by=set.consumablesBySystem||{};
+  if(sys&&by[sys]!==undefined&&by[sys]!==null&&by[sys]!=='') return {pct:parseFloat(by[sys])||0,source:'system',sys};
+  return {pct:parseFloat(set.consumablesDefaultPct)||0,source:'default',sys};
+}
+function _jcJobStartDate(job){
+  if(job&&job.startDate) return job.startDate;
+  const ds=Object.keys((job&&job.dayLogs)||{}).sort();
+  return ds[0]||_csToday();
+}
+// Days the costing covers: the job's range (weekdays, or every day when it starts/ends on a
+// weekend) plus extra days, de-duplicated.
+function _jcCostDates(job){
+  const s=job.startDate||'', e=job.endDate||'';
+  const sDow=new Date(s+'T00:00:00').getDay(), eDow=new Date(e+'T00:00:00').getDay();
+  const wknd=(sDow===0||sDow===6||eDow===0||eDow===6);
+  return [...new Set([...(wknd?jcAllDays(s,e):jcWeekdays(s,e)),...(job.extraDays||[])])].sort();
+}
+// Report group: the job's own pick, else polishing (polished concrete) → commercial (prevailing
+// wage or a commercial bid) → residential flake → residential other.
+const JC_COST_CATEGORIES=[['res_flake','Residential flake'],['res_other','Residential other'],['commercial','Commercial'],['polishing','Polishing']];
+function jcCostCategory(job){
+  if(job&&job.costCategory&&JC_COST_CATEGORIES.some(([k])=>k===job.costCategory)) return job.costCategory;
+  const sys=jcJobSystem(job);
+  if(sys==='polish') return 'polishing';
+  if(job&&(job.prevailingWage||job.jobType==='commercial-bid-spec')) return 'commercial';
+  return sys==='flake'?'res_flake':'res_other';
+}
+// Square feet: the job's own number, else one read out of the scope text ("848 SF").
+function jcScopeSqft(job){
+  const m=String((job&&job.scope)||'').match(/([\d,]{2,})\s*(?:sq\.?\s*ft\.?|sqft|square\s*f(?:ee|oo)t|s\.?f\.?)(?![a-z])/i);
+  const n=m?parseFloat(m[1].replace(/,/g,'')):0;
+  return n>0?n:null;
+}
+function jcJobSqft(job){ const n=parseFloat(job&&job.sqft); return n>0?n:null; }
+function jcOwnerIdx(){ return (CREW_DATA||[]).findIndex(c=>c&&c.isOwner===true); }
+function jcProfitFlag(netPct){ return netPct===null?null:(netPct<0?'losing':(netPct<10?'thin':'profitable')); }
+const JC_FLAG_META={profitable:{label:'Profitable',color:'#16a34a'},thin:{label:'Thin',color:'#d97706'},losing:{label:'Losing',color:'#dc2626'}};
+function jcFlagBadge(flag){
+  const m=JC_FLAG_META[flag]; if(!m) return '';
+  return `<span style="font-size:10px;font-family:'DM Mono',monospace;font-weight:700;color:${m.color};background:${m.color}22;padding:1px 8px;border-radius:20px;">${m.label}</span>`;
+}
+
+function jcJobCostLines(job,mode){
+  const recost=mode==='recost';
+  const logs=job.dayLogs||{};
+  const allDates=_jcCostDates(job);
+  const contract=parseFloat(job.value)||0;
+  const ownerIdx=jcOwnerIdx();
+  // ── LABOR + OVERHEAD (per person per day; a split shift is one person with two rows) ──
+  const laborRows=[];
+  let labor=0, overhead=0, hours=0, ownerHours=0, cashHrs=0, pwHrs=0, legacyOhHrs=0;
+  const cashDays=new Set(), soloDays=[], noWorkDays=[], ohByRate={};
+  allDates.forEach(ds=>{
+    const log=logs[ds]; if(!log) return;
+    if(log.noWork){ noWorkDays.push(ds); return; } // crew pulled off — a deliberate zero
+    const grouped=new Map();
+    (Array.isArray(log.crewPresent)?log.crewPresent:[]).forEach(c=>{
+      const nm=(c.name||(c.crewIdx>=0&&CREW_DATA[c.crewIdx]?CREW_DATA[c.crewIdx].full:'')).trim();
+      if(!nm) return;
+      const k=nm.toLowerCase();
+      if(!grouped.has(k)) grouped.set(k,{name:nm,rows:[]});
+      grouped.get(k).rows.push(c);
+    });
+    let dayPeople=0, dayHasOwner=false;
+    grouped.forEach(({name,rows})=>{
+      // Two Full Day rows are the day-level flag repeated — count 8 once. Otherwise add both rows.
+      const hrs=log.fullDay?8:rows.reduce((s,c)=>s+(parseFloat(jcGetCrewMemberHrs(c,log))||0),0);
+      if(hrs<=0) return;
+      const c=rows[0];
+      const r=jcEntryRate(c,job,log,ds,mode);
+      const cost=Math.round(hrs*r.labor*100)/100, oh=Math.round(hrs*r.overhead*100)/100;
+      const isOwner=ownerIdx>=0&&parseInt(c.crewIdx)===ownerIdx;
+      dayPeople++; if(isOwner) dayHasOwner=true;
+      labor+=cost; overhead+=oh; hours+=hrs;
+      if(isOwner) ownerHours+=hrs;
+      if(r.kind==='cash'){ cashHrs+=hrs; cashDays.add(ds); }
+      if(r.kind==='pw') pwHrs+=hrs;
+      if(r.kind==='legacy'||(r.kind==='live'&&!recost&&!_csIsModel(costingSetFor(ds).entry))) legacyOhHrs+=hrs;
+      const rk=r.overhead.toFixed(2); ohByRate[rk]=(ohByRate[rk]||0)+hrs;
+      laborRows.push({ds,name,hrs,rate:r.labor,cost,ohRate:r.overhead,ohCost:oh,kind:r.kind,ot:r.ot,cash:r.cash,isOwner});
+    });
+    if(dayPeople===1&&!dayHasOwner&&ownerIdx>=0) soloDays.push(ds);
+  });
+  labor=Math.round(labor*100)/100; overhead=Math.round(overhead*100)/100;
+  // ── MATERIALS ──
+  let matCost=0;
+  const matTotals={};
+  allDates.forEach(ds=>{
+    const log=logs[ds]; if(!log) return;
+    (Array.isArray(log.materialsUsed)?log.materialsUsed:[]).forEach(m=>{
+      if(!m.name||!m.qty) return;
+      const qty=parseFloat(m.qty)||0;
+      const ri=jcResolveMatIdx(m);
+      let unitCost=0, pkgNote='';
+      const stored=(m.unitCost!=null&&m.unitCost!==''&&!isNaN(parseFloat(m.unitCost)))?parseFloat(m.unitCost):null;
+      if(stored!=null){
+        unitCost=Math.round(stored*100)/100;
+        if(ri>=0&&MATERIALS[ri]&&MATERIALS[ri].unit) pkgNote='$'+(parseFloat(MATERIALS[ri].price)||0).toFixed(2)+'/'+MATERIALS[ri].unit;
+      } else if(ri>=0&&MATERIALS[ri]){
+        const mat=MATERIALS[ri];
+        const pkgQty=parseFloat((mat.unit||'').match(/^(\d+\.?\d*)/)?.[1])||1;
+        unitCost=Math.round((parseFloat(mat.price)||0)/pkgQty*100)/100;
+        pkgNote=mat.unit?'$'+(parseFloat(mat.price)||0).toFixed(2)+'/'+mat.unit:'';
+      }
+      const cost=Math.round(qty*unitCost*100)/100;
+      matCost+=cost;
+      const key=m.name;
+      if(!matTotals[key]) matTotals[key]={name:m.name,totalQty:0,unit:m.usageUnit||'',cost:0,unitCost,pkgNote};
+      matTotals[key].totalQty+=qty;
+      matTotals[key].cost+=cost;
+    });
+  });
+  const supplierInvoices=(job.supplierInvoices||[]).filter(inv=>parseFloat(inv.amount)>0);
+  const supplierInvTotal=Math.round(supplierInvoices.reduce((a,inv)=>a+(parseFloat(inv.amount)||0),0)*100)/100;
+  const materials=Math.round((matCost+supplierInvTotal)*100)/100;
+  // ── CONSUMABLES ──
+  const cons=jcConsumablesPct(job,mode);
+  const consumables=Math.round(materials*cons.pct/100*100)/100;
+  // ── MILEAGE (per work day at that day's IRS rate, unless the job has its own rate) ──
+  const workDates=allDates.filter(ds=>{ const l=logs[ds]; if(!l||l.noWork) return false; if(jcGetLogHrs(l)>0) return true; return (Array.isArray(l.crewPresent)?l.crewPresent:[]).some(c=>jcGetCrewMemberHrs(c,l)>0); });
+  const workDays=workDates.length;
+  const mileageOneWay=parseFloat(job.mileageOneWay)||0;
+  const mileCustomRate=_jcMileageCustomRate(job);
+  const totalMiles=Math.round(mileageOneWay*2*workDays*10)/10;
+  const mileage=Math.round((mileCustomRate!==null ? totalMiles*mileCustomRate : workDates.reduce((s,ds)=>s+mileageOneWay*2*irsMileageRateForDate(ds),0))*100)/100;
+  // ── REVENUE (Time & Material bills labor at its all-in cost, labor + overhead, as it always has) ──
+  const tmJob=!!job.tmJob;
+  const tmLM=parseFloat(job.tmLaborMarkup)||0, tmMM=parseFloat(job.tmMaterialMarkup)||0;
+  const tmLaborBasis=Math.round((labor+overhead)*100)/100;
+  const tmLaborBilled=Math.round(tmLaborBasis*(1+tmLM/100)*100)/100;
+  const tmMatBilled=Math.round(materials*(1+tmMM/100)*100)/100;
+  const tmBilled=Math.round((tmLaborBilled+tmMatBilled+consumables+mileage)*100)/100;
+  const revenue=tmJob?tmBilled:contract;
+  // ── COMMISSION ('pct' rows are a % of revenue) ──
+  const commissions=Math.round((job.commissions||[]).reduce((a,c)=>a+_commRowCost(c,revenue),0)*100)/100;
+  // ── SUMMARY ──
+  const set=recost?costingCurrentModel().entry:costingSetFor(_jcJobStartDate(job)).entry;
+  const model=_csIsModel(set)?set:costingCurrentModel().entry;
+  const directCost=Math.round((labor+materials+consumables+mileage+commissions)*100)/100;
+  const grossProfit=Math.round((revenue-directCost)*100)/100;
+  const netProfit=Math.round((grossProfit-overhead)*100)/100;
+  const ownerCostPerHour=parseFloat(model.ownerCostPerHour)||0;
+  const ownerCost=Math.round(hours*ownerCostPerHour*100)/100;
+  const trueNet=Math.round((netProfit-ownerCost)*100)/100;
+  const targetNetPct=parseFloat(model.targetNetPct)||0;
+  const breakEven=Math.round((directCost+overhead)*100)/100;
+  const priceForTarget=targetNetPct<100?Math.round((breakEven+ownerCost)/(1-targetNetPct/100)*100)/100:null;
+  const pct=n=>revenue>0?Math.round(n/revenue*1000)/10:null;
+  const gmPct=pct(grossProfit), netPct=pct(netProfit), trueNetPct=pct(trueNet);
+  // Missing time: a day with real logged info but no hours — it adds $0 with no other sign why.
+  const missingTimeDates=allDates.filter(ds=>{
+    const log=logs[ds]; if(!log||log.noWork) return false;
+    const crew=Array.isArray(log.crewPresent)?log.crewPresent:[];
+    const filled=!!(crew.some(c=>c.name)||log.task||(Array.isArray(log.materialsUsed)?log.materialsUsed:[]).some(m=>m.name||m.qty));
+    if(!filled) return false;
+    return !(log.fullDay||jcGetLogHrs(log)>0||crew.some(c=>jcGetCrewMemberHrs(c,log)>0));
+  });
+  const finishDate=[...(job.endDate?[job.endDate]:[]),...(job.extraDays||[]),...Object.keys(logs)].reduce((mx,d)=>(d>mx?d:mx),'');
+  return {mode:recost?'recost':'recorded',allDates,laborRows,labor,overhead,hours:Math.round(hours*10)/10,ownerHours,ohByRate,
+    cashHrs,cashDays:[...cashDays].sort(),pwHrs,legacyOhHrs,soloDays,noWorkDays,missingTimeDates,
+    matRows:Object.values(matTotals),supplierInvoices,supplierInvTotal,materials,
+    consPct:cons.pct,consSource:cons.source,consSys:cons.sys,consumables,
+    workDays,workDates,mileageOneWay,mileCustomRate,totalMiles,mileage,
+    tmJob,tmLM,tmMM,tmLaborBasis,tmLaborBilled,tmMatBilled,tmBilled,contract,revenue,commissions,
+    directCost,grossProfit,gmPct,overheadRateNow:overheadPerHour(model),netProfit,netPct,flag:revenue>0?jcProfitFlag(netPct):null,
+    ownerCostPerHour,ownerCost,trueNet,trueNetPct,targetNetPct,breakEven,priceForTarget,
+    sqft:jcJobSqft(job),category:jcCostCategory(job),finishDate};
+}
+// Estimated hours for a job that isn't finished: each scheduled person's work days × 8.
+function jcEstimatedHours(job){
+  const names=jcCrewNames(job);
+  return names.reduce((s,n)=>s+jcAssignedDates(job,n).length*8,0);
+}
+
+// Report view state — in memory only (never saved). Re-cost prices every completed job at today's
+// rates without writing anything to job_records.
+let _jcrRecost=false, _jcrSort='finish', _jcrGroup=false;
+function jcrSetRecost(v){ _jcrRecost=!!v; renderJobCostingPage(); }
+function jcrSetSort(v){ _jcrSort=v==='worst'?'worst':'finish'; renderJobCostingPage(); }
+function jcrSetGroup(v){ _jcrGroup=!!v; renderJobCostingPage(); }
+// Combine a list of per-job cost lines (phases of one GC project, or a report subtotal) into one.
+function _jcSumCostRows(members){
+  const sum=f=>members.reduce((a,m)=>a+(m[f]||0),0);
+  const cnt=f=>members.reduce((a,m)=>a+((m[f]||[]).length),0);
+  const r2=n=>Math.round(n*100)/100;
+  const revenue=r2(sum('revenue')), directCost=r2(sum('directCost')), overhead=r2(sum('overhead')), ownerCost=r2(sum('ownerCost'));
+  const grossProfit=r2(revenue-directCost), netProfit=r2(grossProfit-overhead);
+  const pct=n=>revenue>0?Math.round(n/revenue*1000)/10:null;
+  const netPct=pct(netProfit);
+  const sq=members.every(m=>m.sqft>0)?sum('sqft'):null;
+  return {revenue,labor:r2(sum('labor')),materials:r2(sum('materials')),consumables:r2(sum('consumables')),mileage:r2(sum('mileage')),
+    commissions:r2(sum('commissions')),directCost,grossProfit,gmPct:pct(grossProfit),overhead,netProfit,netPct,
+    flag:revenue>0?jcProfitFlag(netPct):null,ownerCost,trueNet:r2(netProfit-ownerCost),hours:Math.round(sum('hours')*10)/10,
+    workDays:sum('workDays'),cashDayCount:cnt('cashDays'),soloDayCount:cnt('soloDays'),noWorkCount:cnt('noWorkDays'),
+    missingTimeCount:cnt('missingTimeDates'),legacyOhHrs:sum('legacyOhHrs'),pwHrs:sum('pwHrs'),sqft:sq,
+    breakEven:r2(sum('breakEven')),isTM:members.some(m=>m.tmJob)};
+}
 function renderJobCostingPage(){
   const el=document.getElementById('jc-cost-page-content'); if(!el) return;
   const fmt=n=>'$'+Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const sfmt=n=>(n<0?'-':'')+fmt(n);
+  const mode=_jcrRecost?'recost':'recorded';
 
   const jobs=JOB_RECORDS.filter(j=>j.status==='complete');
-
   if(!jobs.length){
     el.innerHTML=`<div style="text-align:center;padding:60px 20px;color:var(--text3);font-size:15px;">No completed jobs yet. Jobs appear here once they are marked as Complete.</div>`;
     return;
   }
-
-  // Calculate totals for each job
   const rawRows=jobs.map(job=>{
-    const revenue=parseFloat(job.value)||0;
-    const logs=job.dayLogs||{};
-    const _cpSDow=new Date((job.startDate||'')+'T00:00:00').getDay(),_cpEDow=new Date((job.endDate||'')+'T00:00:00').getDay();
-    const _cpWknd=(_cpSDow===0||_cpSDow===6||_cpEDow===0||_cpEDow===6);
-    const allDates=[...(_cpWknd?jcAllDays(job.startDate||'',job.endDate||''):jcWeekdays(job.startDate||'',job.endDate||'')),...(job.extraDays||[])];
-    let laborCost=0,matCost=0,totalHrs=0;
-
-    allDates.forEach(ds=>{
-      const log=logs[ds]; if(!log) return;
-      // Labor — use per-crew-member hours when individual times are set. Skipped entirely for a
-      // day marked "No Work Completed" (crew pulled off) — a deliberate zero, not a real work day —
-      // even if stray crew/time data lingers from before it was marked. Materials below still count
-      // (materials can still be delivered/used on a no-work day).
-      if(!log.noWork){
-        const grouped=new Map();
-        (Array.isArray(log.crewPresent)?log.crewPresent:[]).forEach(c=>{
-          const effectiveName=(c.name||(c.crewIdx>=0&&CREW_DATA[c.crewIdx]?CREW_DATA[c.crewIdx].full:'')).trim();
-          if(!effectiveName) return;
-          const k=effectiveName.toLowerCase();
-          if(!grouped.has(k)) grouped.set(k,{rows:[]});
-          grouped.get(k).rows.push(c);
-        });
-        grouped.forEach(({rows})=>{
-          // Two Full Day rows are the day-level flag repeated — count 8 once. Otherwise add both rows.
-          const hrs=log.fullDay?8:rows.reduce((s,c)=>s+(parseFloat(jcGetCrewMemberHrs(c,log))||0),0);
-          if(hrs>0){
-            totalHrs+=hrs;
-            const rate=jcGetBurdenedRate(rows[0],job,log,ds);
-            laborCost+=hrs*rate;
-          }
-        });
-      }
-      // Materials
-      (Array.isArray(log.materialsUsed)?log.materialsUsed:[]).forEach(m=>{
-        if(!m.qty) return;
-        const stored=(m.unitCost!=null&&m.unitCost!==''&&!isNaN(parseFloat(m.unitCost)))?parseFloat(m.unitCost):null;
-        let unitCost;
-        if(stored!=null) unitCost=stored;
-        else {
-          const ri=jcResolveMatIdx(m);
-          if(ri<0||!MATERIALS[ri]) return;
-          const mat=MATERIALS[ri];
-          const pkgQty=parseFloat((mat.unit||'').match(/^(\d+\.?\d*)/)?.[1])||1;
-          unitCost=(parseFloat(mat.price)||0)/pkgQty;
-        }
-        matCost+=(parseFloat(m.qty)||0)*unitCost;
-      });
-    });
-
-    laborCost=Math.round(laborCost*100)/100;
-    const supplierInvTotal=Math.round((job.supplierInvoices||[]).reduce((a,inv)=>a+(parseFloat(inv.amount)||0),0)*100)/100;
-    matCost=Math.round((matCost+supplierInvTotal)*100)/100;
-    const consPct=parseFloat(job.consumablesPct===undefined?10:job.consumablesPct)||0;
-    const consCost=Math.round(matCost*consPct/100*100)/100;
-    const mileOneWay=parseFloat(job.mileageOneWay)||0;
-    const wDates=allDates.filter(ds=>{const l=logs[ds];if(!l||l.noWork)return false;if(jcGetLogHrs(l)>0)return true;return(Array.isArray(l.crewPresent)?l.crewPresent:[]).some(c=>jcGetCrewMemberHrs(c,l)>0);});
-    const wDays=wDates.length;
-    const _mileCustomRate=_jcMileageCustomRate(job);
-    const mileCost=Math.round((_mileCustomRate!==null ? mileOneWay*2*wDays*_mileCustomRate : wDates.reduce((s,ds)=>s+mileOneWay*2*irsMileageRateForDate(ds),0))*100)/100;
-    // Time & Material: bill = labor +labor-markup% and materials +material-markup% (separate %s).
-    const effRev = job.tmJob
-      ? Math.round((laborCost*(1+(parseFloat(job.tmLaborMarkup)||0)/100) + matCost*(1+(parseFloat(job.tmMaterialMarkup)||0)/100) + consCost + mileCost)*100)/100
-      : revenue;
-    const commCost=Math.round((job.commissions||[]).reduce((a,c)=>a+_commRowCost(c,effRev),0)*100)/100;
-    const totalCost=Math.round((laborCost+matCost+consCost+mileCost+commCost)*100)/100;
-    const profit=Math.round((effRev-totalCost)*100)/100;
-    const margin=effRev>0?Math.round(profit/effRev*1000)/10:null;
-    const dailyProfit=wDays>0&&effRev>0?Math.round(profit/wDays*100)/100:null;
-    // Effective finish date = latest of end date, extra days, and any logged day
-    const finishDate=[...(job.endDate?[job.endDate]:[]),...(job.extraDays||[]),...Object.keys(logs)].reduce((mx,d)=>(d>mx?d:mx),'');
-    // Days with real logged info but no time entered — silently contribute $0 above.
-    const missingTimeCount=allDates.filter(ds=>{
-      const log=logs[ds]; if(!log||log.noWork) return false;
-      const crew=Array.isArray(log.crewPresent)?log.crewPresent:[];
-      const filled=!!(crew.some(c=>c.name)||log.task||(Array.isArray(log.materialsUsed)?log.materialsUsed:[]).some(m=>m.name||m.qty));
-      if(!filled) return false;
-      return !(log.fullDay||jcGetLogHrs(log)>0||crew.some(c=>jcGetCrewMemberHrs(c,log)>0));
-    }).length;
-    return{job,revenue:effRev,laborCost,matCost,consCost,mileCost,commCost,totalCost,profit,margin,totalHrs:Math.round(totalHrs*10)/10,wDays,dailyProfit,finishDate,isTM:!!job.tmJob,missingTimeCount};
+    const L=jcJobCostLines(job,mode);
+    return {...L,..._jcSumCostRows([L]),job,finishDate:L.finishDate,category:L.category,isTM:L.tmJob};
   });
-
-  // Roll any combined phases (see jcCombineWithJob) into a single row so the summary totals
-  // below aren't double-counted and the "total picture" the combine feature exists for shows
-  // as one line, not N separate phases.
+  // Roll combined phases (jcCombineWithJob) into one row: every line, overhead and net included.
   const groups={};
   rawRows.forEach(r=>{ const key=_jcCostGroupKey(r.job); (groups[key]=groups[key]||[]).push(r); });
   const rows=Object.values(groups).map(members=>{
     if(members.length===1) return members[0];
-    const sum=f=>members.reduce((a,m)=>a+(m[f]||0),0);
-    const primary=members.slice().sort((a,b)=>(a.finishDate||'').localeCompare(b.finishDate||''))[0];
-    const revenue=sum('revenue'), laborCost=sum('laborCost'), matCost=sum('matCost'),
-          consCost=sum('consCost'), mileCost=sum('mileCost'), commCost=sum('commCost'),
-          totalCost=sum('totalCost');
-    const profit=Math.round((revenue-totalCost)*100)/100;
-    const margin=revenue>0?Math.round(profit/revenue*1000)/10:null;
-    const wDays=sum('wDays');
-    const dailyProfit=wDays>0&&revenue>0?Math.round(profit/wDays*100)/100:null;
-    const finishDate=members.reduce((mx,m)=>(m.finishDate>mx?m.finishDate:mx),'');
+    const sorted=members.slice().sort((a,b)=>(a.finishDate||'').localeCompare(b.finishDate||''));
+    const primary=sorted[0];
     const comboJob={...primary.job,customer:(primary.job.customer||'Unnamed')+' (Combined — '+members.length+' phases)',_comboMembers:members.map(m=>m.job)};
-    // _memberRows: each phase's own numbers, listed under the combined line so Will can check they add up
-    return{job:comboJob,revenue,laborCost,matCost,consCost,mileCost,commCost,totalCost,profit,margin,totalHrs:Math.round(sum('totalHrs')*10)/10,wDays,dailyProfit,finishDate,isTM:members.some(m=>m.isTM),missingTimeCount:sum('missingTimeCount'),
-      _memberRows:members.slice().sort((a,b)=>(a.finishDate||'').localeCompare(b.finishDate||''))};
+    return {..._jcSumCostRows(members),job:comboJob,category:primary.category,
+      finishDate:members.reduce((mx,m)=>(m.finishDate>mx?m.finishDate:mx),''),_memberRows:sorted};
   });
+  if(_jcrSort==='worst') rows.sort((a,b)=>(a.netPct===null?1e9:a.netPct)-(b.netPct===null?1e9:b.netPct));
+  else rows.sort((a,b)=>(b.finishDate||'').localeCompare(a.finishDate||''));   // newest-finished first
 
-  // Newest-finished jobs first (was raw record order, which looked random)
-  rows.sort((a,b)=>(b.finishDate||'').localeCompare(a.finishDate||''));
-
-  // Summary bar
-  const totRev=rows.reduce((a,r)=>a+r.revenue,0);
-  const totLab=rows.reduce((a,r)=>a+r.laborCost,0);
-  const totMat=rows.reduce((a,r)=>a+r.matCost,0);
-  const totCons=rows.reduce((a,r)=>a+(r.consCost||0),0);
-  const totMile=rows.reduce((a,r)=>a+(r.mileCost||0),0);
-  const totComm=rows.reduce((a,r)=>a+(r.commCost||0),0);
-  const totProfit=Math.round((totRev-totLab-totMat-totCons-totMile-totComm)*100)/100;
-  const totMargin=totRev>0?Math.round(totProfit/totRev*1000)/10:null;
-  // Sum each row's already-computed wDays rather than re-deriving from r.job.dayLogs directly —
-  // a combined row's job is a synthetic object carrying only the primary phase's dayLogs, so
-  // re-deriving here would silently undercount every combined job's work days.
-  const totWorkDays=rows.reduce((a,r)=>a+(r.wDays||0),0);
-  const profitPerDay=totWorkDays>0?Math.round(totProfit/totWorkDays*100)/100:null;
-
+  const tot=_jcSumCostRows(rows);
+  const profitPerDay=tot.workDays>0?Math.round(tot.netProfit/tot.workDays*100)/100:null;
+  const ohNow=overheadPerHour();
+  const col=(n)=>n===null?'var(--text3)':(n>=0?'var(--green)':'var(--red)');
   let html=`
-  <div class="mgrid4" style="margin-bottom:24px;">
-    <div class="stat-card"><div class="stat-label">Total Revenue</div><div class="stat-value">${fmt(totRev)}</div></div>
-    <div class="stat-card"><div class="stat-label">Avg Margin (Weighted)</div><div class="stat-value" style="color:${totMargin===null?'var(--text3)':totMargin>=0?'var(--green)':'var(--red)'};">${totMargin!==null?totMargin+'%':'—'}<span style="font-size:13px;font-weight:400;color:var(--text3);margin-left:6px;">${rows.length} job${rows.length!==1?'s':''}</span></div></div>
-    <div class="stat-card"><div class="stat-label">Profit Per Day</div><div class="stat-value" style="color:${profitPerDay===null?'var(--text3)':profitPerDay>=0?'var(--green)':'var(--red)'};">${profitPerDay!==null?fmt(profitPerDay):'—'}${totWorkDays>0?`<span style="font-size:13px;font-weight:500;color:var(--text3);margin-left:8px;">${totWorkDays}d</span>`:''}</div></div>
-    <div class="stat-card"><div class="stat-label">Gross Profit</div><div class="stat-value" style="color:${totProfit>=0?'var(--green)':'var(--red)'};">${fmt(totProfit)}</div></div>
+  <div style="display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;margin-bottom:12px;font-size:12.5px;">
+    <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-weight:600;"><input type="checkbox" ${_jcrRecost?'checked':''} onchange="jcrSetRecost(this.checked)" style="width:16px;height:16px;accent-color:var(--accent);"> Re-cost at current rates</label>
+    <label style="display:flex;align-items:center;gap:7px;">Sort <select class="form-select" onchange="jcrSetSort(this.value)" style="font-size:12px;padding:4px 8px;width:auto;"><option value="finish"${_jcrSort==='finish'?' selected':''}>Newest finished</option><option value="worst"${_jcrSort==='worst'?' selected':''}>Worst net % first</option></select></label>
+    <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" ${_jcrGroup?'checked':''} onchange="jcrSetGroup(this.checked)" style="accent-color:var(--accent);"> Subtotals by type</label>
   </div>
-  <div class="jc-cost-table" style="background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);overflow:hidden;">
-    <div style="display:grid;grid-template-columns:1.8fr 1fr 1fr 1fr 1fr 1fr 1fr;gap:0;padding:10px 16px;background:var(--surface2);border-bottom:1px solid var(--border2);font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;">
-      <div>Job</div><div style="text-align:right;">Revenue</div><div style="text-align:right;">Labor</div><div style="text-align:right;">Materials</div><div style="text-align:right;">Profit</div><div style="text-align:right;">Margin</div><div style="text-align:right;">Profit/Day</div>
+  <div style="font-size:11.5px;color:var(--text3);margin:-4px 0 14px;line-height:1.5;">${_jcrRecost
+    ?`<b style="color:var(--accent);">Re-cost:</b> every hour at today's crew rates plus $${ohNow.toFixed(2)}/hr overhead, prevailing wage with employer taxes, consumables by system. Shown here only — nothing is saved.`
+    :`As recorded: each day at the rates stamped when it was logged. Before 10/20 the stored rate had $${_csLegacyOverheadFor('2026-10-19').toFixed(2)}/hr overhead inside it; it's split out into the Overhead column.`}</div>
+  <div class="mgrid4" style="margin-bottom:24px;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));">
+    <div class="stat-card"><div class="stat-label">Total Revenue</div><div class="stat-value">${fmt(tot.revenue)}<div style="font-size:12px;font-weight:500;color:var(--text3);margin-top:2px;">${rows.length} job${rows.length!==1?'s':''}</div></div></div>
+    <div class="stat-card"><div class="stat-label">Gross Profit</div><div class="stat-value" style="color:${col(tot.grossProfit)};">${sfmt(tot.grossProfit)}<div style="font-size:12px;font-weight:500;color:var(--text3);margin-top:2px;">${tot.gmPct!==null?tot.gmPct+'% GM':''}</div></div></div>
+    <div class="stat-card"><div class="stat-label">Overhead</div><div class="stat-value">${fmt(tot.overhead)}<div style="font-size:12px;font-weight:500;color:var(--text3);margin-top:2px;">${Math.round(tot.hours).toLocaleString()} hrs</div></div></div>
+    <div class="stat-card"><div class="stat-label">Net After Overhead</div><div class="stat-value" style="color:${col(tot.netProfit)};">${sfmt(tot.netProfit)}<div style="font-size:12px;font-weight:500;color:var(--text3);margin-top:2px;">${tot.netPct!==null?tot.netPct+'%':''}${profitPerDay!==null?' · '+sfmt(profitPerDay)+'/day':''}</div></div></div>
+  </div>`;
+  const GRID='grid-template-columns:1.9fr repeat(8,1fr);min-width:980px;';
+  const head=`<div style="display:grid;${GRID}gap:0;padding:10px 16px;background:var(--surface2);border-bottom:1px solid var(--border2);font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;">
+      <div>Job</div><div style="text-align:right;">Revenue</div><div style="text-align:right;">Labor</div><div style="text-align:right;">Materials</div><div style="text-align:right;">Gross Profit</div><div style="text-align:right;">GM %</div><div style="text-align:right;">Overhead</div><div style="text-align:right;">Net</div><div style="text-align:right;">Net %</div>
     </div>`;
-
-  rows.forEach(({job,revenue,laborCost,matCost,profit,margin,totalHrs,wDays,dailyProfit,missingTimeCount,_memberRows})=>{
-    const profitColor=profit>=0?'var(--green)':'var(--red)';
+  const num=(v,show,color,weight)=>`<div style="text-align:right;font-family:'DM Mono',monospace;font-size:13px;${weight?'font-weight:600;':''}color:${show?(color||'var(--text)'):'var(--text3)'};">${show?v:'—'}</div>`;
+  const chip=(txt,color,bg,title)=>`<span ${title?`title="${title}"`:''} style="font-size:10px;font-family:'DM Mono',monospace;color:${color};background:${bg};padding:1px 7px;border-radius:20px;">${txt}</span>`;
+  const jobRow=(r)=>{
+    const {job}=r;
+    const pc=col(r.netProfit);
     const statusColors={complete:'var(--green)',in_progress:'var(--accent)',scheduled:'var(--blue)',inprogress:'var(--accent)'};
     const sc=statusColors[job.status]||'var(--text3)';
-    html+=`<div onclick="openJobCard('${job.id}')" style="display:grid;grid-template-columns:1.8fr 1fr 1fr 1fr 1fr 1fr 1fr;gap:0;padding:12px 16px;border-bottom:1px solid var(--border2);cursor:pointer;transition:background .12s;" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
-      <div>
+    const chips=[
+      jcFlagBadge(r.flag),
+      chip((job.status||'').replace('_',' ').toUpperCase(),sc,sc+'22'),
+      job._comboMembers?chip('🔗 '+job._comboMembers.length+' phases','var(--accent)','var(--accent-dim)'):'',
+      r.missingTimeCount?chip('⚠ '+r.missingTimeCount+' missing time'+(r.missingTimeCount!==1?'s':''),'var(--red,#e53e3e)','var(--red-dim,#fff0f0)',r.missingTimeCount+' day(s) logged but missing a time — excluded from labor cost'):'',
+      r.noWorkCount?chip('🚫 '+r.noWorkCount+' no-work day'+(r.noWorkCount!==1?'s':''),'var(--text2)','var(--surface3)','Marked No Work Completed — no labor or overhead'):'',
+      r.cashDayCount?chip('💵 '+r.cashDayCount+' cash day'+(r.cashDayCount!==1?'s':''),'#059669','#05966922','Paid in cash — costed at base pay'+(_jcrRecost&&costingCurrentModel().entry.cashDayBurden==='statutory'?' plus SS/Medicare/WC':'')):'',
+      r.pwHrs?chip('PW','#d97706','#d9770622','Prevailing wage hours'):'',
+      r.soloDayCount?chip('👤 '+r.soloDayCount+' solo day'+(r.soloDayCount!==1?'s':''),'#d97706','#d9770622','One person logged and no owner entry — was the owner on site?'):'',
+      r.sqft?'':chip('no sq ft','var(--text3)','var(--surface3)','Add square feet on the Costing tab'),
+    ].filter(Boolean).join('');
+    const perDay=r.workDays>0&&r.revenue>0?Math.round(r.netProfit/r.workDays*100)/100:null;
+    return `<div onclick="openJobCard('${job.id}')" style="display:grid;${GRID}gap:0;padding:12px 16px;border-bottom:1px solid var(--border2);cursor:pointer;transition:background .12s;" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
+      <div style="min-width:0;">
         <div style="font-size:13px;font-weight:600;">${job.customer||'Unnamed'}</div>
-        <div style="font-size:11px;color:var(--text3);margin-top:2px;">${job.jobTypeLabel||job.jobType||''}${totalHrs>0?' · '+totalHrs+'h logged':''}</div>
-        <div style="margin-top:3px;display:flex;gap:5px;flex-wrap:wrap;">
-          <span style="font-size:10px;font-family:'DM Mono',monospace;color:${sc};background:${sc}22;padding:1px 7px;border-radius:20px;">${(job.status||'').replace('_',' ').toUpperCase()}</span>
-          ${job._comboMembers?`<span style="font-size:10px;font-family:'DM Mono',monospace;color:var(--accent);background:var(--accent-dim);padding:1px 7px;border-radius:20px;">🔗 ${job._comboMembers.length} phases</span>`:''}
-          ${missingTimeCount?`<span title="${missingTimeCount} day${missingTimeCount!==1?'s':''} logged but missing a time — excluded from labor cost" style="font-size:10px;font-family:'DM Mono',monospace;color:var(--red,#e53e3e);background:var(--red-dim,#fff0f0);padding:1px 7px;border-radius:20px;">⚠ ${missingTimeCount} missing time${missingTimeCount!==1?'s':''}</span>`:''}
-        </div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px;">${job.jobTypeLabel||job.jobType||''}${r.hours>0?' · '+r.hours+'h logged':''}${perDay!==null?' · '+sfmt(perDay)+' net/day':''}${r.sqft&&r.revenue>0?' · '+fmt(r.revenue/r.sqft)+'/sf':''}</div>
+        <div style="margin-top:3px;display:flex;gap:5px;flex-wrap:wrap;">${chips}</div>
       </div>
-      <div style="text-align:right;font-family:'DM Mono',monospace;font-size:13px;">${revenue>0?fmt(revenue):'<span style="color:var(--text3);">—</span>'}</div>
-      <div style="text-align:right;font-family:'DM Mono',monospace;font-size:13px;color:${laborCost>0?'var(--text)':'var(--text3)'};">${laborCost>0?fmt(laborCost):'—'}</div>
-      <div style="text-align:right;font-family:'DM Mono',monospace;font-size:13px;color:${matCost>0?'var(--text)':'var(--text3)'};">${matCost>0?fmt(matCost):'—'}</div>
-      <div style="text-align:right;font-family:'DM Mono',monospace;font-size:13px;font-weight:600;color:${revenue>0?profitColor:'var(--text3)'};">${revenue>0?fmt(profit):'—'}</div>
-      <div style="text-align:right;font-family:'DM Mono',monospace;font-size:13px;font-weight:600;color:${margin!==null?profitColor:'var(--text3)'};">${margin!==null?margin+'%':'—'}</div>
-      <div style="text-align:right;font-family:'DM Mono',monospace;font-size:13px;font-weight:600;color:${dailyProfit!==null?profitColor:'var(--text3)'};">${dailyProfit!==null?fmt(dailyProfit)+(wDays>1?`<span style="font-size:10px;font-weight:400;color:var(--text3);margin-left:3px;">${wDays}d</span>`:''):'—'}</div>
-    </div>`;
-    // Combined job: break out each phase underneath so the total above can be checked line by line
-    if(_memberRows){
+      ${num(fmt(r.revenue),r.revenue>0)}
+      ${num(fmt(r.labor),r.labor>0)}
+      ${num(fmt(r.materials),r.materials>0)}
+      ${num(sfmt(r.grossProfit),r.revenue>0,col(r.grossProfit),1)}
+      ${num(r.gmPct+'%',r.gmPct!==null,col(r.grossProfit))}
+      ${num(fmt(r.overhead),r.overhead>0,'var(--text2)')}
+      ${num(sfmt(r.netProfit),r.revenue>0,pc,1)}
+      ${num(r.netPct+'%',r.netPct!==null,pc,1)}
+    </div>`+(r._memberRows?r._memberRows.map(m=>{
+      const mc=col(m.netProfit);
       const cell=(v,show,color)=>`<div style="text-align:right;font-family:'DM Mono',monospace;font-size:12px;color:${show?color:'var(--text3)'};">${show?v:'—'}</div>`;
-      _memberRows.forEach(m=>{
-        const pc=m.profit>=0?'var(--green)':'var(--red)';
-        html+=`<div onclick="openJobCard('${m.job.id}')" title="Open this phase" style="display:grid;grid-template-columns:1.8fr 1fr 1fr 1fr 1fr 1fr 1fr;gap:0;padding:7px 16px 7px 30px;border-bottom:1px solid var(--border2);background:var(--surface2);cursor:pointer;" onmouseover="this.style.background='var(--surface3)'" onmouseout="this.style.background='var(--surface2)'">
+      return `<div onclick="openJobCard('${m.job.id}')" title="Open this phase" style="display:grid;${GRID}gap:0;padding:7px 16px 7px 30px;border-bottom:1px solid var(--border2);background:var(--surface2);cursor:pointer;" onmouseover="this.style.background='var(--surface3)'" onmouseout="this.style.background='var(--surface2)'">
           <div style="min-width:0;">
             <div style="font-size:12px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">↳ ${m.job.customer||'Unnamed'}</div>
-            <div style="font-size:10.5px;color:var(--text3);margin-top:1px;">${m.job.startDate?jcFmtDate(m.job.startDate)+(m.finishDate&&m.finishDate!==m.job.startDate?' – '+jcFmtDate(m.finishDate):''):''}${m.totalHrs>0?' · '+m.totalHrs+'h':''}</div>
+            <div style="font-size:10.5px;color:var(--text3);margin-top:1px;">${m.job.startDate?jcFmtDate(m.job.startDate)+(m.finishDate&&m.finishDate!==m.job.startDate?' – '+jcFmtDate(m.finishDate):''):''}${m.hours>0?' · '+m.hours+'h':''}</div>
           </div>
           ${cell(fmt(m.revenue),m.revenue>0,'var(--text2)')}
-          ${cell(fmt(m.laborCost),m.laborCost>0,'var(--text2)')}
-          ${cell(fmt(m.matCost),m.matCost>0,'var(--text2)')}
-          ${cell(fmt(m.profit),m.revenue>0,pc)}
-          ${cell(m.margin+'%',m.margin!==null,pc)}
-          ${cell(m.dailyProfit!==null?fmt(m.dailyProfit)+(m.wDays>1?`<span style="font-size:10px;color:var(--text3);margin-left:3px;">${m.wDays}d</span>`:''):'',m.dailyProfit!==null,pc)}
+          ${cell(fmt(m.labor),m.labor>0,'var(--text2)')}
+          ${cell(fmt(m.materials),m.materials>0,'var(--text2)')}
+          ${cell(sfmt(m.grossProfit),m.revenue>0,col(m.grossProfit))}
+          ${cell(m.gmPct+'%',m.gmPct!==null,col(m.grossProfit))}
+          ${cell(fmt(m.overhead),m.overhead>0,'var(--text2)')}
+          ${cell(sfmt(m.netProfit),m.revenue>0,mc)}
+          ${cell(m.netPct+'%',m.netPct!==null,mc)}
         </div>`;
-      });
-    }
-  });
-
+    }).join(''):'');
+  };
+  const subtotalRow=(label,list)=>{
+    const s=_jcSumCostRows(list);
+    return `<div style="display:grid;${GRID}gap:0;padding:9px 16px;border-bottom:2px solid var(--border2);background:var(--surface3);font-weight:700;">
+      <div style="font-size:12.5px;">${label} <span style="font-weight:400;color:var(--text3);font-size:11px;">${list.length} job${list.length!==1?'s':''}</span> ${jcFlagBadge(s.flag)}</div>
+      ${num(fmt(s.revenue),s.revenue>0)}${num(fmt(s.labor),s.labor>0)}${num(fmt(s.materials),s.materials>0)}
+      ${num(sfmt(s.grossProfit),s.revenue>0,col(s.grossProfit),1)}${num(s.gmPct+'%',s.gmPct!==null,col(s.grossProfit))}
+      ${num(fmt(s.overhead),s.overhead>0,'var(--text2)')}${num(sfmt(s.netProfit),s.revenue>0,col(s.netProfit),1)}${num(s.netPct+'%',s.netPct!==null,col(s.netProfit),1)}
+    </div>`;
+  };
+  html+=`<div class="jc-cost-table" style="background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);overflow-x:auto;">`+head;
+  if(_jcrGroup){
+    JC_COST_CATEGORIES.forEach(([key,label])=>{
+      const list=rows.filter(r=>r.category===key);
+      if(!list.length) return;
+      html+=subtotalRow(label,list);
+      list.forEach(r=>{ html+=jobRow(r); });
+    });
+  } else {
+    rows.forEach(r=>{ html+=jobRow(r); });
+  }
+  html+=subtotalRow('All completed jobs',rows);
   html+=`</div>`;
   el.innerHTML=html;
 }
@@ -6756,128 +6964,24 @@ function renderJobCosting(){
   const job=getJobRecord(_jcId); if(!job) return;
   const el=document.getElementById('jc-costing-content'); if(!el) return;
 
-  const revenue=parseFloat(job.value)||0;
+  // Every number comes from jcJobCostLines, the same calculator the Job Costing report uses.
+  const L=jcJobCostLines(job,'recorded');
   const logs=job.dayLogs||{};
-
-  // ── LABOR ──
-  let totalLaborCost=0;
-  let totalHours=0;
-  const laborRows=[];
-  const _jcSDow=new Date((job.startDate||'')+'T00:00:00').getDay(),_jcEDow=new Date((job.endDate||'')+'T00:00:00').getDay();
-  const _jcWknd=(_jcSDow===0||_jcSDow===6||_jcEDow===0||_jcEDow===6);
-  const allDates=[...new Set([...(_jcWknd?jcAllDays(job.startDate,job.endDate):jcWeekdays(job.startDate,job.endDate)),...(job.extraDays||[])])].sort();
-
-  // Days with real logged info (task/crew/materials) but no way to compute hours from them —
-  // these contribute $0 labor below with no other indication why. Caught in the wild: whole
-  // days' worth of real logged work missing from costing purely because times were left blank.
-  const missingTimeDates=allDates.filter(ds=>{
-    const log=logs[ds]; if(!log||log.noWork) return false;
-    const crew=Array.isArray(log.crewPresent)?log.crewPresent:[];
-    const filled=!!(crew.some(c=>c.name)||log.task||(Array.isArray(log.materialsUsed)?log.materialsUsed:[]).some(m=>m.name||m.qty));
-    if(!filled) return false;
-    const hasTime=log.fullDay||jcGetLogHrs(log)>0||crew.some(c=>jcGetCrewMemberHrs(c,log)>0);
-    return !hasTime;
-  });
-
-  allDates.forEach(ds=>{
-    const log=logs[ds]; if(!log||log.noWork) return; // crew pulled off — deliberate zero, not a real work day
-    const crew=Array.isArray(log.crewPresent)?log.crewPresent:[];
-    const grouped=new Map();
-    crew.forEach(c=>{
-      // Fall back to CREW_DATA name if stored name is blank
-      const effectiveName=(c.name||(c.crewIdx>=0&&CREW_DATA[c.crewIdx]?CREW_DATA[c.crewIdx].full:'')).trim();
-      if(!effectiveName) return;
-      const k=effectiveName.toLowerCase();
-      if(!grouped.has(k)) grouped.set(k,{name:effectiveName, rows:[]});
-      grouped.get(k).rows.push(c);
-    });
-    grouped.forEach(({name:effectiveName, rows})=>{
-      // Two Full Day rows count 8 once. Otherwise add the hours of both rows (split shift).
-      const hrs=log.fullDay?8:rows.reduce((s,c)=>s+(parseFloat(jcGetCrewMemberHrs(c,log))||0),0);
-      if(hrs<=0) return;
-      const c=rows[0];
-      const rate=jcGetBurdenedRate(c,job,log,ds);
-      const cost=Math.round(hrs*rate*100)/100;
-      totalLaborCost+=cost;
-      totalHours+=hrs;
-      laborRows.push({ds,name:effectiveName,hrs,rate,cost});
-    });
-  });
-
-  // ── MATERIALS ──
-  let totalMatCost=0;
-  const matRows=[];
-  const matTotals={};
-
-  allDates.forEach(ds=>{
-    const log=logs[ds]; if(!log) return;
-    const mats=Array.isArray(log.materialsUsed)?log.materialsUsed:[];
-    mats.forEach(m=>{
-      if(!m.name||!m.qty) return;
-      const qty=parseFloat(m.qty)||0;
-      const ri=jcResolveMatIdx(m);
-      let unitCost=0, pkgNote='';
-      const stored=(m.unitCost!=null&&m.unitCost!==''&&!isNaN(parseFloat(m.unitCost)))?parseFloat(m.unitCost):null;
-      if(stored!=null){
-        unitCost=Math.round(stored*100)/100;
-        if(ri>=0&&MATERIALS[ri]&&MATERIALS[ri].unit) pkgNote='$'+(parseFloat(MATERIALS[ri].price)||0).toFixed(2)+'/'+MATERIALS[ri].unit;
-      } else if(ri>=0&&MATERIALS[ri]){
-        const mat=MATERIALS[ri];
-        const pkgQty=parseFloat((mat.unit||'').match(/^(\d+\.?\d*)/)?.[1])||1;
-        unitCost=Math.round((parseFloat(mat.price)||0)/pkgQty*100)/100;
-        pkgNote=mat.unit?'$'+(parseFloat(mat.price)||0).toFixed(2)+'/'+mat.unit:'';
-      }
-      const cost=Math.round(qty*unitCost*100)/100;
-      totalMatCost+=cost;
-      const key=m.name;
-      if(!matTotals[key]) matTotals[key]={name:m.name,totalQty:0,unit:m.usageUnit||'',cost:0,unitCost,pkgNote};
-      matTotals[key].totalQty+=qty;
-      matTotals[key].cost+=cost;
-    });
-  });
-  Object.values(matTotals).forEach(r=>matRows.push(r));
-
-  // ── SUPPLIER INVOICES ──
-  const supplierInvoices=(job.supplierInvoices||[]).filter(inv=>parseFloat(inv.amount)>0);
-  const supplierInvTotal=Math.round(supplierInvoices.reduce((a,inv)=>a+(parseFloat(inv.amount)||0),0)*100)/100;
-  totalMatCost=Math.round((totalMatCost+supplierInvTotal)*100)/100;
-
-  // ── CONSUMABLES ──
-  if(job.consumablesPct===undefined) job.consumablesPct=10;
-  const consPct=parseFloat(job.consumablesPct)||0;
-  const consCost=Math.round(totalMatCost*consPct/100*100)/100;
-
-  // ── MILEAGE ──
-  const workDates=allDates.filter(ds=>{ const l=logs[ds]; if(!l||l.noWork) return false; if(jcGetLogHrs(l)>0) return true; return (Array.isArray(l.crewPresent)?l.crewPresent:[]).some(c=>jcGetCrewMemberHrs(c,l)>0); });
-  const workDays=workDates.length;
-  const mileageOneWay=parseFloat(job.mileageOneWay)||0;
-  const _mileCustomRate=_jcMileageCustomRate(job);
-  const totalMiles=Math.round(mileageOneWay*2*workDays*10)/10;
-  const mileageCost=Math.round((_mileCustomRate!==null ? totalMiles*_mileCustomRate : workDates.reduce((s,ds)=>s+mileageOneWay*2*irsMileageRateForDate(ds),0))*100)/100;
+  const revenue=L.contract;
+  const missingTimeDates=L.missingTimeDates;
+  const laborRows=L.laborRows, totalLaborCost=L.labor, totalHours=L.hours;
+  const matRows=L.matRows, supplierInvoices=L.supplierInvoices, totalMatCost=L.materials;
+  const consPct=L.consPct, consCost=L.consumables;
+  const workDays=L.workDays, mileageOneWay=L.mileageOneWay, totalMiles=L.totalMiles, mileageCost=L.mileage;
   // Display rate: the manual override if one is set, else the blended $/mi implied by the
-  // per-day calculation above (a single number for a job whose days actually straddle the
-  // cutover is necessarily an average — the line item below still totals correctly either way).
-  const irsRate=_mileCustomRate!==null ? _mileCustomRate : (totalMiles>0 ? Math.round((mileageCost/totalMiles)*10000)/10000 : irsMileageRateForDate(job.endDate||job.startDate||new Date().toISOString().slice(0,10)));
-
-  // ── TIME & MATERIAL / EFFECTIVE REVENUE (computed before Commission — % commissions are based on this) ──
-  // Time & Material: invoice = labor cost + labor-markup%, plus materials + material-markup%.
-  const tmJob=!!job.tmJob;
-  const tmLM=parseFloat(job.tmLaborMarkup)||0;
-  const tmMM=parseFloat(job.tmMaterialMarkup)||0;
-  const tmLaborBilled=Math.round(totalLaborCost*(1+tmLM/100)*100)/100;
-  const tmMatBilled=Math.round(totalMatCost*(1+tmMM/100)*100)/100;
-  // Mileage + consumables are billed through at cost (T&M reimbursement); labor/material markups are the profit.
-  const tmBilled=Math.round((tmLaborBilled+tmMatBilled+consCost+mileageCost)*100)/100;
-  const effRevenue=tmJob?tmBilled:revenue;
-
-  // ── COMMISSION ── ('pct' rows are a % of effRevenue above; 'flat' rows are a plain $ amount)
+  // per-day calculation (a job that straddles a rate change shows an average; the total is exact).
+  const irsRate=L.mileCustomRate!==null ? L.mileCustomRate : (totalMiles>0 ? Math.round((mileageCost/totalMiles)*10000)/10000 : irsMileageRateForDate(job.endDate||job.startDate||new Date().toISOString().slice(0,10)));
+  const tmJob=L.tmJob, tmLM=L.tmLM, tmMM=L.tmMM, tmLaborBilled=L.tmLaborBilled, tmMatBilled=L.tmMatBilled;
+  const effRevenue=L.revenue;
   if(!job.commissions) job.commissions=[];
-  const commCost=Math.round(job.commissions.reduce((a,c)=>a+_commRowCost(c,effRevenue),0)*100)/100;
-
-  // ── SUMMARY ──
-  const totalCost=Math.round((totalLaborCost+totalMatCost+consCost+mileageCost+commCost)*100)/100;
-  const grossProfit=Math.round((effRevenue-totalCost)*100)/100;
-  const margin=effRevenue>0?Math.round(grossProfit/effRevenue*1000)/10:0;
+  const commCost=L.commissions;
+  const grossProfit=L.grossProfit;
+  const margin=L.gmPct===null?0:L.gmPct;
   const profitColor=grossProfit>=0?'var(--green)':'var(--red)';
   const fmt=n=>'$'+Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
   const fmtQ=n=>Math.round(n*100)/100;
@@ -6894,6 +6998,18 @@ function renderJobCosting(){
       <div style="font-size:13px;font-weight:600;color:var(--red,#e53e3e);">⚠ ${missingTimeDates.length} day${missingTimeDates.length!==1?'s':''} logged but missing a time — excluded from labor cost below</div>
       <div style="font-size:11.5px;color:var(--text2);margin-top:3px;">${missingTimeDates.map(fmtD).join(', ')}. Enter a start/end time or check "Full Day" on the Daily Log tab for ${missingTimeDates.length!==1?'these days':'this day'} to include ${missingTimeDates.length!==1?'them':'it'} here.</div>
     </div>`;
+  }
+  // Data guards: days with only one person and no owner entry, no-work days, and no square feet.
+  {
+    const warn=(color,bg,inner)=>`<div style="background:${bg};border:1px solid ${color};border-radius:var(--radius-sm);padding:9px 14px;margin-bottom:10px;font-size:12px;color:var(--text2);">${inner}</div>`;
+    const ownerIdx=jcOwnerIdx(), owner=ownerIdx>=0?CREW_DATA[ownerIdx]:null;
+    if(L.soloDays.length&&owner){
+      html+=warn('#d97706','#d9770614',`<div style="font-size:13px;font-weight:600;color:#b45309;margin-bottom:4px;">👤 ${L.soloDays.length} day${L.soloDays.length!==1?'s':''} with one person logged and no owner entry</div>
+        <div style="margin-bottom:6px;">Owner on site? Adding ${_ovhEsc(owner.name||owner.full)}'s hours (same times as the person logged) costs those hours at the owner's field rate.</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;">${L.soloDays.map(ds=>`<button class="btn btn-ghost" onclick="jcAddOwnerToDay('${ds}')" style="font-size:11px;padding:3px 9px;">+ ${_ovhEsc(owner.name||owner.full)} on ${jcFmtDate(ds)}</button>`).join('')}</div>`);
+    }
+    if(L.noWorkDays.length) html+=warn('var(--border2)','var(--surface2)',`🚫 ${L.noWorkDays.length} day${L.noWorkDays.length!==1?'s':''} marked No Work Completed (${L.noWorkDays.map(jcFmtDate).join(', ')}) — no labor, overhead or mileage counted.`);
+    if(!L.sqft) html+=warn('var(--border2)','var(--surface2)',`📐 No square feet on this job yet — add it under Report Details below so $/sq ft can be tracked.`);
   }
 
   // ── Combined Phases — link this job with another COMPLETED job (e.g. Phase 2 of the same
@@ -7006,7 +7122,7 @@ function renderJobCosting(){
     <span style="font-size:14px;color:var(--text2);">${tmJob?'Billed — Time &amp; Material':'Contract Value'}</span>
     <span style="font-size:18px;font-weight:700;font-family:'DM Mono',monospace;color:var(--accent);">${effRevenue>0?fmt(effRevenue):(tmJob?fmt(0):'Not set')}</span>
   </div>`;
-  if(tmJob) html+=`<div style="font-size:11px;color:var(--text3);margin-top:5px;">Labor ${fmt(totalLaborCost)}${tmLM?' +'+tmLM+'% → '+fmt(tmLaborBilled):''} &nbsp;·&nbsp; Materials ${fmt(totalMatCost)}${tmMM?' +'+tmMM+'% → '+fmt(tmMatBilled):''}${(mileageCost>0||consCost>0)?' &nbsp;·&nbsp; '+[mileageCost>0?'mileage '+fmt(mileageCost):'',consCost>0?'consumables '+fmt(consCost):''].filter(Boolean).join(' + ')+' at cost':''}</div>`;
+  if(tmJob) html+=`<div style="font-size:11px;color:var(--text3);margin-top:5px;">Labor ${fmt(L.tmLaborBasis)} (incl. overhead)${tmLM?' +'+tmLM+'% → '+fmt(tmLaborBilled):''} &nbsp;·&nbsp; Materials ${fmt(totalMatCost)}${tmMM?' +'+tmMM+'% → '+fmt(tmMatBilled):''}${(mileageCost>0||consCost>0)?' &nbsp;·&nbsp; '+[mileageCost>0?'mileage '+fmt(mileageCost):'',consCost>0?'consumables '+fmt(consCost):''].filter(Boolean).join(' + ')+' at cost':''}</div>`;
 
   // Labor
   html+=sec('Labor Cost');
@@ -7027,15 +7143,35 @@ function renderJobCosting(){
         </span>
       </div>`;
       rows.forEach(r=>{
+        const tags=[r.kind==='pw'?'prevailing wage':'',r.kind==='cash'?'cash':'',r.ot?'1.5×':'',r.kind==='legacy'?'stored rate − $'+r.ohRate.toFixed(2)+' overhead':'',r.isOwner&&r.kind!=='pw'?'owner':''].filter(Boolean);
         html+=`<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);padding:2px 0 2px 10px;">
-          <span>${r.name}${r.rate>0?' <span style="color:var(--text3);">× '+r.hrs.toFixed(1)+'h @ $'+r.rate.toFixed(2)+'/hr</span>':' <span style="color:var(--text3);">(no rate set)</span>'}</span>
+          <span>${r.name}${r.rate>0?' <span style="color:var(--text3);">× '+r.hrs.toFixed(1)+'h @ $'+r.rate.toFixed(2)+'/hr'+(tags.length?' · '+tags.join(' · '):'')+'</span>':' <span style="color:var(--text3);">(no rate set)</span>'}</span>
           <span style="font-family:'DM Mono',monospace;">${r.rate>0?fmt(r.cost):'—'}</span>
         </div>`;
       });
     });
     html+=`<div style="display:flex;justify-content:space-between;margin-top:8px;padding-top:6px;border-top:1px solid var(--border2);font-weight:600;">
-      <span style="font-size:13px;">Total Labor &nbsp;<span style="font-size:11px;font-weight:400;color:var(--text3);">${totalHours.toFixed(1)} hrs total</span></span>
+      <span style="font-size:13px;">Total Direct Labor &nbsp;<span style="font-size:11px;font-weight:400;color:var(--text3);">${totalHours.toFixed(1)} hrs total</span></span>
       <span style="font-family:'DM Mono',monospace;">${fmt(totalLaborCost)}</span>
+    </div>`;
+  }
+
+  // Overhead — its own line: logged hours × the overhead $/hr stamped on each day
+  html+=sec('Overhead');
+  if(!L.hours){
+    html+=`<div style="font-size:13px;color:var(--text3);">No hours logged yet.</div>`;
+  } else {
+    Object.entries(L.ohByRate).filter(([,h])=>h>0).sort((a,b)=>parseFloat(b[0])-parseFloat(a[0])).forEach(([rate,h])=>{
+      const r=parseFloat(rate);
+      const note=r===0?'cash / prevailing-wage days before 10/20 (no overhead was recorded)':(L.legacyOhHrs>0&&Math.abs(r-_csLegacyOverheadFor('2026-10-19'))<0.005?'as recorded before 10/20':'stamped when logged');
+      html+=`<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);padding:2px 0 2px 10px;">
+        <span>${(Math.round(h*10)/10).toFixed(1)} hrs × $${r.toFixed(2)}/hr <span style="color:var(--text3);">${note}</span></span>
+        <span style="font-family:'DM Mono',monospace;">${fmt(h*r)}</span>
+      </div>`;
+    });
+    html+=`<div style="display:flex;justify-content:space-between;margin-top:8px;padding-top:6px;border-top:1px solid var(--border2);font-weight:600;">
+      <span style="font-size:13px;">Total Overhead &nbsp;<span style="font-size:11px;font-weight:400;color:var(--text3);">today's rate $${L.overheadRateNow.toFixed(2)}/hr</span></span>
+      <span style="font-family:'DM Mono',monospace;">${fmt(L.overhead)}</span>
     </div>`;
   }
 
@@ -7065,7 +7201,7 @@ function renderJobCosting(){
       <span style="font-size:12px;color:var(--text2);display:flex;align-items:center;gap:6px;">
         Consumables
         <input type="number" min="0" max="100" step="1" value="${consPct}" onchange="jcSetConsumablesPct(this.value)" style="width:44px;font-size:12px;text-align:center;border:1px solid var(--border2);border-radius:4px;padding:2px 4px;background:var(--surface);color:var(--text);font-family:'DM Mono',monospace;">
-        <span style="font-size:12px;color:var(--text3);">% of materials</span>
+        <span style="font-size:12px;color:var(--text3);">% of materials · ${L.consSource==='job'?'set on this job <a href="#" onclick="jcResetConsumablesPct();return false;" style="color:var(--accent);">use default</a>':(L.consSource==='system'?'default for '+(JC_SYSTEM_LABELS[L.consSys]||'this system'):(L.consSource==='legacy'?'old default':'default'))}</span>
       </span>
       <span style="font-family:'DM Mono',monospace;font-size:12px;">${consCost>0?fmt(consCost):'—'}</span>
     </div>`;
@@ -7122,28 +7258,67 @@ function renderJobCosting(){
   }
   html+=`<button class="btn btn-ghost" onclick="jcAddCommission()" style="width:100%;margin-top:10px;border-style:dashed;">+ Add Commission</button>`;
 
-  // Summary
+  // Report details: square feet (for $/sq ft) and which subtotal group the job lands in
+  html+=sec('Report Details');
+  {
+    const scopeSq=jcScopeSqft(job), autoCat=(()=>{ const t={...job}; delete t.costCategory; return jcCostCategory(t); })();
+    const catLabel=k=>(JC_COST_CATEGORIES.find(([x])=>x===k)||[,''])[1];
+    html+=`<div style="display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;font-size:12px;color:var(--text2);">
+      <span style="display:flex;align-items:center;gap:6px;">Square feet
+        <input type="number" min="0" step="1" value="${L.sqft||''}" placeholder="${scopeSq||'sq ft'}" onchange="jcSetSqft(this.value)" style="width:80px;font-size:12px;text-align:center;border:1px solid var(--border2);border-radius:4px;padding:3px 6px;background:var(--surface);color:var(--text);font-family:'DM Mono',monospace;">
+        ${!L.sqft&&scopeSq?`<button class="btn btn-ghost" onclick="jcSetSqft(${scopeSq})" style="font-size:11px;padding:2px 8px;">Use ${scopeSq.toLocaleString()} from scope</button>`:''}
+        ${L.sqft&&effRevenue>0?`<span style="color:var(--text3);">${fmt(effRevenue/L.sqft)}/sf revenue · ${(L.netProfit<0?'-':'')+fmt(L.netProfit/L.sqft)}/sf net</span>`:''}
+      </span>
+      <span style="display:flex;align-items:center;gap:6px;">Report group
+        <select class="form-select" onchange="jcSetCostCategory(this.value)" style="font-size:12px;padding:3px 8px;width:auto;">
+          <option value="">Auto (${catLabel(autoCat)})</option>
+          ${JC_COST_CATEGORIES.map(([k,l])=>`<option value="${k}"${job.costCategory===k?' selected':''}>${l}</option>`).join('')}
+        </select>
+      </span>
+    </div>`;
+  }
+
+  // Summary: gross margin, overhead, net, break-even and the price that hits the target
   html+=sec('Summary');
-  html+=`<div style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:14px 16px;">
-    <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text2);margin-bottom:6px;"><span>${tmJob?'Billed (T&amp;M)':'Contract Value'}</span><span style="font-family:'DM Mono',monospace;">${effRevenue>0?fmt(effRevenue):'—'}</span></div>
-    <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text2);margin-bottom:6px;"><span>Labor Cost</span><span style="font-family:'DM Mono',monospace;color:var(--red);">-${fmt(totalLaborCost)}</span></div>
-    <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text2);margin-bottom:6px;"><span>Material Cost</span><span style="font-family:'DM Mono',monospace;color:var(--red);">-${fmt(totalMatCost)}</span></div>
-    ${consCost>0?`<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text2);margin-bottom:6px;"><span>Consumables (${consPct}%)</span><span style="font-family:'DM Mono',monospace;color:var(--red);">-${fmt(consCost)}</span></div>`:''}
-    ${mileageCost>0?`<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text2);margin-bottom:6px;"><span>Mileage (${totalMiles} mi)</span><span style="font-family:'DM Mono',monospace;color:var(--red);">-${fmt(mileageCost)}</span></div>`:''}
-    ${commCost>0?`<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text2);margin-bottom:6px;"><span>Commission</span><span style="font-family:'DM Mono',monospace;color:var(--red);">-${fmt(commCost)}</span></div>`:''}
-    <div style="border-top:2px solid var(--border2);padding-top:10px;margin-top:6px;display:flex;justify-content:space-between;align-items:center;">
-      <span style="font-size:14px;font-weight:700;">Gross Profit</span>
-      <span style="font-size:20px;font-weight:700;font-family:'DM Mono',monospace;color:${profitColor};">${effRevenue>0?fmt(grossProfit):'—'}</span>
+  {
+    const line=(label,val,color,bold)=>`<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text2);margin-bottom:6px;${bold?'font-weight:700;color:var(--text);':''}"><span>${label}</span><span style="font-family:'DM Mono',monospace;${color?'color:'+color+';':''}">${val}</span></div>`;
+    const sgn=n=>(n<0?'-':'')+fmt(n);
+    const netColor=L.netProfit>=0?'var(--green)':'var(--red)';
+    // Not finished yet: what gross margin does it take just to cover overhead on the scheduled hours?
+    let estNote='';
+    if(job.status!=='complete'&&effRevenue>0){
+      const estHrs=Math.max(jcEstimatedHours(job),L.hours);
+      if(estHrs>0){
+        const minGM=Math.round(estHrs*L.overheadRateNow/effRevenue*1000)/10;
+        estNote=`<div style="font-size:11.5px;color:var(--text3);margin:-2px 0 8px;">Minimum GM to break even: <b style="color:${margin>=minGM?'var(--green)':'var(--red)'};">${minGM}%</b> (est. ${Math.round(estHrs)} hrs × $${L.overheadRateNow.toFixed(2)} overhead ÷ ${fmt(effRevenue)})</div>`;
+      }
+    }
+    html+=`<div style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:14px 16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <span style="font-size:11px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;">Job P&amp;L · as recorded</span>
+        ${jcFlagBadge(L.flag)}
+      </div>
+      ${line(tmJob?'Revenue (T&amp;M billed)':'Revenue',effRevenue>0?fmt(effRevenue):'—')}
+      ${line('Direct cost <span style="font-size:11px;color:var(--text3);">labor '+fmt(totalLaborCost)+' · materials '+fmt(totalMatCost)+(consCost>0?' · consumables '+fmt(consCost):'')+(mileageCost>0?' · mileage '+fmt(mileageCost):'')+(commCost>0?' · commission '+fmt(commCost):'')+'</span>','-'+fmt(L.directCost),'var(--red)')}
+      <div style="border-top:1px solid var(--border2);margin:8px 0;"></div>
+      ${line('Gross margin',effRevenue>0?sgn(grossProfit)+' <span style="font-size:12px;">('+margin+'%)</span>':'—',profitColor,true)}
+      ${estNote}
+      ${line('Overhead <span style="font-size:11px;color:var(--text3);">'+L.hours+' hrs</span>','-'+fmt(L.overhead),'var(--red)')}
+      <div style="border-top:2px solid var(--border2);padding-top:10px;margin-top:6px;display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-size:14px;font-weight:700;">Net after overhead</span>
+        <span style="font-size:20px;font-weight:700;font-family:'DM Mono',monospace;color:${netColor};">${effRevenue>0?sgn(L.netProfit)+' <span style="font-size:14px;">('+L.netPct+'%)</span>':'—'}</span>
+      </div>
+      ${L.ownerCostPerHour>0&&effRevenue>0?line('After owner cost <span style="font-size:11px;color:var(--text3);">'+L.hours+' hrs × $'+L.ownerCostPerHour.toFixed(2)+' = '+fmt(L.ownerCost)+'</span>',sgn(L.trueNet)+' ('+L.trueNetPct+'%)',L.trueNet>=0?'var(--green)':'var(--red)'):''}
+      <div style="border-top:1px solid var(--border2);margin:8px 0;"></div>
+      ${line('Break-even price <span style="font-size:11px;color:var(--text3);">direct cost + overhead</span>',fmt(L.breakEven))}
+      ${L.priceForTarget!==null?line('Price for '+L.targetNetPct+'% net <span style="font-size:11px;color:var(--text3);">'+(L.ownerCost>0?'incl. owner cost':'')+'</span>',fmt(L.priceForTarget)):''}
     </div>
-    ${effRevenue>0?`<div style="display:flex;justify-content:space-between;margin-top:4px;">
-      <span style="font-size:12px;color:var(--text3);">Margin</span>
-      <span style="font-size:14px;font-weight:700;font-family:'DM Mono',monospace;color:${profitColor};">${margin}%</span>
-    </div>`:''}
-  </div>
-  ${(!tmJob&&revenue===0)?`<div style="font-size:12px;color:var(--text3);margin-top:10px;">💡 Set a Job Value on the Job Info tab to see profit and margin.</div>`:''}`;
+    ${(!tmJob&&revenue===0)?`<div style="font-size:12px;color:var(--text3);margin-top:10px;">💡 Set a Job Value on the Job Info tab to see profit and margin.</div>`:''}`;
+  }
 
   el.innerHTML=html;
 }
+
 
 // ── SAVE / DELETE / RESCHEDULE ────────────────────────────────────────────────
 function jcApplyLockState(job){
@@ -11910,7 +12085,7 @@ function openCrewEdit(idx){
   renderAttachmentList();
 }
 
-/// ══ BUSINESS OVERHEAD + COSTING SETTINGS ═══════════════════════════════════
+// ══ BUSINESS OVERHEAD + COSTING SETTINGS ═══════════════════════════════════
 // Since 2026-10 overhead is NOT part of anyone's labor rate. Each day-log crew entry is stamped
 // with its own direct labor rate AND the overhead $/hr in effect that day, and Job Costing shows
 // overhead as its own line (hours × stamped overhead rate). The overhead $/hr comes from the
