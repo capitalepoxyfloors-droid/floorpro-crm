@@ -307,6 +307,7 @@
     .ovh-row>*:nth-child(3){grid-column:2;}
     .ovh-row>*:nth-child(4){grid-column:1;align-self:center;}
     .ovh-row>*:nth-child(5){grid-column:2;justify-self:end;align-self:center;}
+    .ovh-row>*:nth-child(6),.ovh-row>*:nth-child(7){grid-column:1/-1!important;}
   }
   @media(max-width:760px){
     #jobs-view-toggle{display:none!important;}   /* beats the inline display:flex; 4-col board can't fit a phone */
@@ -1708,9 +1709,9 @@
       </div>
       <div class="form-row">
         <div class="form-group">
-          <label class="form-label">FUTA / SUTA (unemployment %)</label>
+          <label class="form-label">FUTA rate (%)</label>
           <div style="position:relative;">
-            <input class="form-input" id="ce-futa" type="number" min="0" step="0.01" placeholder="2.70" value="2.70" style="padding-right:26px;" oninput="calcBurden()"/>
+            <input class="form-input" id="ce-futa" type="number" min="0" step="0.01" placeholder="0.60" value="0.60" style="padding-right:26px;" oninput="calcBurden()"/>
             <span style="position:absolute;right:12px;top:50%;transform:translateY(-50%);color:var(--text3);font-size:13px;">%</span>
           </div>
         </div>
@@ -1742,34 +1743,84 @@
         <div class="form-group">
           <label class="form-label">PTO Days Per Year</label>
           <div style="position:relative;">
-            <input class="form-input" id="ce-pto-days" type="number" min="0" step="1" placeholder="0" value="0" style="padding-right:50px;" oninput="calcBurden()"/>
+            <input class="form-input" id="ce-pto-days" type="number" min="0" step="1" placeholder="0" value="0" style="padding-right:50px;" readonly title="Read-only: PTO is now covered by the utilization % in costing settings"/>
             <span style="position:absolute;right:12px;top:50%;transform:translateY(-50%);color:var(--text3);font-size:12px;">days</span>
           </div>
-          <div style="font-size:11px;color:var(--text3);margin-top:4px;">PTO is paid but no work is produced — it's a real cost</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:4px;">Read-only. Paid time off is now covered by utilization (paid hours that aren't billable), not added to the rate.</div>
         </div>
         <div class="form-group" style="display:flex;align-items:flex-end;">
           <div id="ce-pto-preview" style="padding-bottom:10px;font-size:12px;color:var(--text3);line-height:1.6;"></div>
         </div>
       </div>
 
+      <!-- Costing model fields (crew columns added 2026-10). Blank = not filled in. -->
+      <div style="font-size:11px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin:6px 0 10px;font-weight:600;">Direct Labor Rate — Yearly Costs</div>
+      <div style="font-size:11.5px;color:var(--text3);margin:-4px 0 10px;line-height:1.5;">Fill these in to cost this person with the direct-rate model. Leave all of them blank to keep the old burden math. A blank wage base means no cap.</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">FUTA wage base ($/yr)</label>
+          <input class="form-input" id="ce-futa-base" type="number" min="0" step="1" placeholder="7000" oninput="calcBurden()"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">SUTA rate (%)</label>
+          <div style="position:relative;">
+            <input class="form-input" id="ce-suta" type="number" min="0" step="0.001" placeholder="1.848" style="padding-right:26px;" oninput="calcBurden()"/>
+            <span style="position:absolute;right:12px;top:50%;transform:translateY(-50%);color:var(--text3);font-size:13px;">%</span>
+          </div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">SUTA wage base ($/yr)</label>
+          <input class="form-input" id="ce-suta-base" type="number" min="0" step="1" placeholder="9000" oninput="calcBurden()"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">401(k) match (% of wages)</label>
+          <div style="position:relative;">
+            <input class="form-input" id="ce-k401" type="number" min="0" step="0.01" placeholder="4" style="padding-right:26px;" oninput="calcBurden()"/>
+            <span style="position:absolute;right:12px;top:50%;transform:translateY(-50%);color:var(--text3);font-size:13px;">%</span>
+          </div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Fixed fees ($/yr)</label>
+          <input class="form-input" id="ce-fixed-fees" type="number" min="0" step="0.01" placeholder="e.g. 830" oninput="calcBurden()"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Clothing ($/yr)</label>
+          <input class="form-input" id="ce-clothing" type="number" min="0" step="0.01" placeholder="e.g. 204" oninput="calcBurden()"/>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Field rate override ($/hr)</label>
+          <input class="form-input" id="ce-rate-override" type="number" min="0" step="0.01" placeholder="blank = use the math" oninput="calcBurden()"/>
+          <div style="font-size:11px;color:var(--text3);margin-top:4px;">Used instead of the math on every hour this person logs (e.g. the owner's field hours).</div>
+        </div>
+        <div class="form-group" style="display:flex;align-items:flex-start;padding-top:24px;">
+          <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px;line-height:1.4;"><input type="checkbox" id="ce-is-owner" onchange="calcBurden()" style="margin-top:3px;accent-color:var(--accent);"> <span>Owner<br><span style="font-size:11px;color:var(--text3);">Left out of the overhead divisor.</span></span></label>
+        </div>
+      </div>
+
       <!-- Results -->
       <div id="ce-results" style="display:none;margin-top:4px;">
         <div style="border-top:1px solid var(--border2);margin:16px 0 14px;"></div>
-        <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:10px;">📊 True Burdened Labor Cost</div>
+        <div id="ce-results-title" style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:10px;">📊 Direct Labor Rate</div>
         <div style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);overflow:hidden;">
           <div id="ce-breakdown" style="font-size:12.5px;"></div>
           <div style="display:grid;grid-template-columns:1fr 1fr;border-top:2px solid var(--accent);">
             <div style="padding:12px 16px;border-right:1px solid var(--border2);">
-              <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Burdened Hourly</div>
+              <div id="ce-burdened-hr-label" style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Direct Rate</div>
               <div id="ce-burdened-hr" style="font-size:22px;font-weight:700;color:var(--accent);font-family:'DM Mono',monospace;"></div>
             </div>
             <div style="padding:12px 16px;">
-              <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Burdened Weekly</div>
+              <div id="ce-burdened-wk-label" style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Overtime Rate</div>
               <div id="ce-burdened-wk" style="font-size:22px;font-weight:700;color:var(--accent);font-family:'DM Mono',monospace;"></div>
             </div>
           </div>
           <div style="padding:10px 16px;background:var(--surface3);border-top:1px solid var(--border2);">
-            <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px;">Total Burden Rate</div>
+            <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px;">With Overhead (for reference)</div>
             <div id="ce-burden-pct" style="font-size:13px;font-weight:600;color:var(--text2);"></div>
           </div>
         </div>
@@ -2162,6 +2213,7 @@ const AUDIT_ACTION_META={
   reference_updated:{icon:'✎',label:'Reference entry updated',color:'var(--blue)'},
   reference_deleted:{icon:'✖',label:'Reference entry deleted',color:'var(--red)'},
   settings_changed:{icon:'⚙️',label:'Settings changed',color:'var(--blue)'},
+  costing_settings_changed:{icon:'💲',label:'Costing settings changed',color:'var(--blue)'},
   pin_changed:{icon:'🔒',label:'PIN/access code changed',color:'var(--blue)'},
   pto_request_submitted:{icon:'✋',label:'PTO request submitted',color:'var(--green)'},
   pto_request_updated:{icon:'✎',label:'PTO request updated',color:'var(--blue)'},
@@ -2901,9 +2953,20 @@ async function loadMaterials(){
   }
 }
 
+// Crew costing columns added 2026-10 (numeric, NULL = not filled in). Every one must be in BOTH
+// dbSaveCrew's row and loadCrew's mapping: the save writes the whole row from memory, so a field
+// missing from the load would be blanked on the next save.
+const CREW_COST_COLS=[['futaWageBase','futa_wage_base'],['sutaRate','suta_rate'],['sutaWageBase','suta_wage_base'],['k401MatchPct','k401_match_pct'],['fixedFeesYr','fixed_fees_yr'],['clothingYr','clothing_yr'],['fieldRateOverride','field_rate_override']];
+function _crewNumOrNull(v){
+  if(v===null||v===undefined||String(v).trim()==='') return null;
+  const n=parseFloat(v);
+  return isNaN(n)?null:n;
+}
 async function dbSaveCrew(c,idx){
   const isNew=!c.db_id;
-  const row={full_name:c.full,first_name:c.name,last_name:c.full.split(' ').slice(1).join(' '),initials:c.initials,color:c.color,role:c.role||'',phone:c.phone||'',specialties:JSON.stringify(c.specialties||[]),hourly:c.hourly||'',hours:c.hours||'40',ss:c.ss||'6.20',medicare:c.medicare||'1.45',futa:c.futa||'2.70',wc:c.wc||'10.00',gl:c.gl||'0',benefits:c.benefits||'0',pto_days:c.ptoDays||'0',sort_order:idx};
+  const row={full_name:c.full,first_name:c.name,last_name:c.full.split(' ').slice(1).join(' '),initials:c.initials,color:c.color,role:c.role||'',phone:c.phone||'',specialties:JSON.stringify(c.specialties||[]),hourly:c.hourly||'',hours:c.hours||'40',ss:c.ss||'6.20',medicare:c.medicare||'1.45',futa:c.futa||'0.60',wc:c.wc||'10.00',gl:c.gl||'0',benefits:c.benefits||'0',pto_days:c.ptoDays||'0',sort_order:idx};
+  CREW_COST_COLS.forEach(([k,col])=>{ row[col]=_crewNumOrNull(c[k]); });
+  row.is_owner=c.isOwner===true;
   if(c.db_id){const ok=await sb.update('crew',c.db_id,row);if(!ok){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}}
   else{const res=await sb.insert('crew',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}CREW_DATA[idx].db_id=res[0].id;}
   logAudit(isNew?'crew_created':'crew_updated',c.full||'Crew member','');
@@ -2917,7 +2980,7 @@ async function loadCrew(){
   if(!rows.length) rows=await sb.get('crew','order=sort_order.asc'); // one retry on a failed/empty read
   if(!rows.length) console.error('loadCrew: crew table did not load — schedule auto-sync paused until it does');
   _crewLoaded=rows.length>0;
-  if(rows.length>0){rows.forEach((r,i)=>{if(CREW_DATA[i]){Object.assign(CREW_DATA[i],{db_id:r.id,full:r.full_name,name:r.first_name,initials:r.initials,color:r.color,role:r.role,phone:r.phone,specialties:JSON.parse(r.specialties||'[]'),hourly:r.hourly,hours:r.hours,ss:r.ss,medicare:r.medicare,futa:r.futa,wc:r.wc,gl:r.gl,benefits:r.benefits,ptoDays:r.pto_days});CREW[i].name=r.first_name;CREW[i].full=r.full_name;CREW[i].color=r.color;}});}
+  if(rows.length>0){rows.forEach((r,i)=>{if(CREW_DATA[i]){Object.assign(CREW_DATA[i],{db_id:r.id,full:r.full_name,name:r.first_name,initials:r.initials,color:r.color,role:r.role,phone:r.phone,specialties:JSON.parse(r.specialties||'[]'),hourly:r.hourly,hours:r.hours,ss:r.ss,medicare:r.medicare,futa:r.futa,wc:r.wc,gl:r.gl,benefits:r.benefits,ptoDays:r.pto_days,isOwner:r.is_owner===true});CREW_COST_COLS.forEach(([k,col])=>{CREW_DATA[i][k]=_crewNumOrNull(r[col]);});CREW[i].name=r.first_name;CREW[i].full=r.full_name;CREW[i].color=r.color;}});}
 }
 
 async function dbSavePTOEntry(crewIdx,wOff,dIdx,label,dateStr,partial,fromTime,toTime){
@@ -3239,7 +3302,7 @@ async function deduplicateSlotsByJobRecord(){
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
   try{
-    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadLeadDupAcks(),loadMaterials(),loadCrew(),loadCrewInactive(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadNavOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadMileageRates(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs(),loadMaterialDocs(),loadMaterialNotes(),loadJobPhotos(),loadJobDocs(),loadSalesScopePhotos(),loadPhotoArchive()]);
+    const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadLeadDupAcks(),loadMaterials(),loadCrew(),loadCrewInactive(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadNavOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadCostingSettings(),loadMileageRates(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs(),loadMaterialDocs(),loadMaterialNotes(),loadJobPhotos(),loadJobDocs(),loadSalesScopePhotos(),loadPhotoArchive()]);
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
     if(_failedLoads.length>0) console.error('Some data failed to load:',_failedLoads.map(f=>f.reason));
     if(_failedLoads.length===_loadResults.length){showSyncStatus('⚠ Working offline','var(--red)');return;}
@@ -4140,6 +4203,9 @@ async function _saveJobRecordsNow(){
       return false;
     }
   }
+  // Stamp today's rates onto any day-log entry (direct-rate era, up to today) still missing them.
+  // Done on the merged copy so it can't overwrite another device's edit; not audit-logged.
+  try{ _jcStampMissingRates(); }catch(e){ console.error('rate stamping skipped:',e); }
   let wrote;
   try{ wrote=await sb.setKV('job_records',JSON.stringify(JOB_RECORDS)); }
   catch(e){
@@ -5572,11 +5638,11 @@ function jcLogPickCrewMember(ds,idx,sel){
   const c=job.dayLogs[ds].crewPresent[idx]; if(!c) return;
   const v=sel.value;
   if(v==='custom'){
-    c.crewIdx=-1; c.name=''; c.burdenedRate='';
+    c.crewIdx=-1; c.name=''; jcStampEntryRates(c,ds); // clears every stamped rate
   } else {
     const ci=parseInt(v);
     const cd=CREW_DATA[ci];
-    if(cd){ c.crewIdx=ci; c.name=cd.full; c.burdenedRate=calcBurdenForCrew(cd)||''; }
+    if(cd){ c.crewIdx=ci; c.name=cd.full; jcStampEntryRates(c,ds); } // an explicit pick always re-stamps
   }
   jcRenderDayCrew(ds);
   saveJobRecords();
@@ -6023,47 +6089,140 @@ function jcHours(key,ds){
   const el=document.getElementById('jch-'+key); if(el) el.textContent=log.fullDay?'8.0 hrs':(log.startTime&&log.endTime?jcCalcHrs(log.startTime,log.endTime):'—');
 }
 
-// Returns the best available burdened rate for a daily-log crew entry.
-// Overtime (1.5×) and cash-wages can be set PER DAY (log.overtimeWage / log.cashWages);
-// when a day hasn't overridden them it falls back to the job-level default.
-// Tries: prevailing wage override → cash wages (base hourly, no burden) → the rate LOCKED IN on this
-// day's entry (captured when the work was logged → effective-dated, so a later wage change doesn't
-// re-cost past days) → live CREW_DATA calc (entries with no stored rate) → base hourly → 0
-function jcGetBurdenedRate(c, job, log){
-  const ot   = (log&&log.overtimeWage!==undefined) ? !!log.overtimeWage : !!(job&&job.overtimeWage);
-  const cashWages = (log&&log.cashWages!==undefined) ? !!log.cashWages : !!(job&&job.cashWages);
-  const mult = ot?1.5:1;
-  // Prevailing wage override — same flat rate for every crew member on this job
-  if(job && job.prevailingWage){
+/// ── DAY-LOG RATE STAMPS (effective-dated; never rewritten) ──
+// Each crew entry on a day log carries the rates in effect on that WORK date, so a later raise or
+// a new costing rate set never re-costs past days:
+//   directRate   labor $/hr (calcDirectRate, or the old burden math for someone not set up yet)
+//   otRate       labor $/hr on a 1.5× overtime/weekend day
+//   baseRate     base pay $/hr (cash days)
+//   statMult     1 + SS + Medicare + WC (prevailing wage / "statutory" cash days)
+//   overheadRate overhead $/hr (its own Job Costing line, not part of labor)
+//   rateVersion  id of the costing rate set used; fieldOverride true when the person's override was used
+//   burdenedRate kept = direct + overhead, so older code paths still see an all-in rate.
+// Days before the direct-rate model only get burdenedRate, exactly like the old code stamped it.
+const JC_RATE_STAMP_KEYS=['directRate','otRate','baseRate','statMult','overheadRate','rateVersion','fieldOverride'];
+function jcStampEntryRates(c,ds){
+  JC_RATE_STAMP_KEYS.forEach(k=>delete c[k]);
+  const cd=(c&&c.crewIdx>=0)?CREW_DATA[c.crewIdx]:null;
+  if(!cd){ c.burdenedRate=''; return; }
+  const {entry,version}=costingSetFor(ds);
+  if(!_costingSettingsLoadOk||!_csIsModel(entry)){
+    // Settings not loaded yet (stamped later, on save), or a day before the direct-rate model:
+    // the old stamp (old burden math + the overhead old code added on top).
+    const b=parseFloat(calcBurdenForCrew(cd));
+    c.burdenedRate=b>0?(b+_csLegacyOverheadFor(ds)).toFixed(2):'';
+    return;
+  }
+  const r=crewLaborRates(cd,entry);
+  if(!r){ c.burdenedRate=''; return; }
+  const oh=_r2(overheadPerHour(entry));
+  c.directRate=r.direct; c.otRate=r.ot; c.baseRate=_r2(r.base); c.statMult=Math.round(r.statMult*1e4)/1e4;
+  c.overheadRate=oh; c.rateVersion=version;
+  if(r.override) c.fieldOverride=true;
+  c.burdenedRate=(r.direct+oh).toFixed(2);
+}
+// Save-time pass: stamp any entry that is missing directRate on a work day (up to today) covered
+// by the direct-rate model. Never touches an entry that already has directRate, and never a day
+// before the model (those keep their recorded burdenedRate). Runs on the merged copy right before
+// the write, so it can't undo another device's edit. Returns how many entries it stamped.
+function _jcStampMissingRates(){
+  if(!_crewLoaded||!_costingSettingsLoadOk) return 0;
+  const today=_csToday(); let n=0;
+  JOB_RECORDS.forEach(job=>{
+    Object.entries(job.dayLogs||{}).forEach(([ds,log])=>{
+      if(!log||!Array.isArray(log.crewPresent)||ds>today) return;
+      if(!_csIsModel(costingSetFor(ds).entry)) return;
+      log.crewPresent.forEach(c=>{
+        if(!c||!(c.crewIdx>=0)||!CREW_DATA[c.crewIdx]||parseFloat(c.directRate)>0) return;
+        jcStampEntryRates(c,ds);
+        if(parseFloat(c.directRate)>0) n++;
+      });
+    });
+  });
+  return n;
+}
+
+// Labor and overhead $/hr for one daily-log crew entry. mode 'recorded' (default) uses what was
+// stamped on the entry; 'recost' prices it at today's rates (in memory only, nothing is saved).
+// Overtime (1.5×) and cash can be set PER DAY (log.overtimeWage / log.cashWages); a day that hasn't
+// overridden them falls back to the job-level default.
+// Labor precedence: prevailing wage → cash → stamped directRate → legacy (stored burdenedRate minus
+// the overhead old code baked in) → live rate (no stamp at all) → 0.
+// Returns {labor, overhead, kind:'pw'|'cash'|'direct'|'legacy'|'live'|'none', ot, cash}.
+function jcEntryRate(c,job,log,ds,mode){
+  const recost=mode==='recost';
+  const ot=(log&&log.overtimeWage!==undefined)?!!log.overtimeWage:!!(job&&job.overtimeWage);
+  const cash=(log&&log.cashWages!==undefined)?!!log.cashWages:!!(job&&job.cashWages);
+  const mult=ot?1.5:1;
+  const cd=(c&&c.crewIdx>=0)?CREW_DATA[c.crewIdx]:null;
+  const era=costingSetFor(ds).entry, modelEra=_csIsModel(era);
+  const cur=costingCurrentModel().entry;
+  const stamped=!recost&&parseFloat(c.directRate)>0;
+  const liveSet=recost?cur:(modelEra?era:cur);
+  const live=(!stamped&&cd)?crewLaborRates(cd,liveSet):null;
+  const legacyOH=_csLegacyOverheadFor(ds);
+  // Overhead $/hr: today's rate when re-costing; else the stamped rate; else the rate set in effect
+  // that day. A day before the model had no separate overhead, so only entries whose stored rate
+  // had overhead baked in (the 'legacy' branch below) carry it — cash/PW days never did.
+  const stampedOH=(c&&c.overheadRate!==undefined&&c.overheadRate!==''&&!isNaN(parseFloat(c.overheadRate)))?parseFloat(c.overheadRate):null;
+  const oh=recost?overheadPerHour(cur):(stampedOH!==null?stampedOH:(modelEra?overheadPerHour(era):0));
+  const statMult=(stamped&&parseFloat(c.statMult)>0)?parseFloat(c.statMult):(live?live.statMult:(cd?_crewStatMult(cd):1));
+  const override=stamped?(c.fieldOverride?parseFloat(c.directRate):null):(live&&live.override);
+  const out=(labor,overhead,kind)=>({labor:labor>0?labor:0,overhead:overhead>0?overhead:0,kind,ot,cash});
+  // 1. Prevailing wage — same flat rate for every crew member on this job, plus employer SS/Medicare/WC
+  //    when job.prevailingWageBurden is on (new PW jobs). Old PW jobs stay unburdened as recorded;
+  //    re-costing burdens them unless the job says not to.
+  if(job&&job.prevailingWage){
     const pw=parseFloat(job.prevailingWageRate);
-    if(pw>0) return pw*mult;
-  }
-  // Cash wages — base hourly only, no taxes/insurance/burden
-  if(cashWages){
-    if(c.crewIdx>=0&&CREW_DATA[c.crewIdx]){
-      const base=parseFloat(CREW_DATA[c.crewIdx].hourly);
-      if(base>0) return base*mult;
+    if(pw>0){
+      const burden=recost?job.prevailingWageBurden!==false:job.prevailingWageBurden===true;
+      return out(pw*(burden?statMult:1)*mult,oh,'pw');
     }
-    return 0;
   }
-  // Use the rate STORED on this day's crew entry — it's locked in when the work is logged, so
-  // changing a crew member's wage later does NOT retroactively re-cost
-  // past jobs; days logged after the change pick up the new rate. Fall back to the live CREW_DATA
-  // calc only when there's no stored rate (a brand-new entry / before any rate was captured).
-  const stored=parseFloat(c.burdenedRate);
-  if(stored>0) return stored*mult;
-  if(c.crewIdx>=0&&CREW_DATA[c.crewIdx]){
-    const live=parseFloat(calcBurdenForCrew(CREW_DATA[c.crewIdx]));
-    if(live>0) return live*mult;
-    const base=parseFloat(CREW_DATA[c.crewIdx].hourly);
-    if(base>0) return base*mult;
+  // 2. Cash wages — base pay (plus SS/Medicare/WC if the rate set says "statutory"). The owner's
+  //    field rate override applies on cash and overtime days too (he isn't paid cash or OT).
+  if(cash){
+    if(override>0) return out(override,oh,'cash');
+    const base=(stamped&&parseFloat(c.baseRate)>0)?parseFloat(c.baseRate):(cd?(parseFloat(cd.hourly)||0):0);
+    const set=recost?cur:(modelEra?era:null);
+    const statutory=!!set&&set.cashDayBurden==='statutory';
+    return out(base*(statutory?statMult:1)*mult,oh,'cash');
   }
-  return 0;
+  // 3. Stamped direct rate (locked in when the day was logged)
+  if(stamped){
+    const d=parseFloat(c.directRate), o=parseFloat(c.otRate);
+    return out(ot?(o>0?o:d*1.5):d,oh,'direct');
+  }
+  // 4. Legacy: the stored all-in burdenedRate, minus the overhead old code had added. Labor +
+  //    overhead here equals exactly what this day cost before the split (OT included).
+  const br=parseFloat(c&&c.burdenedRate);
+  if(!recost&&br>0) return out(br*mult-legacyOH,legacyOH,'legacy');
+  // 5. Live rate for an entry with nothing stored
+  if(live){
+    if(!recost&&!modelEra){ const b=live.direct+legacyOH; return out(b*mult-legacyOH,legacyOH,'live'); } // same as the old live calc
+    return out(ot?live.ot:live.direct,oh,'live');
+  }
+  if(cd){ const base=parseFloat(cd.hourly)||0; if(base>0) return out(base*mult,recost||modelEra?oh:0,'live'); }
+  return out(0,recost||modelEra?oh:0,'none');
+}
+// All-in $/hr (labor + overhead) for a daily-log crew entry, as recorded. ds = the log's work date.
+function jcGetBurdenedRate(c,job,log,ds){
+  const r=jcEntryRate(c,job,log,ds,'recorded');
+  return r.labor+r.overhead;
 }
 
 async function jcSetPrevailingWage(checked){
   const job=getJobRecord(_jcId); if(!job) return;
   job.prevailingWage=!!checked;
+  // A job made prevailing-wage from now on adds employer SS/Medicare/WC on top of the PW rate by
+  // default. Jobs that were already PW have no flag and stay unburdened, as recorded.
+  if(checked&&job.prevailingWageBurden===undefined) job.prevailingWageBurden=true;
+  await saveJobRecords();
+  renderJobCosting();
+}
+async function jcSetPrevailingWageBurden(checked){
+  const job=getJobRecord(_jcId); if(!job) return;
+  job.prevailingWageBurden=!!checked;
   await saveJobRecords();
   renderJobCosting();
 }
@@ -6192,7 +6351,7 @@ function renderJobCostingPage(){
           const hrs=log.fullDay?8:rows.reduce((s,c)=>s+(parseFloat(jcGetCrewMemberHrs(c,log))||0),0);
           if(hrs>0){
             totalHrs+=hrs;
-            const rate=jcGetBurdenedRate(rows[0],job,log);
+            const rate=jcGetBurdenedRate(rows[0],job,log,ds);
             laborCost+=hrs*rate;
           }
         });
@@ -6637,7 +6796,7 @@ function renderJobCosting(){
       const hrs=log.fullDay?8:rows.reduce((s,c)=>s+(parseFloat(jcGetCrewMemberHrs(c,log))||0),0);
       if(hrs<=0) return;
       const c=rows[0];
-      const rate=jcGetBurdenedRate(c,job,log);
+      const rate=jcGetBurdenedRate(c,job,log,ds);
       const cost=Math.round(hrs*rate*100)/100;
       totalLaborCost+=cost;
       totalHours+=hrs;
@@ -6790,7 +6949,11 @@ function renderJobCosting(){
         onchange="jcSetPrevailingWageRate(this.value)"
         style="width:80px;font-size:13px;text-align:center;border:1px solid rgba(234,179,8,.4);border-radius:4px;padding:3px 6px;background:var(--surface);color:var(--text);font-family:'DM Mono',monospace;">
       <span style="font-size:12px;color:var(--text3);">/hr &nbsp;·&nbsp; overrides all individual crew rates</span>
-    </div>`:`<div style="font-size:11px;color:var(--text3);margin-top:5px;padding-left:26px;">Check to override all crew wages with a single prevailing wage rate for this job.</div>`}
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:7px;padding-left:26px;font-size:12px;color:var(--text2);cursor:pointer;user-select:none;">
+      <input type="checkbox" ${job.prevailingWageBurden===true?'checked':''} onchange="jcSetPrevailingWageBurden(this.checked)" style="accent-color:#f59e0b;cursor:pointer;">
+      Add employer SS, Medicare &amp; workers' comp to the PW rate
+    </label>`:`<div style="font-size:11px;color:var(--text3);margin-top:5px;padding-left:26px;">Check to override all crew wages with a single prevailing wage rate for this job.</div>`}
   </div>`;
 
   // Overtime / Weekend Wage Override
@@ -11561,19 +11724,19 @@ function openModal(id){
 const CREW_DATA = [
   { name:'Seth',    full:'Seth West',       initials:'SW', color:'#6aabff', role:'Installer', phone:'',
     specialties:['Concrete Overlay','Polished Concrete'],
-    hourly:'', hours:'40', ss:'6.20', medicare:'1.45', futa:'2.70', wc:'10.00', gl:'3.00', benefits:'0', ptoDays:'0' },
+    hourly:'', hours:'40', ss:'6.20', medicare:'1.45', futa:'0.60', wc:'10.00', gl:'3.00', benefits:'0', ptoDays:'0' },
   { name:'Brendon', full:'Brendon Bennett', initials:'BB', color:'#3ddc84', role:'Installer', phone:'',
     specialties:['Epoxy Coating','Concrete Overlay'],
-    hourly:'', hours:'40', ss:'6.20', medicare:'1.45', futa:'2.70', wc:'10.00', gl:'3.00', benefits:'0', ptoDays:'0' },
+    hourly:'', hours:'40', ss:'6.20', medicare:'1.45', futa:'0.60', wc:'10.00', gl:'3.00', benefits:'0', ptoDays:'0' },
   { name:'Will',    full:'Will Bradford',   initials:'WB', color:'#f5d020', role:'Owner / Installer', phone:'',
     specialties:['Epoxy Coating','Polished Concrete','Concrete Overlay'],
-    hourly:'', hours:'40', ss:'6.20', medicare:'1.45', futa:'2.70', wc:'10.00', gl:'3.00', benefits:'0', ptoDays:'0' },
+    hourly:'', hours:'40', ss:'6.20', medicare:'1.45', futa:'0.60', wc:'10.00', gl:'3.00', benefits:'0', ptoDays:'0' },
   { name:'Cody',    full:'Cody Faulkner',   initials:'CF', color:'#ff9f4a', role:'Installer', phone:'',
     specialties:['Polished Concrete','Epoxy Coating'],
-    hourly:'', hours:'40', ss:'6.20', medicare:'1.45', futa:'2.70', wc:'10.00', gl:'3.00', benefits:'0', ptoDays:'0' },
+    hourly:'', hours:'40', ss:'6.20', medicare:'1.45', futa:'0.60', wc:'10.00', gl:'3.00', benefits:'0', ptoDays:'0' },
   { name:'Hunter',  full:'Hunter Schuler',  initials:'HS', color:'#c084fc', role:'Installer', phone:'',
     specialties:['Epoxy Coating','Polished Concrete'],
-    hourly:'', hours:'40', ss:'6.20', medicare:'1.45', futa:'2.70', wc:'10.00', gl:'3.00', benefits:'0', ptoDays:'0' },
+    hourly:'', hours:'40', ss:'6.20', medicare:'1.45', futa:'0.60', wc:'10.00', gl:'3.00', benefits:'0', ptoDays:'0' },
 ];
 
 // Keep CREW in sync (used by scheduler)
@@ -11669,13 +11832,15 @@ function renderCrewCards(){
   if(!wrap) return;
   wrap.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;">' +
     CREW_DATA.map((c,i)=>{
-      const burdenedHr = calcBurdenForCrew(c);
-      const burdenedDisplay = burdenedHr
+      const _rates = crewLaborRates(c, costingCurrentModel().entry);
+      const _ohr = overheadPerHour();
+      const burdenedDisplay = _rates
         ? `<div style="margin-top:10px;padding:10px 12px;background:var(--surface2);border-radius:var(--radius-sm);border:1px solid var(--border2);">
-            <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Burdened Rate</div>
-            <div style="display:flex;gap:16px;">
-              <div><div style="font-size:11px;color:var(--text3);">Base</div><div style="font-size:14px;font-weight:700;color:var(--text2);font-family:'DM Mono',monospace;">$${parseFloat(c.hourly).toFixed(2)}/hr</div></div>
-              <div><div style="font-size:11px;color:var(--text3);">True Cost</div><div style="font-size:14px;font-weight:700;color:var(--accent);font-family:'DM Mono',monospace;">$${burdenedHr}/hr</div></div>
+            <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Labor Rate${_rates.model==='fallback'?' · old math':''}</div>
+            <div style="display:flex;gap:16px;flex-wrap:wrap;">
+              <div><div style="font-size:11px;color:var(--text3);">Base</div><div style="font-size:14px;font-weight:700;color:var(--text2);font-family:'DM Mono',monospace;">$${(parseFloat(c.hourly)||0).toFixed(2)}/hr</div></div>
+              <div><div style="font-size:11px;color:var(--text3);">Direct${_rates.override?' (override)':''}</div><div style="font-size:14px;font-weight:700;color:var(--accent);font-family:'DM Mono',monospace;">$${_rates.direct.toFixed(2)}/hr</div></div>
+              <div><div style="font-size:11px;color:var(--text3);">+ Overhead</div><div style="font-size:14px;font-weight:700;color:var(--text2);font-family:'DM Mono',monospace;">$${(_rates.direct+_ohr).toFixed(2)}/hr</div></div>
             </div>
            </div>`
         : `<div style="margin-top:10px;font-size:11.5px;color:var(--text3);">Tap Edit to enter pay info</div>`;
@@ -11714,11 +11879,13 @@ function openCrewEdit(idx){
   document.getElementById('ce-hours').value   = c.hours    || '40';
   document.getElementById('ce-ss').value      = c.ss       || '6.20';
   document.getElementById('ce-medicare').value= c.medicare || '1.45';
-  document.getElementById('ce-futa').value    = c.futa     || '2.70';
+  document.getElementById('ce-futa').value    = c.futa     || '0.60';
   document.getElementById('ce-wc').value      = c.wc       || '10.00';
   document.getElementById('ce-gl').value      = c.gl       || '0';
   document.getElementById('ce-benefits').value= c.benefits || '0';
   document.getElementById('ce-pto-days').value= c.ptoDays  || '0';
+  CE_COST_INPUTS.forEach(([k,id])=>{ const v=_crewNumOrNull(c[k]); document.getElementById(id).value = v===null?'':String(v); });
+  document.getElementById('ce-is-owner').checked = c.isOwner===true;
   ['epoxy','polished','overlay','metallic','flake','prep'].forEach(key=>{
     const map={'epoxy':'Epoxy Coating','polished':'Polished Concrete','overlay':'Concrete Overlay','metallic':'Metallic Epoxy','flake':'Epoxy Flake','prep':'Surface Prep'};
     document.getElementById('ce-sp-'+key).checked = c.specialties.includes(map[key]);
@@ -11743,12 +11910,14 @@ function openCrewEdit(idx){
   renderAttachmentList();
 }
 
-// ══ BUSINESS OVERHEAD ══════════════════════════════════════════════════════
-// Annual overhead expenses (GL insurance, rent, vehicles, software, etc.) are
-// summed, then divided by the total annual crew labor hours to produce an
-// overhead $/hr that is folded into every crew member's burdened labor rate
-// (see calcBurdenForCrew / calcBurden). Stored in KV 'overhead'.
-let OVERHEAD = { items: [] };  // items: [{id, name, amount, period:'yr'|'mo'}]
+/// ══ BUSINESS OVERHEAD + COSTING SETTINGS ═══════════════════════════════════
+// Since 2026-10 overhead is NOT part of anyone's labor rate. Each day-log crew entry is stamped
+// with its own direct labor rate AND the overhead $/hr in effect that day, and Job Costing shows
+// overhead as its own line (hours × stamped overhead rate). The overhead $/hr comes from the
+// effective-dated KV 'costing_settings': pool ÷ (non-owner active crew × paid hours × utilization).
+// OVERHEAD.items (KV 'overhead') is the itemized list behind that pool — shown next to it on the
+// Overhead page, but the rate itself uses the pool saved in costing settings.
+let OVERHEAD = { items: [] };  // items: [{id, name, amount, period:'yr'|'mo', fixed?:bool, note?:string}]
 
 async function loadOverhead(){
   const v = await sb.getKV('overhead');
@@ -11758,55 +11927,155 @@ async function saveOverhead(){ OVERHEAD = await _saveKVMerged('overhead', OVERHE
 
 function overheadFmt(n){ return '$'+(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 
+// Total of the itemized overhead list ($/yr). Not the rate's pool — see overheadPool().
 function overheadAnnualTotal(){
   return (OVERHEAD.items||[]).reduce((s,it)=>{
     const amt=parseFloat(it.amount)||0;
     return s + (it.period==='mo' ? amt*12 : amt);
   },0);
 }
-// Σ over ACTIVE crew (with a real wage) of weekly hours × 52 — the hours that absorb overhead.
-// Inactive crew aren't working, so counting their hours would spread overhead too thin and
-// understate everyone's burdened rate.
-function _overheadCrew(){ return (CREW_DATA||[]).filter((c,i)=>(parseFloat(c.hourly)||0)>0&&!isCrewInactive(i)); }
-function overheadAnnualLaborHours(){
-  return _overheadCrew().reduce((s,c)=>{
-    return s + (parseFloat(c.hours)||40)*52;
-  },0);
+
+// ── Costing settings: KV 'costing_settings' = {history:[entry, ...]}, APPEND-ONLY ──
+// The entry used for a day log is the latest one whose `effective` is on or before that WORK date
+// (same date twice: the later one in the list wins). Entries are never edited; a change is a new
+// entry. A "legacy" entry (only legacyOverheadPerHour) covers days logged before the direct-rate
+// model: their stored burdenedRate had that much overhead per hour baked in. Owner/office only
+// (the settings row policy lets crew read it but not write it).
+const COSTING_SETTINGS_SEED={history:[
+  {id:'cs_legacy',effective:'1900-01-01',legacyOverheadPerHour:4.83},
+  {id:'cs_20261020',effective:'2026-10-20',utilization:0.90,paidHoursPerYear:2080,
+   overheadPool:86014,excludeOwnerFromDivisor:true,
+   consumablesDefaultPct:19,
+   consumablesBySystem:{flake:16,epoxy:16,metallic:16,overlay:16,clean_seal:16,polish:51},
+   ownerCostPerHour:17.25,targetNetPct:15,cashDayBurden:'none'}
+]};
+let COSTING_SETTINGS=_jrClone(COSTING_SETTINGS_SEED);
+// True only once the saved history was read (or confirmed missing). Rates are never stamped onto
+// day logs from a guess: a failed read leaves this false.
+let _costingSettingsLoadOk=false;
+function _csToday(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function _r2(n){ return Math.round((parseFloat(n)||0)*100)/100; }
+async function loadCostingSettings(){
+  _costingSettingsLoadOk=false;
+  const read=await sb.readKV('costing_settings');
+  if(!read.ok){ console.error('loadCostingSettings: read failed — day-log rates will not be stamped until it loads'); return; }
+  if(read.value!=null){
+    try{
+      const o=JSON.parse(read.value);
+      if(!o||!Array.isArray(o.history)||!o.history.length) throw new Error('costing_settings has no history');
+      COSTING_SETTINGS={history:o.history};
+    }catch(e){ console.error('loadCostingSettings: saved value is not usable — not stamping rates:',e); return; }
+    _kvBaselines['costing_settings']=_jrClone(COSTING_SETTINGS);
+    _costingSettingsLoadOk=true;
+    return;
+  }
+  // No row yet: start from the seed, and have owner/office save it so every device shares one history.
+  COSTING_SETTINGS=_jrClone(COSTING_SETTINGS_SEED);
+  _costingSettingsLoadOk=true;
+  if(_isOwnerSession()) await saveCostingSettings('Starting rate sets saved (legacy overhead $4.83/hr; direct-rate model from 2026-10-20)');
 }
-function overheadPerHour(){
-  const hrs=overheadAnnualLaborHours();
-  return hrs>0 ? overheadAnnualTotal()/hrs : 0;
+async function saveCostingSettings(summary){
+  COSTING_SETTINGS=await _saveKVMerged('costing_settings',COSTING_SETTINGS);
+  if(!_kvSaveOk['costing_settings']) return false;
+  logAudit('costing_settings_changed','Costing settings',summary||'');
+  return true;
+}
+function _csIsModel(e){ return !!e && parseFloat(e.paidHoursPerYear)>0 && parseFloat(e.utilization)>0; }
+function _csSorted(){
+  return (COSTING_SETTINGS.history||[]).map((e,i)=>({e,i}))
+    .filter(x=>x.e&&typeof x.e.effective==='string'&&x.e.effective)
+    .sort((a,b)=>a.e.effective.localeCompare(b.e.effective)||a.i-b.i);
+}
+function _csVersion(x){ return x?(x.e.id||(x.e.effective+'#'+x.i)):''; }
+// The rate set in effect on work date ds (default today): {entry, version}.
+function costingSetFor(ds){
+  const d=ds||_csToday(), all=_csSorted();
+  let hit=null;
+  for(const x of all){ if(x.e.effective<=d) hit=x; else break; }
+  if(!hit) hit=all[0]||null;
+  return hit?{entry:hit.e,version:_csVersion(hit)}:{entry:{},version:''};
+}
+// The direct-rate model set in effect today (or the first one, if it only starts later).
+function costingCurrentModel(){
+  const today=_csToday(), models=_csSorted().filter(x=>_csIsModel(x.e));
+  let hit=null;
+  for(const x of models){ if(x.e.effective<=today) hit=x; else break; }
+  if(!hit) hit=models[0]||null;
+  return hit?{entry:hit.e,version:_csVersion(hit)}:{entry:{},version:''};
+}
+// Overhead $/hr that old code baked into burdenedRate on day ds (the latest legacy entry on or before it).
+function _csLegacyOverheadFor(ds){
+  let v=0;
+  for(const x of _csSorted()){
+    if(x.e.effective>(ds||_csToday())) break;
+    if(x.e.legacyOverheadPerHour!==undefined) v=parseFloat(x.e.legacyOverheadPerHour)||0;
+  }
+  return v;
+}
+
+// Crew whose paid hours absorb overhead: active, with a wage, and not the owner (crew.is_owner —
+// never matched on role text). Inactive crew aren't working, so counting them would spread
+// overhead too thin.
+function _overheadCrew(set){
+  const s=set||costingCurrentModel().entry;
+  const exOwner=s.excludeOwnerFromDivisor!==false;
+  return (CREW_DATA||[]).filter((c,i)=>(parseFloat(c.hourly)||0)>0&&!isCrewInactive(i)&&!(exOwner&&c.isOwner===true));
+}
+function overheadAnnualLaborHours(set,util){
+  const s=set||costingCurrentModel().entry;
+  const u=util!==undefined?util:(parseFloat(s.utilization)||0);
+  return _overheadCrew(s).length*(parseFloat(s.paidHoursPerYear)||0)*u;
+}
+function overheadPool(set){ return parseFloat((set||costingCurrentModel().entry).overheadPool)||0; }
+// Overhead $/hr for a rate set (default: today's). A legacy set returns its recorded legacy rate.
+function overheadPerHour(set,util){
+  const s=set||costingCurrentModel().entry;
+  if(!_csIsModel(s)) return parseFloat(s.legacyOverheadPerHour)||0;
+  const hrs=overheadAnnualLaborHours(s,util);
+  return hrs>0 ? overheadPool(s)/hrs : 0;
 }
 function overheadBreakdownText(){
-  const total=overheadAnnualTotal(), hours=overheadAnnualLaborHours();
-  if(total<=0) return 'Add your yearly business expenses to compute the overhead rate.';
-  if(hours<=0) return 'Set hourly rates on your crew so overhead can be spread across their labor hours.';
-  return overheadFmt(total)+' ÷ '+hours.toLocaleString()+' labor hrs/yr = $'+overheadPerHour().toFixed(2)+'/hr';
+  const s=costingCurrentModel().entry, pool=overheadPool(s), n=_overheadCrew(s).length;
+  if(pool<=0) return 'Set the overhead pool in costing settings below to compute the overhead rate.';
+  if(!n) return 'Set hourly rates on your (non-owner) crew so overhead can be spread across their hours.';
+  const H=parseFloat(s.paidHoursPerYear)||0, U=parseFloat(s.utilization)||0;
+  return overheadFmt(pool)+' ÷ ('+n+' crew × '+H.toLocaleString()+' paid hrs × '+Math.round(U*1000)/10+'% utilization = '+Math.round(n*H*U).toLocaleString()+' hrs) = $'+overheadPerHour(s).toFixed(2)+'/hr';
 }
+
+const CS_SYSTEMS=[['flake','Flake'],['epoxy','Epoxy'],['metallic','Metallic'],['overlay','Overlay'],['clean_seal','Clean & Seal'],['polish','Polishing']];
+function _ovhEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
 
 function renderOverhead(){
   const el=document.getElementById('overhead-content'); if(!el) return;
   const items=OVERHEAD.items||[];
-  const crewWithWage=_overheadCrew();
+  const cur=costingCurrentModel(), s=cur.entry;
+  const crewIn=_overheadCrew(s);
+  const H=parseFloat(s.paidHoursPerYear)||0, U=parseFloat(s.utilization)||0;
+  const ohr=overheadPerHour(s);
+  const lbl=t=>`<div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">${t}</div>`;
   let html=`<div style="max-width:920px;margin:0 auto;">`;
 
-  // Summary card
+  // Summary card: the pool, the hours that absorb it, and the rate
   html+=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;margin-bottom:18px;">
     <div class="ovh-summary" style="display:grid;grid-template-columns:1fr 1fr 1.1fr;gap:14px;text-align:center;align-items:center;">
-      <div><div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Total Annual Overhead</div><div id="ovh-total" style="font-size:22px;font-weight:700;font-family:'DM Mono',monospace;">${overheadFmt(overheadAnnualTotal())}</div></div>
-      <div><div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Annual Labor Hours</div><div id="ovh-hours" style="font-size:22px;font-weight:700;font-family:'DM Mono',monospace;">${overheadAnnualLaborHours().toLocaleString()}</div><div style="font-size:10.5px;color:var(--text3);">${crewWithWage.length} crew × hrs/wk × 52</div></div>
-      <div style="background:var(--accent-dim);border-radius:var(--radius-sm);padding:8px 6px;"><div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--accent);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Added to Labor</div><div id="ovh-perhour" style="font-size:23px;font-weight:800;font-family:'DM Mono',monospace;color:var(--accent);">$${overheadPerHour().toFixed(2)}/hr</div><div style="font-size:10.5px;color:var(--text3);">on every installer's burden</div></div>
+      <div>${lbl('Overhead Pool')}<div id="ovh-total" style="font-size:22px;font-weight:700;font-family:'DM Mono',monospace;">${overheadFmt(overheadPool(s))}</div><div style="font-size:10.5px;color:var(--text3);">per year · rate set from ${_ovhEsc(s.effective||'—')}</div></div>
+      <div>${lbl('Hours That Absorb It')}<div id="ovh-hours" style="font-size:22px;font-weight:700;font-family:'DM Mono',monospace;">${Math.round(overheadAnnualLaborHours(s)).toLocaleString()}</div><div style="font-size:10.5px;color:var(--text3);">${crewIn.length} crew × ${H.toLocaleString()} paid hrs × ${Math.round(U*1000)/10}%</div></div>
+      <div style="background:var(--accent-dim);border-radius:var(--radius-sm);padding:8px 6px;">${lbl('<span style="color:var(--accent);">Overhead per Crew Hour</span>')}<div id="ovh-perhour" style="font-size:23px;font-weight:800;font-family:'DM Mono',monospace;color:var(--accent);">$${ohr.toFixed(2)}/hr</div><div style="font-size:10.5px;color:var(--text3);">its own line in Job Costing — not in labor rates</div></div>
     </div>
     <div id="ovh-breakdown" style="font-size:11.5px;color:var(--text3);text-align:center;margin-top:12px;font-family:'DM Mono',monospace;">${overheadBreakdownText()}</div>
+    <div style="display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin-top:10px;">
+      ${[0.85,U,0.92].filter((u,i,a)=>u>0&&a.indexOf(u)===i).sort((a,b)=>a-b).map(u=>`<span style="font-size:11.5px;font-family:'DM Mono',monospace;padding:3px 10px;border-radius:20px;border:1px solid var(--border2);${u===U?'background:var(--accent-dim);color:var(--accent);font-weight:700;':'color:var(--text2);'}">${Math.round(u*1000)/10}% utilization → $${overheadPerHour(s,u).toFixed(2)}/hr</span>`).join('')}
+    </div>
+    <div style="font-size:11px;color:var(--text3);text-align:center;margin-top:10px;">In the divisor: ${crewIn.length?crewIn.map(c=>_ovhEsc(c.full)).join(', '):'nobody yet'}. ${s.excludeOwnerFromDivisor!==false?'The owner is left out.':'The owner is counted.'} Inactive crew are left out.</div>
   </div>`;
 
   // Quick-add chips
   const sugg=['General Liability','Rent / Facility','Vehicles & Fuel','Equipment','Software','Marketing','Office / Admin','Accounting / Legal'];
   html+=`<div style="margin-bottom:10px;"><span style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;margin-right:6px;">Quick add:</span>`;
-  html+=sugg.map(s=>`<button class="btn btn-ghost" style="font-size:11.5px;padding:4px 10px;margin:2px;" onclick="overheadQuickAdd('${s.replace(/'/g,"\\'")}')">+ ${s}</button>`).join('');
+  html+=sugg.map(sg=>`<button class="btn btn-ghost" style="font-size:11.5px;padding:4px 10px;margin:2px;" onclick="overheadQuickAdd('${sg.replace(/'/g,"\\'")}')">+ ${sg}</button>`).join('');
   html+=`</div>`;
 
-  // Line-item list
+  // Line-item list (the itemized pool)
   if(!items.length){
     html+=`<div style="padding:30px;text-align:center;color:var(--text3);font-size:13px;border:1px dashed var(--border2);border-radius:var(--radius);">No overhead expenses yet.<br><span style="font-size:12px;">Use the quick-add buttons above or “+ Add Expense” to list your yearly business costs.</span></div>`;
   } else {
@@ -11815,20 +12084,31 @@ function renderOverhead(){
     html+=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;">`;
     html+=items.map(it=>{
       const ann=(parseFloat(it.amount)||0)*(it.period==='mo'?12:1);
-      const nm=(it.name||'').replace(/"/g,'&quot;');
-      return `<div class="ovh-row" style="display:grid;grid-template-columns:1fr 130px 110px 80px 40px;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border);">
-        <input class="form-input" id="ovh-name-${it.id}" value="${nm}" placeholder="Expense name" oninput="overheadSetField('${it.id}','name',this.value)" onblur="overheadCommit()" style="font-size:13px;padding:6px 10px;"/>
+      const isFixed=it.fixed!==false;
+      return `<div class="ovh-row" style="display:grid;grid-template-columns:1fr 130px 110px 80px 40px;gap:8px 10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border);">
+        <input class="form-input" id="ovh-name-${it.id}" value="${_ovhEsc(it.name)}" placeholder="Expense name" oninput="overheadSetField('${it.id}','name',this.value)" onblur="overheadCommit()" style="font-size:13px;padding:6px 10px;"/>
         <div style="position:relative;"><span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--text3);font-size:12px;">$</span><input class="form-input" id="ovh-amt-${it.id}" type="number" min="0" step="0.01" value="${it.amount||''}" placeholder="0.00" oninput="overheadSetField('${it.id}','amount',this.value)" onblur="overheadCommit()" style="font-size:13px;padding:6px 10px 6px 20px;text-align:right;font-family:'DM Mono',monospace;"/></div>
         <select class="form-select" onchange="overheadSetField('${it.id}','period',this.value);overheadCommit()" style="font-size:12.5px;padding:6px 8px;"><option value="yr"${it.period!=='mo'?' selected':''}>per year</option><option value="mo"${it.period==='mo'?' selected':''}>per month</option></select>
         <div id="ovh-ann-${it.id}" style="text-align:right;font-size:12px;font-family:'DM Mono',monospace;color:var(--text2);">$${ann.toLocaleString('en-US',{maximumFractionDigits:0})}</div>
         <button class="btn btn-ghost" style="font-size:12px;padding:4px 8px;color:var(--red);" onclick="overheadDeleteItem('${it.id}')">✕</button>
+        <label class="ovh-fixed" style="grid-column:1/2;display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text2);cursor:pointer;"><input type="checkbox" ${isFixed?'checked':''} onchange="overheadSetField('${it.id}','fixed',this.checked);overheadCommit()" style="accent-color:var(--accent);"> Fixed cost <span style="color:var(--text3);">(${isFixed?'same every month':'varies with work'})</span></label>
+        <input class="form-input ovh-note" value="${_ovhEsc(it.note)}" placeholder="Note (optional)" oninput="overheadSetField('${it.id}','note',this.value)" onblur="overheadCommit()" style="grid-column:2/-1;font-size:12px;padding:5px 9px;"/>
       </div>`;
     }).join('');
     html+=`</div>`;
   }
+  // Items total vs the pool the rate actually uses
+  const itemsTotal=overheadAnnualTotal(), gap=Math.round((overheadPool(s)-itemsTotal)*100)/100;
+  html+=`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px;padding:10px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:12.5px;">
+    <span>Items listed: <b style="font-family:'DM Mono',monospace;">${overheadFmt(itemsTotal)}</b>/yr &nbsp;·&nbsp; Pool used for the rate: <b style="font-family:'DM Mono',monospace;">${overheadFmt(overheadPool(s))}</b></span>
+    <span style="color:${Math.abs(gap)<0.005?'var(--green)':'var(--text3)'};">${Math.abs(gap)<0.005?'✓ They match':(gap>0?overheadFmt(gap)+' of the pool is not itemized':overheadFmt(-gap)+' more is itemized than the pool')}</span>
+  </div>
+  <div style="font-size:11px;color:var(--text3);margin-top:6px;">Editing the list does not change the rate. To change the rate, save a new rate set below (you can copy the items total into it).</div>`;
+
+  html+=_csSettingsHtml(cur);
 
   // General Liability migration notice
-  const glCrew=crewWithWage.filter(c=>(parseFloat(c.gl)||0)>0);
+  const glCrew=_overheadCrew(s).filter(c=>(parseFloat(c.gl)||0)>0);
   html+=`<div style="margin-top:18px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;">`;
   if(glCrew.length){
     html+=`<div style="font-size:12.5px;color:var(--text);margin-bottom:8px;">⚠ ${glCrew.length} installer${glCrew.length>1?'s':''} still carr${glCrew.length>1?'y':'ies'} a General Liability % inside their individual burden. Add your real GL premium as an overhead line above, then click below to remove the per-installer % so GL isn't counted twice.</div>
@@ -11838,13 +12118,103 @@ function renderOverhead(){
   }
   html+=`</div>`;
 
-  html+=`<div style="font-size:11px;color:var(--text3);margin-top:14px;line-height:1.6;">This overhead rate is added to every crew member's burdened hourly cost (visible in each installer's burden breakdown and in Job Costing). It applies to work logged from now on; days already logged keep the cost recorded at the time.</div>`;
+  html+=`<div style="font-size:11px;color:var(--text3);margin-top:14px;line-height:1.6;">Each day-log entry keeps the labor and overhead rates that were in effect on its work date. A new rate set applies to days logged from its effective date on; days already stamped keep their rates.</div>`;
   html+=`</div>`;
   el.innerHTML=html;
 }
 
+// Costing settings: the current rate set, a form that APPENDS a new one, and the history.
+function _csSettingsHtml(cur){
+  const s=cur.entry, by=s.consumablesBySystem||{};
+  const inp=(id,val,attrs)=>`<input class="form-input" id="${id}" value="${_ovhEsc(val)}" ${attrs||''} oninput="csPreview()" style="font-size:13px;padding:6px 10px;font-family:'DM Mono',monospace;"/>`;
+  const fld=(label,inner)=>`<div class="form-group" style="margin-bottom:10px;"><label class="form-label">${label}</label>${inner}</div>`;
+  const num=v=>v===undefined||v===null?'':String(v);
+  let h=`<div style="margin-top:18px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;">
+    <div style="font-size:13px;font-weight:700;margin-bottom:4px;">⚙️ Costing Settings</div>
+    <div style="font-size:11.5px;color:var(--text3);margin-bottom:12px;line-height:1.5;">These numbers are saved as rate sets with an effective date. Saving never changes an old set — it adds a new one. Only the owner and office can save.</div>
+    <div class="form-row">${fld('Effective date',`<input class="form-input" type="date" id="cs-eff" value="${_csToday()}" oninput="csPreview()" style="font-size:13px;padding:6px 10px;"/>`)}${fld('Overhead pool ($/yr)',inp('cs-pool',num(s.overheadPool),'type="number" min="0" step="1"')+`<button class="btn btn-ghost" type="button" onclick="csUseItemsTotal()" style="font-size:11px;padding:3px 8px;margin-top:4px;">Use items total (${overheadFmt(overheadAnnualTotal())})</button>`)}</div>
+    <div class="form-row">${fld('Utilization (%)',inp('cs-util',num(Math.round((parseFloat(s.utilization)||0)*10000)/100),'type="number" min="1" max="100" step="0.1"'))}${fld('Paid hours per person per year',inp('cs-hours',num(s.paidHoursPerYear),'type="number" min="1" step="1"'))}</div>
+    <div class="form-row">${fld('Consumables default (% of materials)',inp('cs-cons-default',num(s.consumablesDefaultPct),'type="number" min="0" step="0.1"'))}${fld('Target net profit (%)',inp('cs-target',num(s.targetNetPct),'type="number" min="0" max="99" step="0.1"'))}</div>
+    <div style="font-size:11px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin:2px 0 8px;">Consumables by system (% of materials)</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:10px;">${CS_SYSTEMS.map(([k,l])=>`<div><label class="form-label" style="font-size:11px;">${l}</label>${inp('cs-cons-'+k,num(by[k]),'type="number" min="0" step="0.1"')}</div>`).join('')}</div>
+    <div class="form-row">${fld('Owner cost ($ per job hour, optional)',inp('cs-owner-cost',num(s.ownerCostPerHour),'type="number" min="0" step="0.01"'))}${fld('Cash days',`<select class="form-select" id="cs-cash-burden" onchange="csPreview()" style="font-size:13px;padding:6px 8px;"><option value="none"${s.cashDayBurden!=='statutory'?' selected':''}>Base pay only (no taxes)</option><option value="statutory"${s.cashDayBurden==='statutory'?' selected':''}>Base pay + SS, Medicare, WC</option></select>`)}</div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;cursor:pointer;margin:2px 0 12px;"><input type="checkbox" id="cs-exowner" ${s.excludeOwnerFromDivisor!==false?'checked':''} onchange="csPreview()" style="accent-color:var(--accent);"> Leave the owner out of the overhead divisor</label>
+    <div id="cs-preview" style="font-size:12px;font-family:'DM Mono',monospace;color:var(--text2);margin-bottom:10px;"></div>
+    <button class="btn btn-primary" onclick="csAddRateSet()" style="font-size:12.5px;">Save as a new rate set</button>
+  </div>`;
+  // History, newest first
+  const rows=_csSorted().slice().reverse();
+  h+=`<div style="margin-top:12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;">
+    <div style="padding:10px 14px;font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border);">Rate set history (newest first)</div>`;
+  h+=rows.map(x=>{
+    const e=x.e, isCur=_csVersion(x)===cur.version;
+    const desc=_csIsModel(e)
+      ? `pool ${overheadFmt(parseFloat(e.overheadPool)||0)} · ${Math.round((parseFloat(e.utilization)||0)*1000)/10}% of ${(parseFloat(e.paidHoursPerYear)||0).toLocaleString()} hrs · consumables ${e.consumablesDefaultPct}% (polish ${(e.consumablesBySystem||{}).polish??'—'}%) · target ${e.targetNetPct}% · owner $${e.ownerCostPerHour}/hr · cash ${e.cashDayBurden==='statutory'?'with taxes':'base only'}`
+      : `legacy days: $${(parseFloat(e.legacyOverheadPerHour)||0).toFixed(2)}/hr overhead was inside the stored rate`;
+    return `<div style="display:grid;grid-template-columns:110px 1fr auto;gap:10px;padding:8px 14px;border-bottom:1px solid var(--border);font-size:12px;${isCur?'background:var(--accent-dim);':''}">
+      <div style="font-family:'DM Mono',monospace;">${_ovhEsc(e.effective)}</div><div style="color:var(--text2);">${desc}</div><div style="font-size:11px;color:var(--accent);font-weight:700;">${isCur?'In use today':''}</div></div>`;
+  }).join('');
+  h+=`</div>`;
+  return h;
+}
+// Read the settings form into a new rate-set entry. Returns {entry} or {error}.
+function _csFormEntry(){
+  const v=id=>(document.getElementById(id)||{}).value;
+  const n=id=>{ const x=v(id); return (x===undefined||String(x).trim()==='')?NaN:parseFloat(x); };
+  const eff=v('cs-eff');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(eff||'')) return {error:'Pick an effective date.'};
+  const util=n('cs-util'), hours=n('cs-hours'), pool=n('cs-pool');
+  if(!(util>0&&util<=100)) return {error:'Utilization must be between 1 and 100%.'};
+  if(!(hours>0)) return {error:'Paid hours per year must be more than 0.'};
+  if(!(pool>=0)) return {error:'Enter the overhead pool ($/yr).'};
+  const by={};
+  for(const [k,l] of CS_SYSTEMS){ const x=n('cs-cons-'+k); if(!(x>=0)) return {error:'Enter a consumables % for '+l+'.'}; by[k]=x; }
+  const consDef=n('cs-cons-default'), target=n('cs-target'), ownerCost=n('cs-owner-cost');
+  if(!(consDef>=0)) return {error:'Enter the default consumables %.'};
+  if(!(target>=0&&target<100)) return {error:'Target net profit must be 0–99%.'};
+  return {entry:{id:'cs_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),effective:eff,
+    utilization:Math.round(util*100)/10000,paidHoursPerYear:hours,overheadPool:pool,
+    excludeOwnerFromDivisor:!!(document.getElementById('cs-exowner')||{}).checked,
+    consumablesDefaultPct:consDef,consumablesBySystem:by,
+    ownerCostPerHour:ownerCost>=0?ownerCost:0,targetNetPct:target,
+    cashDayBurden:v('cs-cash-burden')==='statutory'?'statutory':'none'}};
+}
+function csPreview(){
+  const out=document.getElementById('cs-preview'); if(!out) return;
+  const r=_csFormEntry();
+  if(r.error){ out.textContent=r.error; out.style.color='var(--text3)'; return; }
+  const n=_overheadCrew(r.entry).length;
+  out.style.color='var(--text2)';
+  out.textContent='New rate: '+overheadFmt(r.entry.overheadPool)+' ÷ ('+n+' crew × '+r.entry.paidHoursPerYear.toLocaleString()+' × '+Math.round(r.entry.utilization*1000)/10+'%) = $'+overheadPerHour(r.entry).toFixed(2)+'/hr overhead';
+}
+function csUseItemsTotal(){
+  const f=document.getElementById('cs-pool'); if(!f) return;
+  f.value=String(Math.round(overheadAnnualTotal()*100)/100);
+  csPreview();
+}
+async function csAddRateSet(){
+  const r=_csFormEntry();
+  if(r.error){ showToast(r.error); return; }
+  const e=r.entry, prev=costingSetFor(e.effective).entry;
+  // Summarize what differs from the set that was in effect on that date (for the audit log)
+  const keys=['overheadPool','utilization','paidHoursPerYear','excludeOwnerFromDivisor','consumablesDefaultPct','consumablesBySystem','ownerCostPerHour','targetNetPct','cashDayBurden'];
+  const changes=keys.filter(k=>JSON.stringify(prev[k])!==JSON.stringify(e[k])).map(k=>k+': '+(prev[k]===undefined?'—':JSON.stringify(prev[k]))+' → '+JSON.stringify(e[k]));
+  if(!changes.length){ showToast('Nothing changed from the rate set already in effect on '+e.effective+'.'); return; }
+  const past=e.effective<_csToday();
+  if(!confirm('Add a new rate set effective '+e.effective+'?\n\n'+changes.join('\n')+'\n\nOverhead would be $'+overheadPerHour(e).toFixed(2)+'/hr.'+(past?'\n\nThis date is in the past. Days already stamped keep their rates; only days not stamped yet use this set.':''))) return;
+  COSTING_SETTINGS.history=[...(COSTING_SETTINGS.history||[]),e];
+  const ok=await saveCostingSettings('New rate set effective '+e.effective+' — '+changes.join('; '));
+  if(!ok){
+    COSTING_SETTINGS.history=COSTING_SETTINGS.history.filter(x=>x.id!==e.id);
+    showToast('⚠ Not saved — check your connection and try again.');
+    return;
+  }
+  showToast('✓ New rate set saved (effective '+e.effective+').');
+  renderOverhead();
+  renderCrewCards();
+}
+
 function overheadRefreshSummary(){
-  const t=document.getElementById('ovh-total'); if(t) t.textContent=overheadFmt(overheadAnnualTotal());
   const ph=document.getElementById('ovh-perhour'); if(ph) ph.textContent='$'+overheadPerHour().toFixed(2)+'/hr';
   const bd=document.getElementById('ovh-breakdown'); if(bd) bd.textContent=overheadBreakdownText();
 }
@@ -11862,7 +12232,7 @@ function overheadAddItem(name){
   const prefilled = (typeof name==='string' && name);
   if(!OVERHEAD.items) OVERHEAD.items=[];
   const id='ovh_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
-  OVERHEAD.items.push({id, name: prefilled?name:'', amount:'', period:'yr'});
+  OVERHEAD.items.push({id, name: prefilled?name:'', amount:'', period:'yr', fixed:true, note:''});
   saveOverhead();
   renderOverhead();
   setTimeout(()=>{ const f=document.getElementById((prefilled?'ovh-amt-':'ovh-name-')+id); if(f) f.focus(); },30);
@@ -11954,6 +12324,10 @@ function mrDeleteTier(id){
   renderMileageRates();
 }
 
+// OLD burden math (before 2026-10): base × (1 + SS + Medicare + FUTA + WC + GL) + benefits + PTO,
+// per hour over hours/wk × 52. Overhead is no longer added in here (it's its own Job Costing line).
+// Still used for anyone whose new cost fields are all blank (crewOnNewModel false), and to rebuild
+// the old stamp for a day before the direct-rate model. Returns a "0.00" string, or null with no wage.
 function calcBurdenForCrew(c){
   const hr  = parseFloat(c.hourly);
   const hrs = parseFloat(c.hours) || 40;
@@ -11967,69 +12341,116 @@ function calcBurdenForCrew(c){
   const ptoDays    = parseFloat(c.ptoDays||0);
   const annualHrs  = hrs * 52;
   const ptoHrCost  = annualHrs > 0 ? (ptoDays * 8 * hr) / annualHrs : 0;
-  return (hr*(1+ss+med+futa+wc+gl) + benefitsHr + ptoHrCost + overheadPerHour()).toFixed(2);
+  return (hr*(1+ss+med+futa+wc+gl) + benefitsHr + ptoHrCost).toFixed(2);
 }
 
-function calcBurden(){
-  const hr  = parseFloat(document.getElementById('ce-hourly').value);
-  const hrs = parseFloat(document.getElementById('ce-hours').value) || 40;
-  const res = document.getElementById('ce-results');
-  if(!hr || hr<=0){ res.style.display='none'; return; }
-
-  const ss         = parseFloat(document.getElementById('ce-ss').value||0)/100;
-  const med        = parseFloat(document.getElementById('ce-medicare').value||0)/100;
-  const futa       = parseFloat(document.getElementById('ce-futa').value||0)/100;
-  const wc         = parseFloat(document.getElementById('ce-wc').value||0)/100;
-  const gl         = parseFloat(document.getElementById('ce-gl').value||0)/100;
-  const benefitsMo = parseFloat(document.getElementById('ce-benefits').value||0);
-  const benefitsHr = benefitsMo * 12 / (hrs * 52);
-  const ptoDays    = parseFloat(document.getElementById('ce-pto-days').value||0);
-  const annualHrs  = hrs * 52;
-  const ptoHrs     = ptoDays * 8;
-  const ptoHrCost  = annualHrs > 0 ? (ptoHrs * hr) / annualHrs : 0;
-  const ptoAnnCost = ptoHrs * hr;
-
-  // PTO preview text
-  const ptoPrev = document.getElementById('ce-pto-preview');
-  if(ptoDays > 0){
-    ptoPrev.innerHTML = `<span style="color:var(--accent);font-family:'DM Mono',monospace;">${ptoDays} days × 8 hrs × $${hr.toFixed(2)} = $${ptoAnnCost.toFixed(2)}/yr<br>÷ ${annualHrs} annual hrs = $${ptoHrCost.toFixed(2)}/hr added</span>`;
-  } else {
-    ptoPrev.textContent = '';
-  }
-
-  const totalPct = (ss+med+futa+wc+gl)*100;
-  const ovhHr = overheadPerHour();
-  const bHr = hr*(1+ss+med+futa+wc+gl) + benefitsHr + ptoHrCost + ovhHr;
-  const bWk = bHr * hrs;
-
-  const rows = [
-    {label:'Base Hourly Pay', val:hr, note:'', highlight:true},
-    {label:'Social Security ('+parseFloat(document.getElementById('ce-ss').value)+'%)', val:hr*ss, note:'employer share'},
-    {label:'Medicare ('+parseFloat(document.getElementById('ce-medicare').value)+'%)', val:hr*med, note:'employer share'},
-    {label:'FUTA/SUTA ('+parseFloat(document.getElementById('ce-futa').value)+'%)', val:hr*futa, note:'unemployment tax'},
-    {label:"Workers' Comp ("+parseFloat(document.getElementById('ce-wc').value)+'%)', val:hr*wc, note:''},
-    {label:'General Liability ('+parseFloat(document.getElementById('ce-gl').value)+'%)', val:hr*gl, note:''},
+// ── DIRECT LABOR RATE (2026-10) ──
+// The inputs on CE_COST_INPUTS map the crew editor's fields to CREW_DATA keys (see CREW_COST_COLS).
+const CE_COST_INPUTS=[['futaWageBase','ce-futa-base'],['sutaRate','ce-suta'],['sutaWageBase','ce-suta-base'],['k401MatchPct','ce-k401'],['fixedFeesYr','ce-fixed-fees'],['clothingYr','ce-clothing'],['fieldRateOverride','ce-rate-override']];
+// A person is costed with calcDirectRate once ANY of their new cost fields is filled in; until then
+// the old burden math (calcBurdenForCrew) is used for them.
+function crewOnNewModel(c){ return !!c && CREW_COST_COLS.some(([k])=>_crewNumOrNull(c[k])!==null); }
+function _crewStatMult(c){ return 1+(parseFloat(c.ss)||0)/100+(parseFloat(c.medicare)||0)/100+(parseFloat(c.wc)||0)/100; }
+// annual = wage × (1+SS+Medicare+WC) + FUTA and SUTA up to their wage bases + 401k match
+//        + fixed fees + benefits × 12 + clothing;  direct = override, else annual ÷ (paid hrs × utilization).
+// OT = 1.5 × hourly × (1+SS+Medicare+WC): no utilization (overtime hours are all worked hours).
+// Blank fields count as 0, and a blank wage base means no cap. Returns null with no wage and no override.
+function calcDirectRate(c,set){
+  const s=_csIsModel(set)?set:costingCurrentModel().entry;
+  const H=parseFloat(s.paidHoursPerYear)||0, U=parseFloat(s.utilization)||0;
+  const hr=parseFloat(c.hourly)||0;
+  const override=_crewNumOrNull(c.fieldRateOverride);
+  if(!(hr>0) && !(override>0)) return null;
+  const pc=v=>(parseFloat(v)||0)/100, num=v=>_crewNumOrNull(v)||0;
+  const ss=pc(c.ss), med=pc(c.medicare), wc=pc(c.wc), futa=pc(c.futa), suta=num(c.sutaRate)/100, k401=num(c.k401MatchPct)/100;
+  const futaBase=_crewNumOrNull(c.futaWageBase), sutaBase=_crewNumOrNull(c.sutaWageBase);
+  const wage=hr*H;
+  const capped=b=>b===null?wage:Math.min(wage,b);
+  const fmtBase=b=>b===null?'all wages':'first $'+b.toLocaleString();
+  const benMo=parseFloat(c.benefits)||0;
+  const lines=[
+    {label:'Wages',yr:wage,note:'$'+hr.toFixed(2)+' × '+H.toLocaleString()+' paid hrs'},
+    {label:'Social Security ('+(Math.round(ss*1e6)/1e4)+'%)',yr:wage*ss},
+    {label:'Medicare ('+(Math.round(med*1e6)/1e4)+'%)',yr:wage*med},
+    {label:"Workers' Comp ("+(Math.round(wc*1e6)/1e4)+'%)',yr:wage*wc},
+    {label:'FUTA ('+(Math.round(futa*1e6)/1e4)+'% of '+fmtBase(futaBase)+')',yr:capped(futaBase)*futa},
+    {label:'SUTA ('+(Math.round(suta*1e6)/1e4)+'% of '+fmtBase(sutaBase)+')',yr:capped(sutaBase)*suta},
+    {label:'401(k) match ('+(Math.round(k401*1e6)/1e4)+'%)',yr:wage*k401},
+    {label:'Fixed fees',yr:num(c.fixedFeesYr)},
+    {label:'Health / Benefits',yr:benMo*12,note:benMo?'$'+benMo.toFixed(2)+'/mo × 12':''},
+    {label:'Clothing',yr:num(c.clothingYr)},
   ];
-  if(benefitsHr>0) rows.push({label:'Health / Benefits', val:benefitsHr, note:'$'+benefitsMo.toFixed(2)+'/mo × 12 ÷ '+annualHrs+' hrs/yr'});
-  if(ptoHrCost>0)  rows.push({label:'PTO ('+ptoDays+' days/yr)', val:ptoHrCost, note:'$'+ptoAnnCost.toFixed(2)+'/yr ÷ '+annualHrs+' hrs worked'});
-  if(ovhHr>0)      rows.push({label:'Business Overhead', val:ovhHr, note:'$'+Math.round(overheadAnnualTotal()).toLocaleString()+'/yr ÷ '+overheadAnnualLaborHours().toLocaleString()+' crew hrs/yr'});
+  const annual=lines.reduce((a,l)=>a+l.yr,0);
+  const divisorHrs=H*U;
+  const computed=divisorHrs>0?annual/divisorHrs:0;
+  const statMult=1+ss+med+wc;
+  const ovr=override>0?override:null;
+  return {model:'direct',direct:_r2(ovr||computed),computed:_r2(computed),override:ovr,
+    ot:_r2(ovr||1.5*hr*statMult),base:hr,statMult,annual,lines,divisorHrs};
+}
+// Labor rates for one crew member under a rate set: the direct model when their new fields are in,
+// otherwise the old burden math. {direct, ot, base, statMult, override, model} or null (no wage).
+function crewLaborRates(c,set){
+  if(!c) return null;
+  if(crewOnNewModel(c)) return calcDirectRate(c,set);
+  const legacy=parseFloat(calcBurdenForCrew(c));
+  if(!(legacy>0)) return null;
+  const hr=parseFloat(c.hourly)||0, statMult=_crewStatMult(c);
+  return {model:'fallback',direct:legacy,computed:legacy,override:null,ot:_r2(1.5*hr*statMult),base:hr,statMult};
+}
 
-  document.getElementById('ce-breakdown').innerHTML = rows.map(r=>
-    `<div style="display:grid;grid-template-columns:1fr auto;padding:8px 16px;border-bottom:1px solid var(--border);background:${r.highlight?'var(--surface3)':'transparent'};">
-      <div>
-        <div style="font-size:12.5px;font-weight:${r.highlight?'700':'400'};">${r.label}</div>
-        ${r.note?`<div style="font-size:10.5px;color:var(--text3);">${r.note}</div>`:''}
-      </div>
-      <div style="font-family:'DM Mono',monospace;font-size:13px;font-weight:${r.highlight?'700':'400'};color:${r.highlight?'var(--text)':'var(--text2)'};">
-        $${r.val.toFixed(2)}/hr
-      </div>
-    </div>`
-  ).join('');
-
-  document.getElementById('ce-burdened-hr').textContent = '$'+bHr.toFixed(2)+'/hr';
-  document.getElementById('ce-burdened-wk').textContent = '$'+bWk.toFixed(2)+'/wk';
-  document.getElementById('ce-burden-pct').textContent  = 'Total burden: '+totalPct.toFixed(2)+'% above base + PTO, benefits & overhead — every $'+hr.toFixed(2)+' base hour truly costs $'+bHr.toFixed(2);
-  res.style.display = 'block';
+// Crew editor: live breakdown of the form's values.
+function _ceFormCrew(){
+  const g=id=>document.getElementById(id).value;
+  const c={hourly:g('ce-hourly'),hours:g('ce-hours'),ss:g('ce-ss'),medicare:g('ce-medicare'),futa:g('ce-futa'),wc:g('ce-wc'),gl:g('ce-gl'),benefits:g('ce-benefits'),ptoDays:g('ce-pto-days'),isOwner:document.getElementById('ce-is-owner').checked};
+  CE_COST_INPUTS.forEach(([k,id])=>{ c[k]=_crewNumOrNull(g(id)); });
+  return c;
+}
+function calcBurden(){
+  const res = document.getElementById('ce-results');
+  const c=_ceFormCrew();
+  const hr=parseFloat(c.hourly);
+  const onModel=crewOnNewModel(c);
+  document.getElementById('ce-pto-preview').textContent='';
+  if((!hr||hr<=0) && !(onModel&&_crewNumOrNull(c.fieldRateOverride)>0)){ res.style.display='none'; return; }
+  const set=costingCurrentModel().entry, ohr=overheadPerHour(set);
+  const row=(label,yr,hrVal,note,highlight)=>`<div style="display:grid;grid-template-columns:1fr auto auto;gap:12px;padding:8px 16px;border-bottom:1px solid var(--border);background:${highlight?'var(--surface3)':'transparent'};">
+      <div><div style="font-size:12.5px;font-weight:${highlight?'700':'400'};">${label}</div>${note?`<div style="font-size:10.5px;color:var(--text3);">${note}</div>`:''}</div>
+      <div style="font-family:'DM Mono',monospace;font-size:12px;color:var(--text3);text-align:right;">${yr===null?'':'$'+Math.round(yr).toLocaleString()+'/yr'}</div>
+      <div style="font-family:'DM Mono',monospace;font-size:13px;font-weight:${highlight?'700':'400'};color:${highlight?'var(--text)':'var(--text2)'};text-align:right;min-width:78px;">$${hrVal.toFixed(2)}/hr</div>
+    </div>`;
+  let direct, ot, html='';
+  if(onModel){
+    const r=calcDirectRate(c,set);
+    if(!r){ res.style.display='none'; return; }
+    const per=r.divisorHrs>0?1/r.divisorHrs:0;
+    html=r.lines.filter((l,i)=>i<4||l.yr>0).map((l,i)=>row(l.label,l.yr,l.yr*per,l.note,i===0)).join('');
+    html+=row('Yearly cost',r.annual,r.computed,'÷ '+Math.round(r.divisorHrs).toLocaleString()+' billable hrs ('+(parseFloat(set.paidHoursPerYear)||0).toLocaleString()+' paid × '+Math.round((parseFloat(set.utilization)||0)*1000)/10+'% utilization)',true);
+    if(r.override) html+=row('Field rate override',null,r.override,'Used instead of the math above on every hour this person logs',true);
+    if((parseFloat(c.gl)||0)>0) html+=`<div style="padding:6px 16px;font-size:11px;color:var(--text3);border-bottom:1px solid var(--border);">General Liability % is not used here — GL belongs in overhead.</div>`;
+    direct=r.direct; ot=r.ot;
+    document.getElementById('ce-results-title').textContent='📊 Direct Labor Rate';
+  } else {
+    const legacy=parseFloat(calcBurdenForCrew(c))||0;
+    const hrs=parseFloat(c.hours)||40, annualHrs=hrs*52, pc=v=>(parseFloat(v)||0)/100;
+    html=row('Base Hourly Pay',null,hr,'',true)
+      +row('Social Security ('+parseFloat(c.ss||0)+'%)',null,hr*pc(c.ss),'employer share')
+      +row('Medicare ('+parseFloat(c.medicare||0)+'%)',null,hr*pc(c.medicare),'employer share')
+      +row('FUTA ('+parseFloat(c.futa||0)+'%)',null,hr*pc(c.futa),'')
+      +row("Workers' Comp ("+parseFloat(c.wc||0)+'%)',null,hr*pc(c.wc),'')
+      +row('General Liability ('+parseFloat(c.gl||0)+'%)',null,hr*pc(c.gl),'');
+    const benHr=(parseFloat(c.benefits)||0)*12/annualHrs, ptoHr=(parseFloat(c.ptoDays)||0)*8*hr/annualHrs;
+    if(benHr>0) html+=row('Health / Benefits',null,benHr,'$'+(parseFloat(c.benefits)||0).toFixed(2)+'/mo × 12 ÷ '+annualHrs+' hrs/yr');
+    if(ptoHr>0) html+=row('PTO ('+c.ptoDays+' days/yr)',null,ptoHr,'old math only');
+    html+=`<div style="padding:8px 16px;font-size:11.5px;color:var(--accent);border-bottom:1px solid var(--border);">Old burden math. Fill in the yearly-cost fields above to switch this person to the direct-rate model.</div>`;
+    direct=legacy; ot=_r2(1.5*hr*_crewStatMult(c));
+    document.getElementById('ce-results-title').textContent='📊 Labor Rate (old burden math)';
+  }
+  document.getElementById('ce-breakdown').innerHTML=html;
+  document.getElementById('ce-burdened-hr').textContent='$'+direct.toFixed(2)+'/hr';
+  document.getElementById('ce-burdened-wk').textContent='$'+ot.toFixed(2)+'/hr';
+  document.getElementById('ce-burden-pct').textContent='$'+direct.toFixed(2)+' direct + overhead $'+ohr.toFixed(2)+' = full $'+(direct+ohr).toFixed(2)+'/hr (overhead shows as its own Job Costing line)';
+  res.style.display='block';
 }
 
 function saveCrewEdit(){
@@ -12051,6 +12472,8 @@ function saveCrewEdit(){
   c.gl       = document.getElementById('ce-gl').value;
   c.benefits = document.getElementById('ce-benefits').value;
   c.ptoDays  = document.getElementById('ce-pto-days').value;
+  CE_COST_INPUTS.forEach(([k,id])=>{ c[k]=_crewNumOrNull(document.getElementById(id).value); });
+  c.isOwner  = document.getElementById('ce-is-owner').checked;
   const spMap={'epoxy':'Epoxy Coating','polished':'Polished Concrete','overlay':'Concrete Overlay','metallic':'Metallic Epoxy','flake':'Epoxy Flake','prep':'Surface Prep'};
   c.specialties = Object.entries(spMap).filter(([key])=>document.getElementById('ce-sp-'+key).checked).map(([,val])=>val);
   CREW[editingCrewIdx].name = c.name;
