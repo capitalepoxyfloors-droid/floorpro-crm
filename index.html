@@ -12119,7 +12119,7 @@ function overheadAnnualTotal(){
 const COSTING_SETTINGS_SEED={history:[
   {id:'cs_legacy',effective:'1900-01-01',legacyOverheadPerHour:4.83},
   {id:'cs_20261020',effective:'2026-10-20',utilization:0.90,paidHoursPerYear:2080,
-   overheadPool:86014,excludeOwnerFromDivisor:true,
+   overheadMode:'pool',overheadPool:86014,excludeOwnerFromDivisor:true,
    consumablesDefaultPct:19,
    consumablesBySystem:{flake:16,epoxy:16,metallic:16,overlay:16,clean_seal:16,polish:51},
    ownerCostPerHour:17.25,targetNetPct:15,cashDayBurden:'none'}
@@ -12201,7 +12201,12 @@ function overheadAnnualLaborHours(set,util){
   const u=util!==undefined?util:(parseFloat(s.utilization)||0);
   return _overheadCrew(s).length*(parseFloat(s.paidHoursPerYear)||0)*u;
 }
-function overheadPool(set){ return parseFloat((set||costingCurrentModel().entry).overheadPool)||0; }
+// overheadMode 'pool' (default): the dollar pool saved in the rate set. 'items': the Overhead page's
+// itemized list as it is today (not effective-dated, since the list can be edited).
+function overheadPool(set){
+  const s=set||costingCurrentModel().entry;
+  return s.overheadMode==='items' ? overheadAnnualTotal() : (parseFloat(s.overheadPool)||0);
+}
 // Overhead $/hr for a rate set (default: today's). A legacy set returns its recorded legacy rate.
 function overheadPerHour(set,util){
   const s=set||costingCurrentModel().entry;
@@ -12308,6 +12313,7 @@ function _csSettingsHtml(cur){
     <div style="font-size:13px;font-weight:700;margin-bottom:4px;">⚙️ Costing Settings</div>
     <div style="font-size:11.5px;color:var(--text3);margin-bottom:12px;line-height:1.5;">These numbers are saved as rate sets with an effective date. Saving never changes an old set — it adds a new one. Only the owner and office can save.</div>
     <div class="form-row">${fld('Effective date',`<input class="form-input" type="date" id="cs-eff" value="${_csToday()}" oninput="csPreview()" style="font-size:13px;padding:6px 10px;"/>`)}${fld('Overhead pool ($/yr)',inp('cs-pool',num(s.overheadPool),'type="number" min="0" step="1"')+`<button class="btn btn-ghost" type="button" onclick="csUseItemsTotal()" style="font-size:11px;padding:3px 8px;margin-top:4px;">Use items total (${overheadFmt(overheadAnnualTotal())})</button>`)}</div>
+    <div class="form-row">${fld('Overhead rate uses',`<select class="form-select" id="cs-ovh-mode" onchange="csPreview()" style="font-size:13px;padding:6px 8px;"><option value="pool"${s.overheadMode!=='items'?' selected':''}>The pool above (recommended)</option><option value="items"${s.overheadMode==='items'?' selected':''}>The items list total, as it is each day</option></select>`)}</div>
     <div class="form-row">${fld('Utilization (%)',inp('cs-util',num(Math.round((parseFloat(s.utilization)||0)*10000)/100),'type="number" min="1" max="100" step="0.1"'))}${fld('Paid hours per person per year',inp('cs-hours',num(s.paidHoursPerYear),'type="number" min="1" step="1"'))}</div>
     <div class="form-row">${fld('Consumables default (% of materials)',inp('cs-cons-default',num(s.consumablesDefaultPct),'type="number" min="0" step="0.1"'))}${fld('Target net profit (%)',inp('cs-target',num(s.targetNetPct),'type="number" min="0" max="99" step="0.1"'))}</div>
     <div style="font-size:11px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin:2px 0 8px;">Consumables by system (% of materials)</div>
@@ -12324,7 +12330,7 @@ function _csSettingsHtml(cur){
   h+=rows.map(x=>{
     const e=x.e, isCur=_csVersion(x)===cur.version;
     const desc=_csIsModel(e)
-      ? `pool ${overheadFmt(parseFloat(e.overheadPool)||0)} · ${Math.round((parseFloat(e.utilization)||0)*1000)/10}% of ${(parseFloat(e.paidHoursPerYear)||0).toLocaleString()} hrs · consumables ${e.consumablesDefaultPct}% (polish ${(e.consumablesBySystem||{}).polish??'—'}%) · target ${e.targetNetPct}% · owner $${e.ownerCostPerHour}/hr · cash ${e.cashDayBurden==='statutory'?'with taxes':'base only'}`
+      ? `${e.overheadMode==='items'?'pool = items list':'pool '+overheadFmt(parseFloat(e.overheadPool)||0)} · ${Math.round((parseFloat(e.utilization)||0)*1000)/10}% of ${(parseFloat(e.paidHoursPerYear)||0).toLocaleString()} hrs · consumables ${e.consumablesDefaultPct}% (polish ${(e.consumablesBySystem||{}).polish??'—'}%) · target ${e.targetNetPct}% · owner $${e.ownerCostPerHour}/hr · cash ${e.cashDayBurden==='statutory'?'with taxes':'base only'}`
       : `legacy days: $${(parseFloat(e.legacyOverheadPerHour)||0).toFixed(2)}/hr overhead was inside the stored rate`;
     return `<div style="display:grid;grid-template-columns:110px 1fr auto;gap:10px;padding:8px 14px;border-bottom:1px solid var(--border);font-size:12px;${isCur?'background:var(--accent-dim);':''}">
       <div style="font-family:'DM Mono',monospace;">${_ovhEsc(e.effective)}</div><div style="color:var(--text2);">${desc}</div><div style="font-size:11px;color:var(--accent);font-weight:700;">${isCur?'In use today':''}</div></div>`;
@@ -12338,17 +12344,17 @@ function _csFormEntry(){
   const n=id=>{ const x=v(id); return (x===undefined||String(x).trim()==='')?NaN:parseFloat(x); };
   const eff=v('cs-eff');
   if(!/^\d{4}-\d{2}-\d{2}$/.test(eff||'')) return {error:'Pick an effective date.'};
-  const util=n('cs-util'), hours=n('cs-hours'), pool=n('cs-pool');
+  const util=n('cs-util'), hours=n('cs-hours'), pool=n('cs-pool'), mode=v('cs-ovh-mode')==='items'?'items':'pool';
   if(!(util>0&&util<=100)) return {error:'Utilization must be between 1 and 100%.'};
   if(!(hours>0)) return {error:'Paid hours per year must be more than 0.'};
-  if(!(pool>=0)) return {error:'Enter the overhead pool ($/yr).'};
+  if(mode==='pool'&&!(pool>=0)) return {error:'Enter the overhead pool ($/yr).'};
   const by={};
   for(const [k,l] of CS_SYSTEMS){ const x=n('cs-cons-'+k); if(!(x>=0)) return {error:'Enter a consumables % for '+l+'.'}; by[k]=x; }
   const consDef=n('cs-cons-default'), target=n('cs-target'), ownerCost=n('cs-owner-cost');
   if(!(consDef>=0)) return {error:'Enter the default consumables %.'};
   if(!(target>=0&&target<100)) return {error:'Target net profit must be 0–99%.'};
   return {entry:{id:'cs_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),effective:eff,
-    utilization:Math.round(util*100)/10000,paidHoursPerYear:hours,overheadPool:pool,
+    utilization:Math.round(util*100)/10000,paidHoursPerYear:hours,overheadMode:mode,overheadPool:pool>=0?pool:0,
     excludeOwnerFromDivisor:!!(document.getElementById('cs-exowner')||{}).checked,
     consumablesDefaultPct:consDef,consumablesBySystem:by,
     ownerCostPerHour:ownerCost>=0?ownerCost:0,targetNetPct:target,
@@ -12372,7 +12378,7 @@ async function csAddRateSet(){
   if(r.error){ showToast(r.error); return; }
   const e=r.entry, prev=costingSetFor(e.effective).entry;
   // Summarize what differs from the set that was in effect on that date (for the audit log)
-  const keys=['overheadPool','utilization','paidHoursPerYear','excludeOwnerFromDivisor','consumablesDefaultPct','consumablesBySystem','ownerCostPerHour','targetNetPct','cashDayBurden'];
+  const keys=['overheadMode','overheadPool','utilization','paidHoursPerYear','excludeOwnerFromDivisor','consumablesDefaultPct','consumablesBySystem','ownerCostPerHour','targetNetPct','cashDayBurden'];
   const changes=keys.filter(k=>JSON.stringify(prev[k])!==JSON.stringify(e[k])).map(k=>k+': '+(prev[k]===undefined?'—':JSON.stringify(prev[k]))+' → '+JSON.stringify(e[k]));
   if(!changes.length){ showToast('Nothing changed from the rate set already in effect on '+e.effective+'.'); return; }
   const past=e.effective<_csToday();
