@@ -124,7 +124,10 @@ Deno.serve(async (req) => {
   }
 
   await db.from('pin_attempts').insert({ ip, ok: true, account_id: row.id });
-  await db.from('pin_accounts').update({ failed_count: 0, lock_count: 0, first_lock_at: null, locked_until: null }).eq('id', row.id);
+  // Clear only the current streak and lock. lock_count / first_lock_at keep counting
+  // lockouts across the 24-hour window, so a good sign-in in between can't reset the
+  // "third lockout holds until Unlock" rule. Unlock and a new PIN clear them (pin-admin).
+  await db.from('pin_accounts').update({ failed_count: 0, locked_until: null }).eq('id', row.id);
 
   if (row.must_change_pin) {
     if (body.new_pin == null) return json({ must_change: true, pin_len: pinLengthFor(row.kind) });

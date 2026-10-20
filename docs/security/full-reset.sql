@@ -9,6 +9,12 @@
 -- After this, a fresh run of the whole migration file can hash the settings PINs
 -- again. To turn protections back on without hashing again, do not use this file.
 -- Re-apply only the POLICIES section of the migration instead.
+--
+-- The private.fp_* functions are dropped with CASCADE because every fp_* row-security
+-- policy (tables and the vehicle-docs storage policy) calls them. CASCADE drops those
+-- policies too, while row security stays ON for the tables. So after this file nobody
+-- but the service role can read app data until the whole migration is run again (or
+-- rollback.sql is run to go back to the old open access). Run them back to back.
 
 DO $$
 BEGIN
@@ -27,8 +33,8 @@ END $$;
 DROP TABLE IF EXISTS public.pin_attempts;
 DROP TABLE IF EXISTS public.pin_accounts;
 
-DROP FUNCTION IF EXISTS private.fp_crew_inactive(integer);
+DROP FUNCTION IF EXISTS private.fp_crew_inactive(integer) CASCADE;
 DROP FUNCTION IF EXISTS public.fp_revoke_sessions(uuid);
-DROP FUNCTION IF EXISTS private.fp_role();
+DROP FUNCTION IF EXISTS private.fp_role() CASCADE;
 DROP FUNCTION IF EXISTS public.fp_pin_fail(uuid);
-DROP FUNCTION IF EXISTS private.fp_member();
+DROP FUNCTION IF EXISTS private.fp_member() CASCADE;

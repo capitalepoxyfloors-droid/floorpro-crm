@@ -80,9 +80,14 @@ test('the page does not fetch or contain the old client-side PIN check', () => {
   assert.equal(html.includes("getKV('office_users')"), false);
   assert.match(html, /functions\/v1\/pin-login/);
   assert.match(html, /function fpStoragePath/);
-  assert.match(html, /_pinBuf\.length>=4/);
+  // Keypad length comes from the picked account (4 crew, 6 owner/office), never a fixed number.
+  assert.match(html, /_pinBuf\.length>=_pinLen\(\)/);
+  assert.equal(html.includes('_pinBuf.length>=4'), false);
   assert.equal(html.includes('_pinBuf.length>=6'), false);
-  assert.equal(html.includes('maxlength="6"'), false);
+  assert.match(html, /id="pin-new-admin" type="password" inputmode="numeric" maxlength="6"/);
+  assert.match(html, /Manager code must be exactly 6 digits/);
+  assert.match(html, /Office PINs must be exactly 6 digits/);
+  assert.match(html, /id="cpin-\$\{i\}" type="password" inputmode="numeric" maxlength="4"/);
   assert.match(html, /await fpEnsureSession\(\);\s*const res=await fetch\(url,\{method,headers:sb\.headers/);
   assert.match(html, /async function fpStorageHeaders/);
   const migration = fs.readFileSync(path.join(root, 'supabase/migrations/20261009143000_rls_pin_auth_private_storage.sql'), 'utf8');
@@ -93,7 +98,11 @@ test('the page does not fetch or contain the old client-side PIN check', () => {
   assert.match(migration, /CREATE OR REPLACE FUNCTION public\.fp_revoke_sessions\(target_user uuid\)/);
   assert.match(migration, /GRANT EXECUTE ON FUNCTION public\.fp_revoke_sessions\(uuid\) TO service_role/);
   assert.match(migration, /REVOKE ALL ON FUNCTION public\.fp_revoke_sessions\(uuid\) FROM anon, authenticated/);
-  assert.match(migration, /\(\(select auth\.jwt\(\)\) -> 'app_metadata' ->> 'fp_role'\) IN \('owner', 'office'\)/);
+  // Role checks go through (select private.fp_role()) so they run once per query.
+  assert.match(migration, /\(select private\.fp_role\(\)\) IN \('owner', 'office'\)/);
+  assert.match(migration, /key IN \('job_records', 'job_photos', 'slot_job_map', 'pto_requests', 'material_requests'\)/);
+  assert.match(migration, /FOR DELETE TO authenticated\s+USING \(\s+key NOT IN \('admin_pin', 'crew_pins', 'office_users'\)\s+AND \(select private\.fp_role\(\)\) IN \('owner', 'office'\)/);
+  assert.equal(/USING \(private\.fp_member\(\)\)/.test(migration), false, 'policies must wrap fp_member() in (select ...)');
   const adminSrc = fs.readFileSync(path.join(root, 'supabase/functions/pin-admin/index.ts'), 'utf8');
   assert.match(adminSrc, /Crew \$\{crewIdx \+ 1\}/);
   assert.match(adminSrc, /fp_revoke_sessions/);
