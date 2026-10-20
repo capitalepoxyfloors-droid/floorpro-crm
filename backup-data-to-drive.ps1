@@ -12,9 +12,20 @@
 #   settings        - KV store: job_records (daily logs + costing), slot_job_map,
 #                     pto_requests, material_requests, sales_visits, todos,
 #                     custom_job_types, holidays, PINs, and more
+#   audit_log       - who changed what (incl. sign-in security alerts)
+#   vehicles, vehicle_maintenance - fleet records
+#   ops_backups     - the bots' own backups
+# Not backed up on purpose: pin_accounts / pin_attempts (PIN hashes; a 4-digit PIN hash
+# is cracked in seconds, so they don't belong in Drive).
+#
+# Supabase's API returns at most 1000 rows per request no matter what limit= says, so
+# each table is read in pages of 1000, ordered by id.
 
+# After row security is on, the public anon key can no longer read these tables.
+# The service_role key is kept encrypted on this PC only (tools\supabase-cli\save-service-key.ps1).
 $SUPABASE_URL = 'https://cngbsmmdfxmerlqnkate.supabase.co'
-$SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNuZ2JzbW1kZnhtZXJscW5rYXRlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg3NzcxNTEsImV4cCI6MjA5NDM1MzE1MX0.WYzlfn8OHPYsWCY-P7bXjvl_v78wozwjk2ajEBxa-7I'
+try { $SUPABASE_KEY = & 'C:\Users\Will Bradford\tools\supabase-cli\get-service-key.ps1' }
+catch { Write-Error $_.Exception.Message; exit 1 }
 $destDir = 'G:\My Drive\FloorPro CRM Backups'
 $keep    = 30
 
@@ -28,7 +39,10 @@ $headers = @{
 Write-Output 'FloorPro CRM - Supabase Data Backup'
 Write-Output '======================================'
 
-$tables    = @('leads','jobs','materials','crew','pto_blocks','scheduled_slots','settings')
+$tables    = @('leads','jobs','materials','crew','pto_blocks','scheduled_slots','settings',
+               'audit_log','vehicles','vehicle_maintenance','ops_backups')
+$noIdOrder = @('ops_backups')   # no id column; read unordered
+$pageSize  = 1000
 $totalRows = 0
 $errors    = @()
 
@@ -40,10 +54,19 @@ $backup = [ordered]@{
 }
 
 foreach ($table in $tables) {
-    $url = $SUPABASE_URL + '/rest/v1/' + $table + '?select=*&limit=10000'
+    $order = if ($noIdOrder -contains $table) { '' } else { '&order=id.asc' }
     try {
-        $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -ErrorAction Stop
-        if ($response -is [Array]) { $rows = $response } else { $rows = @($response) }
+        $rows   = @()
+        $offset = 0
+        while ($true) {
+            $url  = $SUPABASE_URL + '/rest/v1/' + $table + '?select=*' + $order + '&limit=' + $pageSize + '&offset=' + $offset
+            # PS 5.1 returns a JSON array as one object; unwrap it the same way as before.
+            $resp = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -ErrorAction Stop
+            if ($resp -is [Array]) { $page = $resp } elseif ($null -eq $resp) { $page = @() } else { $page = @($resp) }
+            $rows += $page
+            if ($page.Count -lt $pageSize) { break }
+            $offset += $pageSize
+        }
         $backup.tables[$table] = $rows
         $totalRows += $rows.Count
         Write-Output ('  OK  ' + $table + ' : ' + $rows.Count + ' rows')
