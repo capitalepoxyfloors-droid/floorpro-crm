@@ -4316,7 +4316,11 @@ function merge3(base, local, server){
 }
 // Persist a shared collection by MERGING with the latest server copy. Returns the merged
 // value (caller reassigns its global). Surfaces a real failure instead of a false "Saved".
+// _kvSaveOk[key] is true only when the last _saveKVMerged(key) really reached the server,
+// so a caller can tell the person "saved" vs "not saved" instead of always saying it worked.
+const _kvSaveOk={};
 async function _saveKVMerged(key, localVal){
+  _kvSaveOk[key]=false;
   const read=await sb.readKV(key);
   if(!read.ok){
     showSyncStatus('⚠ Could not re-read the server copy — nothing was saved. Your edits are still here; try again.','var(--red)');
@@ -4351,6 +4355,7 @@ async function _saveKVMerged(key, localVal){
     return localVal;
   }
   _kvBaselines[key]=_jrClone(merged);
+  _kvSaveOk[key]=true;
   return merged;
 }
 // Snapshot every shared collection right after a full load (the merge ancestor for the session).
@@ -8603,6 +8608,19 @@ function pinKey(d){
 }
 
 function pinDel(){ if(_pinBusy) return; if(_pinBuf.length){_pinBuf=_pinBuf.slice(0,-1);_pinRender();} }
+
+// A keyboard works the same as tapping the keypad: digits (top row or number pad),
+// Backspace, Enter. Only while the PIN step of the sign-in screen is showing.
+document.addEventListener('keydown',e=>{
+  const ls=document.getElementById('login-screen');
+  if(!ls||ls.style.display==='none') return;
+  const step=document.getElementById('login-pin');
+  if(!step||step.style.display==='none') return;
+  if(e.ctrlKey||e.metaKey||e.altKey) return;
+  if(/^[0-9]$/.test(e.key)){ e.preventDefault(); pinKey(+e.key); }
+  else if(e.key==='Backspace'){ e.preventDefault(); pinDel(); }
+  else if(e.key==='Enter'){ e.preventDefault(); pinSubmit(); }
+});
 
 async function pinSubmit(){
   if(_pinBusy||!_loginAcct||_pinBuf.length!==_pinLen()) return;
@@ -15552,9 +15570,18 @@ async function _matAddNote(matId, text){
   text=(text||'').trim(); if(!text){ showToast('Type a note first.'); return false; }
   const {author,role}=_matNoteAuthor();
   const arr=_matNotesArr(matId);
-  arr.push({id:_matNoteId(), text, author, role, date:new Date().toISOString().split('T')[0]});
+  const note={id:_matNoteId(), text, author, role, date:new Date().toISOString().split('T')[0]};
+  arr.push(note);
   MATERIAL_NOTES[matId]=arr;
   await saveMaterialNotes();
+  if(!_kvSaveOk['material_notes']){
+    // Not on the server: take it back out so the screen doesn't show a tip nobody else
+    // will see. Returning false leaves the typed text in the box to try again.
+    const back=_matNotesArr(matId).filter(x=>x.id!==note.id);
+    if(back.length) MATERIAL_NOTES[matId]=back; else delete MATERIAL_NOTES[matId];
+    showToast('⚠ Your tip was not saved. Check your signal and try again.');
+    return false;
+  }
   renderMaterials();
   return true;
 }
@@ -15575,6 +15602,12 @@ async function matDeleteNote(matId, noteId, ctx){
   const next=arr.filter(x=>x.id!==noteId);
   if(next.length) MATERIAL_NOTES[matId]=next; else delete MATERIAL_NOTES[matId];
   await saveMaterialNotes();
+  if(!_kvSaveOk['material_notes']){
+    MATERIAL_NOTES[matId]=arr; // still on the server, so put it back on screen too
+    if(ctx==='owner') renderMatNotesList(); else renderProdDocs();
+    showToast('⚠ The note was not removed. Check your signal and try again.');
+    return;
+  }
   renderMaterials();
   if(ctx==='owner') renderMatNotesList(); else renderProdDocs();
   showToast('Note removed.');

@@ -144,6 +144,7 @@ test('login goes through the server and stored photo URLs are signed without rew
     });
   }
 
+  let failSettingsWrites = false; // simulates row security refusing a settings save
   function mockFetch(url, opts = {}) {
     const method = String(opts.method || 'GET').toUpperCase();
     const u = String(url);
@@ -153,6 +154,9 @@ test('login goes through the server and stored photo URLs are signed without rew
     }
     const headers = opts.headers || {};
     calls.push({ url: u, method, body, authorization: headers.Authorization || headers.authorization || '' });
+    if (failSettingsWrites && u.includes('/rest/v1/settings') && method === 'POST') {
+      return Promise.resolve(jsonResponse({ message: 'new row violates row-level security policy' }, 403));
+    }
 
     if (u.includes('/functions/v1/pin-login')) {
       if (body && body.action === 'roster') {
@@ -229,18 +233,34 @@ test('login goes through the server and stored photo URLs are signed without rew
     assert.notEqual(w.document.getElementById('login-who').style.display, 'none');
     assert.ok(calls.some(c => c.url.includes('/functions/v1/pin-login') && c.body && c.body.action === 'roster'));
     assert.equal(w.document.querySelectorAll('#login-roster button').length, 2);
+
+    // Keyboard: digits, Backspace and Enter act like the keypad, but only on the PIN step.
+    const key = (k) => w.document.dispatchEvent(new w.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+    const settle = (ms = 400) => new Promise(r => setTimeout(r, ms));
+    const pinLoginCalls = () => calls.filter(c => c.url.includes('/functions/v1/pin-login') && c.body && c.body.pin != null);
+    key('5');
+    assert.equal(w.eval('_pinBuf'), '', 'typing on the name list must not start a PIN');
     w.document.querySelectorAll('#login-roster button')[0].click();
     assert.equal(w.document.querySelectorAll('#pin-dots .pin-dot').length, 4);
 
-    w.eval("_pinBuf='0000'");
-    await call('pinSubmit');
+    key('0'); key('0'); key('0');
+    assert.equal(w.document.querySelectorAll('#pin-dots .pin-dot.filled').length, 3);
+    key('0'); key('Enter'); // fourth digit auto-submits; Enter right after must not send it twice
+    await settle();
     assert.equal(w.document.getElementById('login-screen').style.display, 'flex');
-    assert.equal(calls.some(c => c.url.includes('/functions/v1/pin-login') && c.body
-      && c.body.account_id === 'acct-owner' && c.body.pin === '0000'), true);
+    assert.equal(pinLoginCalls().length, 1, 'one sign-in request per PIN');
+    assert.equal(pinLoginCalls()[0].body.account_id, 'acct-owner');
+    assert.equal(pinLoginCalls()[0].body.pin, '0000');
 
     calls.length = 0;
-    w.eval("_pinBuf='4821'");
-    await call('pinSubmit');
+    key('4'); key('8'); key('9'); key('Backspace'); key('2');
+    assert.equal(w.eval('_pinBuf'), '482');
+    key('Escape'); key('a'); // ignored
+    assert.equal(w.eval('_pinBuf'), '482');
+    key('1');
+    await settle();
+    assert.equal(pinLoginCalls().length, 1);
+    assert.equal(pinLoginCalls()[0].body.pin, '4821');
     assert.equal(w.document.getElementById('login-screen').style.display, 'none');
     assert.equal(w.localStorage.getItem('fpRole'), null);
     await w.eval('sb').get('jobs');
@@ -262,6 +282,19 @@ test('login goes through the server and stored photo URLs are signed without rew
     assert.match(signed, /token=signed/);
     assert.equal(call('fpMediaUrl', drive), drive);
     assert.equal(w.eval('JOB_PHOTOS.j1[0].url'), publicUrl, 'saved JSON must stay the public URL string');
+
+    // Product Docs tips: a refused save must say so and not leave the tip on screen.
+    w.eval("window.__toasts=[]; showToast=function(m){ window.__toasts.push(String(m)); }; MATERIAL_NOTES={};");
+    failSettingsWrites = true;
+    const refused = await w.eval("_matAddNote('m1','tip that will not save')");
+    assert.equal(refused, false);
+    assert.equal(w.eval("JSON.stringify(MATERIAL_NOTES)"), '{}');
+    assert.match(w.eval("__toasts.join('|')"), /not saved/);
+    assert.equal(/Tip added|Note added/.test(w.eval("__toasts.join('|')")), false);
+    failSettingsWrites = false;
+    const saved = await w.eval("_matAddNote('m1','tip that saves')");
+    assert.equal(saved, true);
+    assert.equal(w.eval("MATERIAL_NOTES.m1.length"), 1);
 
     let quiet = 0;
     let lastCount = -1;

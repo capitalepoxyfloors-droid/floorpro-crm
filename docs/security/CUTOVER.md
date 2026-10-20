@@ -1,5 +1,53 @@
 # CrewBoard security cutover
 
+## SWITCH-OVER NIGHT — final steps (Oct 20). This section is the one to follow.
+
+**Only after Will says "go".** 8 PM CT or later, nobody using CrewBoard. Live project `cngbsmmdfxmerlqnkate`. The older "Evening order (live)" further down is background detail; where they differ, this section wins.
+
+CLI commands below run on the office PC through `C:\Users\Will Bradford\tools\supabase-cli\sb.ps1` (saved access token). Shorthand used here:
+
+```powershell
+$sb = 'C:\Users\Will Bradford\tools\supabase-cli\sb.ps1'
+$ref = 'cngbsmmdfxmerlqnkate'
+cd 'C:\Users\Will Bradford\Desktop\floorpro-crm-secure'   # the branch worktree
+```
+
+This PC has no Docker, so function deploys use `--use-api` (bundled on Supabase's side), and `supabase db dump` (which runs `pg_dump` in Docker) does not work here as-is — see step 1.
+
+1. **Backups — confirm both finished before going on.**
+   - **Full database dump.** Decide which way before the night: (a) IT takes the dump with their own tooling, (b) download today's backup from Dashboard → Database → Backups if the plan includes them, or (c) install portable PostgreSQL client tools and run `pg_dump` against the connection string from Dashboard → Settings → Database. Save it outside the repo and outside the website (it holds customer data and the old PINs), e.g. `C:\Users\Will Bradford\CrewBoard Cutover\live-before-rls.sql`.
+   - **11-table Drive backup by hand** (branch version, uses the encrypted service key):
+     `powershell -ExecutionPolicy Bypass -File .\backup-data-to-drive.ps1` → expect `Tables: 11` and no `ERR` lines. Then `.\backup-storage-to-drive.ps1` → `Errors: 0`.
+2. **Save the current manager code** into settings. Will types it himself in the Supabase dashboard (SQL Editor → paste `docs/security/00-save-owner-pin.sql` → replace the placeholder with the code → Run). It never goes through chat or a file.
+3. **Run the migration on live.** The old site stops working from here; don't stop until step 6 is done.
+   `powershell -ExecutionPolicy Bypass -File $sb db query --linked --project-ref $ref -f supabase\migrations\20261009143000_rls_pin_auth_private_storage.sql`
+   It stops with a clear message (and applies nothing) if `admin_pin` is missing or any public table is left without row security.
+4. **Deploy the functions** (from the worktree):
+   `powershell -ExecutionPolicy Bypass -File $sb functions deploy pin-login --no-verify-jwt --use-api --project-ref $ref`
+   `powershell -ExecutionPolicy Bypass -File $sb functions deploy pin-admin --use-api --project-ref $ref`
+   Check: POST `{"action":"roster"}` to `/functions/v1/pin-login` returns names only.
+5. **Will switches off User Signups** in the dashboard (Authentication → Sign In / Providers → User Signups → off → Save). Leave Email on and anonymous sign-ins off.
+6. **Merge and deploy the site.** In `Desktop\floorpro-crm` (on `main`):
+   - First move the untracked `backup-storage-to-drive.ps1` out of the way (the branch now tracks its own copy; git refuses to merge over an untracked file): rename it to `backup-storage-to-drive.ps1.pre-cutover`.
+   - `git merge --no-ff secure-pin-auth-v2` then `git push origin main`. GitHub Pages deploys from `main`. Note the merge commit's id for rollback.
+   - Hard-refresh (Ctrl+Shift+R) after a minute: the sign-in screen lists names.
+7. **Test on live.**
+   - Will: tap Will Bradford, type the old 4-digit code, get forced to a new 6-digit code (typed twice). That is the new manager code.
+   - One office sign-in (office staff also get forced to a 6-digit code on first sign-in — if the Grok bot signs in to CrewBoard, it has to handle that prompt), and one crew sign-in (Crew View only).
+   - A photo opens (thumbnail and full size).
+   - Wave sync: run the "FloorPro Wave Sync Watcher" task by hand → a normal line in `FloorPro Automation\sync-log.txt`.
+   - photo-jobs: `tools\supabase-cli\photo-jobs.ps1 -Action sync` (dry run) → HTTP 200.
+   - Nightly backup: run `Desktop\floorpro-crm\backup-data-to-drive.ps1` by hand (now the merged service-key version) → `Tables: 11`.
+8. **IT runs Security Advisor on live** → zero row-security errors.
+9. **Rollback if anything breaks:**
+   `powershell -ExecutionPolicy Bypass -File $sb db query --linked --project-ref $ref -f docs\security\rollback.sql`
+   then in `Desktop\floorpro-crm`: `git revert -m 1 <merge commit>` and `git push origin main` (Pages redeploys the old `index.html`). The PC scripts keep working either way (the service key works with or without row security). The Edge Functions can stay deployed; the old page doesn't call them.
+
+**After:**
+- Crew change their PINs that week (owner sets them on the Security page).
+- After 1 week with no problems: run `docs/security/wipe-plaintext-pins.sql`.
+- Phase 2: move `job_records` and `job_photos` into their own tables, and hide pay and leads from crew at the database level.
+
 ## For Will (plain English)
 
 Anyone on the internet who has the key baked into the website can currently read and change everything: customer addresses and phones, gate and garage codes, and the PINs. The photo folder is public too.
