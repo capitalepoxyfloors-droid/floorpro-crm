@@ -5927,6 +5927,7 @@ function jcToggleNoWork(ds){
 function jcSetConsumablesPct(val){
   const job=getJobRecord(_jcId); if(!job) return;
   job.consumablesPct=Math.max(0,parseFloat(val)||0);
+  job.consumablesPctSet=true; // typed on purpose — a 10 here is a real choice, not the old auto-default
   saveJobRecords();
   renderJobCosting();
 }
@@ -5934,6 +5935,7 @@ function jcSetConsumablesPct(val){
 function jcResetConsumablesPct(){
   const job=getJobRecord(_jcId); if(!job) return;
   delete job.consumablesPct;
+  delete job.consumablesPctSet;
   saveJobRecords();
   renderJobCosting();
 }
@@ -6376,16 +6378,18 @@ function jcJobSystem(job){
   const t=String(job.jobType||'');
   return JC_JOBTYPE_SYSTEM[t]||(/flake/i.test(t)?'flake':null);
 }
-// Consumables % for a job: {pct, source:'job'|'system'|'default'|'legacy', sys}. A % saved on the job
-// wins (as recorded). Otherwise the rate set in effect when the job started; a job that started
-// before the direct-rate model keeps the old 10% default. Re-cost ignores the job's own % and uses
-// today's settings (that's how the CFO's report priced consumables).
+/// Consumables % for a job: {pct, source:'job'|'system'|'default', sys}. A % saved on the job wins, in
+// both views — except a saved 10, which is the old automatic default (the Costing tab used to write
+// 10 onto every job it opened), so it counts as unset unless someone typed it (consumablesPctSet).
+// Unset → the settings % for the job's system, else the settings default. Recorded view: the rate set
+// in effect when the job started (or today's, for a job from before the direct-rate model);
+// re-cost: today's.
 function jcConsumablesPct(job,mode){
   const sys=jcJobSystem(job);
-  if(mode!=='recost'&&job&&job.consumablesPct!==undefined&&job.consumablesPct!==null&&job.consumablesPct!=='')
-    return {pct:parseFloat(job.consumablesPct)||0,source:'job',sys};
-  const set=mode==='recost'?costingCurrentModel().entry:costingSetFor(_jcJobStartDate(job)).entry;
-  if(!_csIsModel(set)) return {pct:10,source:'legacy',sys};
+  const own=(job&&job.consumablesPct!==undefined&&job.consumablesPct!==null&&job.consumablesPct!=='')?parseFloat(job.consumablesPct):NaN;
+  if(!isNaN(own)&&(own!==10||job.consumablesPctSet)) return {pct:own,source:'job',sys};
+  const era=mode==='recost'?null:costingSetFor(_jcJobStartDate(job)).entry;
+  const set=_csIsModel(era)?era:costingCurrentModel().entry;
   const by=set.consumablesBySystem||{};
   if(sys&&by[sys]!==undefined&&by[sys]!==null&&by[sys]!=='') return {pct:parseFloat(by[sys])||0,source:'system',sys};
   return {pct:parseFloat(set.consumablesDefaultPct)||0,source:'default',sys};
@@ -6512,12 +6516,18 @@ function jcJobCostLines(job,mode){
   const totalMiles=Math.round(mileageOneWay*2*workDays*10)/10;
   const mileage=Math.round((mileCustomRate!==null ? totalMiles*mileCustomRate : workDates.reduce((s,ds)=>s+mileageOneWay*2*irsMileageRateForDate(ds),0))*100)/100;
   // ── REVENUE (Time & Material bills labor at its all-in cost, labor + overhead, as it always has) ──
+  // Re-costing never changes revenue: a T&M job's bill is what was billed at the recorded rates.
   const tmJob=!!job.tmJob;
   const tmLM=parseFloat(job.tmLaborMarkup)||0, tmMM=parseFloat(job.tmMaterialMarkup)||0;
-  const tmLaborBasis=Math.round((labor+overhead)*100)/100;
-  const tmLaborBilled=Math.round(tmLaborBasis*(1+tmLM/100)*100)/100;
-  const tmMatBilled=Math.round(materials*(1+tmMM/100)*100)/100;
-  const tmBilled=Math.round((tmLaborBilled+tmMatBilled+consumables+mileage)*100)/100;
+  const asBilled=(recost&&tmJob)?jcJobCostLines(job,'recorded'):null;
+  const tmLaborBasis=asBilled?asBilled.tmLaborBasis:Math.round((labor+overhead)*100)/100;
+  const tmLaborBilled=asBilled?asBilled.tmLaborBilled:Math.round(tmLaborBasis*(1+tmLM/100)*100)/100;
+  const tmMatBilled=asBilled?asBilled.tmMatBilled:Math.round(materials*(1+tmMM/100)*100)/100;
+  // Consumables are passed through at the % the job was billed with (its saved %, even an old
+  // automatic 10%), so changing the cost-side default never changes what the customer was billed.
+  const savedCons=parseFloat(job.consumablesPct);
+  const billedCons=isNaN(savedCons)?consumables:Math.round(materials*savedCons/100*100)/100;
+  const tmBilled=asBilled?asBilled.tmBilled:Math.round((tmLaborBilled+tmMatBilled+billedCons+mileage)*100)/100;
   const revenue=tmJob?tmBilled:contract;
   // ── COMMISSION ('pct' rows are a % of revenue) ──
   const commissions=Math.round((job.commissions||[]).reduce((a,c)=>a+_commRowCost(c,revenue),0)*100)/100;
@@ -6549,7 +6559,7 @@ function jcJobCostLines(job,mode){
     matRows:Object.values(matTotals),supplierInvoices,supplierInvTotal,materials,
     consPct:cons.pct,consSource:cons.source,consSys:cons.sys,consumables,
     workDays,workDates,mileageOneWay,mileCustomRate,totalMiles,mileage,
-    tmJob,tmLM,tmMM,tmLaborBasis,tmLaborBilled,tmMatBilled,tmBilled,contract,revenue,commissions,
+    tmJob,tmLM,tmMM,tmLaborBasis,tmLaborBilled,tmMatBilled,tmBilledCons:asBilled?asBilled.tmBilledCons:billedCons,tmBilled,contract,revenue,commissions,
     directCost,grossProfit,gmPct,overheadRateNow:overheadPerHour(model),netProfit,netPct,flag:revenue>0?jcProfitFlag(netPct):null,
     ownerCostPerHour,ownerCost,trueNet,trueNetPct,targetNetPct,breakEven,priceForTarget,
     sqft:jcJobSqft(job),category:jcCostCategory(job),finishDate};
@@ -6623,7 +6633,7 @@ function renderJobCostingPage(){
     <label style="display:flex;align-items:center;gap:7px;cursor:pointer;"><input type="checkbox" ${_jcrGroup?'checked':''} onchange="jcrSetGroup(this.checked)" style="accent-color:var(--accent);"> Subtotals by type</label>
   </div>
   <div style="font-size:11.5px;color:var(--text3);margin:-4px 0 14px;line-height:1.5;">${_jcrRecost
-    ?`<b style="color:var(--accent);">Re-cost:</b> every hour at today's crew rates plus $${ohNow.toFixed(2)}/hr overhead, prevailing wage with employer taxes, consumables by system. Shown here only — nothing is saved.`
+    ?`<b style="color:var(--accent);">Re-cost:</b> every hour at today's crew rates plus $${ohNow.toFixed(2)}/hr overhead, prevailing wage with employer taxes, consumables at the job's own % or today's settings. Shown here only — nothing is saved.`
     :`As recorded: each day at the rates stamped when it was logged. Before 10/20 the stored rate had $${_csLegacyOverheadFor('2026-10-19').toFixed(2)}/hr overhead inside it; it's split out into the Overhead column.`}</div>
   <div class="mgrid4" style="margin-bottom:24px;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));">
     <div class="stat-card"><div class="stat-label">Total Revenue</div><div class="stat-value">${fmt(tot.revenue)}<div style="font-size:12px;font-weight:500;color:var(--text3);margin-top:2px;">${rows.length} job${rows.length!==1?'s':''}</div></div></div>
@@ -7122,7 +7132,7 @@ function renderJobCosting(){
     <span style="font-size:14px;color:var(--text2);">${tmJob?'Billed — Time &amp; Material':'Contract Value'}</span>
     <span style="font-size:18px;font-weight:700;font-family:'DM Mono',monospace;color:var(--accent);">${effRevenue>0?fmt(effRevenue):(tmJob?fmt(0):'Not set')}</span>
   </div>`;
-  if(tmJob) html+=`<div style="font-size:11px;color:var(--text3);margin-top:5px;">Labor ${fmt(L.tmLaborBasis)} (incl. overhead)${tmLM?' +'+tmLM+'% → '+fmt(tmLaborBilled):''} &nbsp;·&nbsp; Materials ${fmt(totalMatCost)}${tmMM?' +'+tmMM+'% → '+fmt(tmMatBilled):''}${(mileageCost>0||consCost>0)?' &nbsp;·&nbsp; '+[mileageCost>0?'mileage '+fmt(mileageCost):'',consCost>0?'consumables '+fmt(consCost):''].filter(Boolean).join(' + ')+' at cost':''}</div>`;
+  if(tmJob) html+=`<div style="font-size:11px;color:var(--text3);margin-top:5px;">Labor ${fmt(L.tmLaborBasis)} (incl. overhead)${tmLM?' +'+tmLM+'% → '+fmt(tmLaborBilled):''} &nbsp;·&nbsp; Materials ${fmt(totalMatCost)}${tmMM?' +'+tmMM+'% → '+fmt(tmMatBilled):''}${(mileageCost>0||L.tmBilledCons>0)?' &nbsp;·&nbsp; '+[mileageCost>0?'mileage '+fmt(mileageCost):'',L.tmBilledCons>0?'consumables '+fmt(L.tmBilledCons):''].filter(Boolean).join(' + ')+' at cost':''}</div>`;
 
   // Labor
   html+=sec('Labor Cost');
@@ -7201,7 +7211,7 @@ function renderJobCosting(){
       <span style="font-size:12px;color:var(--text2);display:flex;align-items:center;gap:6px;">
         Consumables
         <input type="number" min="0" max="100" step="1" value="${consPct}" onchange="jcSetConsumablesPct(this.value)" style="width:44px;font-size:12px;text-align:center;border:1px solid var(--border2);border-radius:4px;padding:2px 4px;background:var(--surface);color:var(--text);font-family:'DM Mono',monospace;">
-        <span style="font-size:12px;color:var(--text3);">% of materials · ${L.consSource==='job'?'set on this job <a href="#" onclick="jcResetConsumablesPct();return false;" style="color:var(--accent);">use default</a>':(L.consSource==='system'?'default for '+(JC_SYSTEM_LABELS[L.consSys]||'this system'):(L.consSource==='legacy'?'old default':'default'))}</span>
+        <span style="font-size:12px;color:var(--text3);">% of materials · ${L.consSource==='job'?'set on this job <a href="#" onclick="jcResetConsumablesPct();return false;" style="color:var(--accent);">use default</a>':(L.consSource==='system'?'default for '+(JC_SYSTEM_LABELS[L.consSys]||'this system'):'default')}</span>
       </span>
       <span style="font-family:'DM Mono',monospace;font-size:12px;">${consCost>0?fmt(consCost):'—'}</span>
     </div>`;

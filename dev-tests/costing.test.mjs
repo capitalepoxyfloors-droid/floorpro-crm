@@ -267,14 +267,34 @@ test('job P&L: direct cost, gross margin, overhead, net, break-even, price for t
   assert.equal(ev('jcProfitFlag(-0.1)'), 'losing');
 });
 
-test('consumables: a saved % wins as recorded; re-cost uses settings by system; old jobs keep 10%', async () => {
+test('consumables: a saved 10% counts as unset, other saved % are kept, typed 10% sticks', async () => {
   await freshCrewAndSettings();
   putJob({ id: 'c1', customer: 'Old Polish', status: 'complete', jobType: 'concrete', value: '1000', consumablesPct: 10, startDate: '2026-08-03', endDate: '2026-08-03', dayLogs: {} });
   putJob({ id: 'c2', customer: 'Old Flake', status: 'complete', jobType: 'flake-good', value: '1000', startDate: '2026-08-03', endDate: '2026-08-03', dayLogs: {} });
-  assert.equal(lines('c1').consPct, 10);
-  assert.equal(lines('c1', 'recost').consPct, 51);
-  assert.equal(lines('c2').consPct, 10, 'a job from before the model keeps the old default');
-  assert.equal(lines('c2', 'recost').consPct, 16);
+  putJob({ id: 'c3', customer: 'Overlay 31', status: 'complete', jobType: 'overlay', value: '1000', consumablesPct: 31, startDate: '2026-08-03', endDate: '2026-08-03', dayLogs: {} });
+  putJob({ id: 'c4', customer: 'Typed 10', status: 'complete', jobType: 'flake-good', value: '1000', consumablesPct: 10, consumablesPctSet: true, startDate: '2026-08-03', endDate: '2026-08-03', dayLogs: {} });
+  putJob({ id: 'c5', customer: 'Other type', status: 'complete', jobType: 'commercial-bid-spec', value: '1000', startDate: '2026-08-03', endDate: '2026-08-03', dayLogs: {} });
+  for (const mode of ['recorded', 'recost']) {
+    assert.equal(lines('c1', mode).consPct, 51, 'saved 10 on a polish job → 51% (' + mode + ')');
+    assert.equal(lines('c2', mode).consPct, 16, 'unset flake → 16% (' + mode + ')');
+    assert.equal(lines('c3', mode).consPct, 31, 'any other saved % is kept (' + mode + ')');
+    assert.equal(lines('c4', mode).consPct, 10, 'a 10 typed on purpose is kept (' + mode + ')');
+    assert.equal(lines('c5', mode).consPct, 19, 'no system → settings default (' + mode + ')');
+  }
+  // Time & material: the bill keeps the % it was billed with (even an old 10%), in both views
+  ev(`window.__s={crewIdx:0,name:'Seth West',burdenedRate:'41.12'}`);
+  putJob({ id: 'tm1', customer: 'T&M Doors', status: 'complete', jobType: 'metallic', tmJob: true, tmLaborMarkup: 50, tmMaterialMarkup: 50, consumablesPct: 10,
+    startDate: '2026-06-22', endDate: '2026-06-22', supplierInvoices: [{ vendor: 'S', amount: '100' }],
+    dayLogs: { '2026-06-22': { fullDay: true, crewPresent: [plain(w.__s)] } } });
+  const tmR = lines('tm1'), tmC = lines('tm1', 'recost');
+  assert.equal(tmR.consPct, 16, 'cost side uses the default');
+  assert.equal(tmR.revenue, r2(r2(8 * 41.12 * 1.5) + 150 + 10), 'billed: all-in labor +50%, materials +50%, consumables at the billed 10%');
+  assert.equal(tmC.revenue, tmR.revenue, 're-costing never changes what was billed');
+  ev(`_jcId='c2'; jcSetConsumablesPct('10');`);
+  assert.equal(ev(`getJobRecord('c2').consumablesPctSet`), true);
+  assert.equal(lines('c2').consPct, 10);
+  ev(`jcResetConsumablesPct();`);
+  assert.equal(lines('c2').consPct, 16);
   assert.equal(ev(`jcCostCategory(getJobRecord('c1'))`), 'polishing');
   assert.equal(ev(`jcCostCategory({jobType:'flake-good',prevailingWage:true})`), 'commercial');
   assert.equal(ev(`jcCostCategory({jobType:'flake-better'})`), 'res_flake');
