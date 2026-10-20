@@ -65,7 +65,8 @@ Do one small save on each, then refresh and confirm it stuck.
 28. Crew view, all 4 weeks. Their jobs, day chips, and PTO show as before.
 29. Tap a job on their schedule that has no job card yet (writes `slot_job_map`). Open a job they are on. Day log saves (`job_records`). A photo already on the job displays. Upload and delete a test photo (`job_photos`).
 30. Submit a PTO request and edit it while pending (`pto_requests`). Submit a material request (`material_requests`).
-31. Product docs open.
+30b. On a job card, Job Info → 📎 Upload Document: a small file uploads and stays after reload (`job_docs`). Delete it.
+31. Product docs open. Add a tip to a product and remove it (`material_notes`).
 32. They cannot reach Payroll, Leads, or Security through the menu.
 33. With the crew access token, through the API: writing any other settings key (e.g. `overhead`) is refused, deleting any settings row removes nothing, and `ops_backups` returns no rows.
 

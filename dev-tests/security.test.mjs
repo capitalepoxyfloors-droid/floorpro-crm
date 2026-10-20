@@ -100,7 +100,11 @@ test('the page does not fetch or contain the old client-side PIN check', () => {
   assert.match(migration, /REVOKE ALL ON FUNCTION public\.fp_revoke_sessions\(uuid\) FROM anon, authenticated/);
   // Role checks go through (select private.fp_role()) so they run once per query.
   assert.match(migration, /\(select private\.fp_role\(\)\) IN \('owner', 'office'\)/);
-  assert.match(migration, /key IN \('job_records', 'job_photos', 'slot_job_map', 'pto_requests', 'material_requests'\)/);
+  assert.match(migration, /key IN \('job_records', 'job_photos', 'job_docs', 'slot_job_map', 'pto_requests', 'material_requests', 'material_notes'\)/);
+  // Every settings key a Crew View screen saves into must be on that list.
+  for (const key of ['job_records', 'job_photos', 'job_docs', 'slot_job_map', 'pto_requests', 'material_requests', 'material_notes']) {
+    assert.equal((migration.match(new RegExp(`'${key}'`, 'g')) || []).length >= 3, true, key + ' must be in all three crew write lists');
+  }
   assert.match(migration, /FOR DELETE TO authenticated\s+USING \(\s+key NOT IN \('admin_pin', 'crew_pins', 'office_users'\)\s+AND \(select private\.fp_role\(\)\) IN \('owner', 'office'\)/);
   assert.equal(/USING \(private\.fp_member\(\)\)/.test(migration), false, 'policies must wrap fp_member() in (select ...)');
   const adminSrc = fs.readFileSync(path.join(root, 'supabase/functions/pin-admin/index.ts'), 'utf8');

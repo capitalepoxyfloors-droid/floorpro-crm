@@ -387,10 +387,13 @@ DROP POLICY IF EXISTS fp_settings_insert ON public.settings;
 DROP POLICY IF EXISTS fp_settings_update ON public.settings;
 DROP POLICY IF EXISTS fp_settings_delete ON public.settings;
 -- PIN rows stay in the table for rollback, but no client role can see or change them.
--- Owner and office can write every other key. Crew can write only the five entries
+-- Owner and office can write every other key. Crew can write only the seven entries
 -- their Crew View work saves into, and can never delete a settings row:
---   job_records (day logs), job_photos, slot_job_map (opening a job from the
---   schedule), pto_requests, material_requests.
+--   job_records (day logs), job_photos, job_docs (job card "Upload Document"),
+--   slot_job_map (opening a job from the schedule), pto_requests, material_requests,
+--   material_notes (Product Docs "add your own tips").
+-- job_docs and material_notes were found missing in the Oct 20 browser test (crew saves
+-- showed "Save failed").
 -- crew_inactive is readable (inactive people drop off the schedule) but owner/office only.
 -- If a new Crew View feature saves into another settings key, add it to all three lists.
 CREATE POLICY fp_settings_select ON public.settings
@@ -406,7 +409,7 @@ CREATE POLICY fp_settings_insert ON public.settings
     AND (
       (select private.fp_role()) IN ('owner', 'office')
       OR ((select private.fp_role()) = 'crew'
-          AND key IN ('job_records', 'job_photos', 'slot_job_map', 'pto_requests', 'material_requests'))
+          AND key IN ('job_records', 'job_photos', 'job_docs', 'slot_job_map', 'pto_requests', 'material_requests', 'material_notes'))
     )
   );
 CREATE POLICY fp_settings_update ON public.settings
@@ -416,7 +419,7 @@ CREATE POLICY fp_settings_update ON public.settings
     AND (
       (select private.fp_role()) IN ('owner', 'office')
       OR ((select private.fp_role()) = 'crew'
-          AND key IN ('job_records', 'job_photos', 'slot_job_map', 'pto_requests', 'material_requests'))
+          AND key IN ('job_records', 'job_photos', 'job_docs', 'slot_job_map', 'pto_requests', 'material_requests', 'material_notes'))
     )
   )
   WITH CHECK (
@@ -424,7 +427,7 @@ CREATE POLICY fp_settings_update ON public.settings
     AND (
       (select private.fp_role()) IN ('owner', 'office')
       OR ((select private.fp_role()) = 'crew'
-          AND key IN ('job_records', 'job_photos', 'slot_job_map', 'pto_requests', 'material_requests'))
+          AND key IN ('job_records', 'job_photos', 'job_docs', 'slot_job_map', 'pto_requests', 'material_requests', 'material_notes'))
     )
   );
 CREATE POLICY fp_settings_delete ON public.settings
