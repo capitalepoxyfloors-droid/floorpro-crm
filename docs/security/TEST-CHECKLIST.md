@@ -71,6 +71,8 @@ Do one small save on each, then refresh and confirm it stuck.
 
 ## Office PC and cloud jobs
 
+Done on the office PC against live on Oct 19 with the service key (the service role skips row security and bucket privacy the same way before and after cutover, so this carries over). See CUTOVER.md step 8. IT can skip 34–36.
+
 34. With the test project's service key saved the same way (or a temporary copy of the scripts pointed at test): `backup-data-to-drive.ps1` writes a JSON snapshot; `backup-storage-to-drive.ps1` lists and downloads from the private bucket.
 35. Wave sync: run `sync-wave-estimates.ps1` once with the service key; it reads settings/jobs/leads without errors. Press the Jobs-page Wave sync button and run `wave-sync-watcher.ps1` by hand; `wave_sync_request_done` updates.
 36. photo-jobs dry runs: `photo-jobs.ps1 -Action sync`, `-Action cleanup`, `-Action restore -PhotoId <an archived id>` (all without `-Live`) report normally against the private bucket.

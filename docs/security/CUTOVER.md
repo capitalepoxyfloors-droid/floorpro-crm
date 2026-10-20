@@ -151,6 +151,8 @@ Tell crew: the app will ask them to tap their name, then their PIN. Same PIN ton
 
 Do 8a and 8b any day **before** cutover night. The service key works with the old site too, so nothing breaks early.
 
+**Done Oct 19, ~10 PM:** key saved with `-FromCli` (never displayed), switch script run, Wave Sync Watcher task run by hand afterward (result 0, normal log line), `wave-sync-watcher.ps1` run by hand, photo-jobs sync + cleanup dry runs HTTP 200, and the branch's two backup scripts run with the key (all 11 tables incl. 2,090 audit rows; storage mirror 209/209). Steps 34–36 of the test checklist are covered by this.
+
 **8a. Save the key once:** `C:\Users\Will Bradford\tools\supabase-cli\save-service-key.ps1` (paste the legacy `service_role` key) or `save-service-key.ps1 -FromCli` (fetches it with the saved CLI token, no pasting). It refuses anything that isn't this project's service_role key, and checks it can read the database.
 
 **8b. Switch the PC scripts:** `switch-pc-scripts-to-service-key.ps1` (same folder). It changes the one key line in `FloorPro Automation\sync-wave-estimates.ps1` and `wave-sync-watcher.ps1` (keeps `.pre-cutover` copies), and moves the retired photo scripts (`sync-photos-to-google.ps1`, `cleanup-old-photos.ps1`, `restore-archived-photos.ps1`) and the one-off `seed-wave-numbers.ps1` into `FloorPro Automation\retired`. `-Undo` puts it all back.
@@ -161,7 +163,7 @@ Everything on the office PC that talks to Supabase (checked Oct 19):
 |---|---|
 | FloorPro Wave Sync (daily) and FloorPro Wave Sync Watcher (hourly) → `sync-wave-estimates.ps1` | service key via 8b. It reads/writes `settings`, `jobs` **and `leads`**. |
 | `wave-sync-watcher.ps1` (the Jobs-page sync button) | service key via 8b. Note: no task runs this file today — the "Watcher" task runs the full sync hourly instead. Separate bug. |
-| FloorPro CRM - Nightly Data Backup → `floorpro-crm\backup-data-to-drive.ps1` | service key; switches when this branch is merged to main (step 6). |
+| FloorPro CRM - Nightly Data Backup → `floorpro-crm\backup-data-to-drive.ps1` | service key; switches when this branch is merged to main (step 6). The branch version backs up all 11 tables (main's only 7 — no audit_log, vehicles, vehicle_maintenance, ops_backups) and pages past Supabase's 1000-row cap (audit_log is already 2,090). PIN tables are left out on purpose. |
 | FloorPro CRM - Nightly Storage Backup → `floorpro-crm\backup-storage-to-drive.ps1` | same. Was missing from git; now tracked on this branch. |
 | Google Photos Sync / Photo Cleanup tasks (disabled) | retired; the `photo-jobs` cloud function does this with the service role and needs no change. Restore = `tools\supabase-cli\photo-jobs.ps1 -Action restore`. |
 | Claude Code sessions fixing live data | use the same encrypted key file. |
