@@ -113,6 +113,11 @@ test('overhead per hour is 15.32 and the owner and inactive crew are not in the 
   // Sensitivity shown on the Overhead page
   assert.equal(r2(ev('overheadPerHour(undefined,0.85)')), 16.22);
   assert.equal(r2(ev('overheadPerHour(undefined,0.92)')), 14.98);
+  // overheadMode 'pool' is the default; 'items' divides the itemized list instead
+  assert.equal(ev('costingCurrentModel().entry.overheadMode'), 'pool');
+  ev(`OVERHEAD = {items:[{id:'a',name:'Rent',amount:'2000',period:'mo'},{id:'b',name:'GL',amount:'5616',period:'yr'}]}`);
+  assert.equal(r2(ev(`overheadPerHour({...costingCurrentModel().entry, overheadMode:'items'})`)), r2((24000 + 5616) / 5616));
+  ev('OVERHEAD = {items:[]}');
   // A missing settings row is seeded once (owner session) and audit-logged
   const saved = JSON.parse(state.settings.costing_settings);
   assert.equal(saved.history.length, 2);
