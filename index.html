@@ -10266,14 +10266,17 @@ async function saveLeadQuotedDates(){
 }
 
 // ── Cross-check: a pipeline lead that is very likely the same work as a Job ──────────────────
-// Name alone is not enough. A repeat customer has many jobs, and a new estimate at a
-// different price is a different piece of work. We ASK on load only when:
+// A repeat customer has many jobs, and a new estimate at a different price is a different
+// piece of work. We ASK on load only when:
 //   • the lead and the job share a Wave estimate number, or
-//   • the customer name matches AND the amounts are within 2% or $25.
-// Wave numbers live on the row as "Wave #123" in notes (a "#123" baked into the name counts
-// too). If both sides have a number and the numbers differ, they are different estimates
-// even when the name and the price line up. "Keep — separate" is remembered in KV
-// lead_dup_acks so an acknowledged lead stays quiet.
+//   • the customer name matches AND the amounts are within 2% or $25, or
+//   • the customer name matches, neither side has a Wave number, and the lead or the job
+//     has no amount (blank or 0) — there is no price to compare.
+// Wave numbers live on the row as "Wave #123" in notes. A "#123" counts only at the end of
+// the name ("Customer #123"), not in the middle ("Lot #32 Smith"). If both sides have a
+// number and the numbers differ, they are different estimates even when the name and the
+// price line up. "Keep — separate" is remembered in KV lead_dup_acks so an acknowledged
+// lead stays quiet.
 let LEAD_DUP_ACKS = {};   // {leadKey: true} — matches the user marked as separate
 let _leadDupMatches = [];
 async function loadLeadDupAcks(){
@@ -10289,18 +10292,22 @@ async function loadLeadDupAcks(){
 async function saveLeadDupAcks(){
   LEAD_DUP_ACKS = await _saveKVMerged('lead_dup_acks', LEAD_DUP_ACKS);
 }
-// Estimate number stamped by the Wave sync. Notes use "Wave #123"; a "#123" left in the
-// customer/lead name is the same number (the board badge used to get saved into the name).
+// Estimate number stamped by the Wave sync. Notes use "Wave #123". A "#123" left at the
+// end of the customer/lead name is the same number (the board badge used to get saved
+// into the name). "Lot #32 Smith" is a lot number, not an estimate.
 function _waveEstimateNum(notes, name){
   const tagged=String(notes||'').match(/Wave #(\d+)/i);
   if(tagged) return tagged[1];
-  const baked=String(name||'').match(/#(\d+)/);
+  const baked=String(name||'').match(/#(\d+)\s*$/);
   return baked?baked[1]:'';
+}
+function _leadMoney(v){
+  const n=parseFloat(String(v==null?'':v).replace(/[$,\s]/g,''));
+  return n>0?n:0;
 }
 // Same price: the difference is at most $25, or at most 2% of the larger amount.
 function _leadJobAmountsClose(a, b){
-  const num=v=>parseFloat(String(v==null?'':v).replace(/[$,\s]/g,''));
-  const x=num(a), y=num(b);
+  const x=_leadMoney(a), y=_leadMoney(b);
   if(!(x>0)||!(y>0)) return false;
   const diff=Math.abs(x-y);
   return diff<=25 || diff<=0.02*Math.max(x,y);
@@ -10312,6 +10319,8 @@ function _leadIsSameWorkAsJob(lead, job){
   if(ln&&jn) return ln===jn;
   const lk=_jobMatchKey(lead.name||''), jk=_jobMatchKey(job.customer||'');
   if(!lk||lk!==jk) return false;
+  // No estimate number on either side, and one price is blank: the name is all we have.
+  if(!ln&&!jn&&(!(_leadMoney(lead.value)>0)||!(_leadMoney(job.value)>0))) return true;
   return _leadJobAmountsClose(lead.value, job.value);
 }
 function crossCheckLeadsVsJobs(){

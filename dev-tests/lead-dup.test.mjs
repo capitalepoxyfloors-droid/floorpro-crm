@@ -150,6 +150,63 @@ test('the same Wave estimate number is flagged even when the amounts differ', ()
   assert.deepEqual(differentNumbers.matches, [], 'different Wave numbers are different estimates');
 });
 
+test('same name with no lead amount is flagged', () => {
+  const blank = runCheck([
+    { db_id: 30, name: 'Pat Homeowner', value: '', stage: 'new', notes: '' },
+  ], [
+    { id: 30, customer: 'Pat Homeowner', value: '1800', status: 'scheduled', notes: '' },
+  ]);
+  assert.equal(blank.matches.length, 1);
+  assert.equal(blank.matches[0].name, 'Pat Homeowner');
+  assert.equal(blank.open, true);
+
+  const zero = runCheck([
+    { db_id: 31, name: 'Pat Homeowner', value: '0', stage: 'quoted', notes: '' },
+  ], [
+    { id: 31, customer: 'Pat Homeowner', value: '1800', status: 'approved', notes: '' },
+  ]);
+  assert.equal(zero.matches.length, 1, '0 is a missing amount');
+
+  const jobBlank = runCheck([
+    { db_id: 32, name: 'Pat Homeowner', value: '1800', stage: 'quoted', notes: '' },
+  ], [
+    { id: 32, customer: 'Pat Homeowner', value: '', status: 'scheduled', notes: '' },
+  ]);
+  assert.equal(jobBlank.matches.length, 1, 'a job with no amount still matches the name');
+
+  const pricedApart = runCheck([
+    { db_id: 1, name: 'Thomas Construction', value: '5250', stage: 'quoted', notes: 'Wave #680 | 2026-10-01' },
+    { db_id: 2, name: 'Thomas Construction', value: '6073.80', stage: 'quoted', notes: 'Wave #683 | 2026-10-02' },
+  ], [
+    { id: 10, customer: 'Thomas Construction', value: '2667.56', status: 'scheduled', notes: '' },
+  ]);
+  assert.deepEqual(pricedApart.matches, [], 'both prices present and different');
+});
+
+test('a #number in the middle of a name is not a Wave estimate', () => {
+  const lot = runCheck([
+    { db_id: 40, name: 'Lot #32 Smith', value: '900', stage: 'quoted', notes: '' },
+  ], [
+    { id: 40, customer: 'Other Customer', value: '5000', status: 'approved', notes: 'Wave #32 | 2026-10-01' },
+  ]);
+  assert.deepEqual(lot.matches, []);
+
+  const building = runCheck([
+    { db_id: 41, name: 'Building #2 Remodel', value: '1000', stage: 'quoted', notes: '' },
+  ], [
+    { id: 41, customer: 'Building #2 Remodel', value: '8000', status: 'scheduled', notes: '' },
+  ]);
+  assert.deepEqual(building.matches, [], 'same name, # in the middle, prices differ');
+
+  const trailing = runCheck([
+    { db_id: 42, name: 'Rick Zimmerman #638', value: '1000', stage: 'quoted', notes: '' },
+  ], [
+    { id: 42, customer: 'Rick Zimmerman', value: '9000', status: 'approved', notes: 'Wave #638 | 2026-10-01' },
+  ]);
+  assert.equal(trailing.matches.length, 1, '# at the end of the name is still the estimate number');
+  assert.equal(trailing.matches[0].jobVal, '$9,000');
+});
+
 test('an acknowledged lead stays quiet', () => {
   const leads = [
     { db_id: 3, name: 'Thomas Construction', value: '5250', stage: 'quoted', notes: 'Wave #680 | 2026-10-01' },
