@@ -3895,17 +3895,13 @@ function openSlotEdit(ci, w, d){
   if(!slot) return;
   // Route to job card if a record exists, unless we're coming from the Reschedule button
   if(!_seForceOpen){
-    const rawJobId = SLOT_JOB_MAP[jcSlotKey(ci,w,d)];
-    const rawJr = rawJobId ? JOB_RECORDS.find(j=>j.id===rawJobId) : null;
     // Verify mapped job matches slot label — stale when a double-book overwrote the map entry.
     // Match loosely (either name contains the other) so a job renamed after scheduling (e.g.
     // "Mike McDorman" → "Mike McDorman Garage") still opens its real job card instead of falling
     // through to the bare slot editor just because the slot's cached label text wasn't an exact
     // match — a totally different customer name won't satisfy this either way, so a genuinely
     // stale double-booked map entry still gets rejected same as before.
-    const _seNameLoose=(a,b)=>{a=(a||'').toLowerCase().trim();b=(b||'').toLowerCase().trim();return !!a&&!!b&&(a===b||a.includes(b)||b.includes(a));};
-    const jobId = (rawJr && _seNameLoose(rawJr.customer,slot.l)) ? rawJobId
-      : (JOB_RECORDS.find(j=>_seNameLoose(j.customer,slot.l))?.id || null);
+    const jobId = resolveSlotJob(ci,w,d,slot.l,slot.dt,{loose:true})?.id || null;
     if(jobId && getJobRecord(jobId)){ openJobCard(jobId); return; }
   }
   _seForceOpen = false;
@@ -4045,6 +4041,15 @@ async function sePlaceSlot(ci, w, d, label, type){
   const dateStr=_dt.toISOString().split('T')[0];
   const dbId=await dbSaveSlot(ci,w,d,label,type,dateStr);
   newSlots[ci][w][d]={l:label,t:type,db_id:dbId,dt:dateStr};
+  // Keep SLOT_JOB_MAP in step with the slot just placed. Previously the map was only written by
+  // some callers, so a slot could land on a cell whose map entry still pointed at the previous
+  // occupant's job (stale map → crew view opened the wrong job). Callers that know the exact job
+  // still overwrite this right after. Merged save, so crew phones only push keys they changed.
+  const _key=jcSlotKey(ci,w,d);
+  const _jr=resolveSlotJob(ci,w,d,label,dateStr);
+  const _cur=SLOT_JOB_MAP[_key];
+  if(_jr&&String(_cur)!==String(_jr.id)){ SLOT_JOB_MAP[_key]=_jr.id; await saveSlotJobMap(); }
+  else if(!_jr&&_cur){ delete SLOT_JOB_MAP[_key]; await saveSlotJobMap(); }
 }
 
 async function saveSlotEdit(force=false){
@@ -4514,6 +4519,37 @@ recoverMisroutedLogs.confirm = async function() {
 };
 recoverMisroutedLogs.cancel = function() { recoverMisroutedLogs._pending = null; console.log('Cancelled.'); };
 function jcSlotKey(ci,w,d){ return ci+'_'+w+'_'+d; }
+
+// Shared slot → job resolver. SLOT_JOB_MAP can be stale (see CLAUDE.md), so: trust the mapped job
+// only if its customer matches the slot label; otherwise pick among same-named jobs the one whose
+// startDate–endDate covers the slot's date, falling back to the first. Same logic as the owner
+// schedule's resolveJobForDate. A repeat customer (e.g. three "Thomas Construction" records) used
+// to make crew view open whichever record came first — an old, finished job.
+// opts.loose: names match if either contains the other (openSlotEdit's historical behavior).
+function resolveSlotJob(ci,w,d,label,dateStr,opts){
+  const loose=!!(opts&&opts.loose);
+  const norm=x=>(x||'').toLowerCase().trim();
+  const match=(a,b)=>{ if(!loose) return (a||'')===(b||''); a=norm(a);b=norm(b); return !!a&&!!b&&(a===b||a.includes(b)||b.includes(a)); };
+  const rawId=SLOT_JOB_MAP[jcSlotKey(ci,w,d)];
+  const rawJr=rawId?getJobRecord(rawId):null;
+  if(rawJr&&match(rawJr.customer,label)) return rawJr;
+  if(!dateStr){ try{ const mon=getMonday(w); const dt=new Date(mon); dt.setDate(dt.getDate()+(+d)); dateStr=dt.toISOString().split('T')[0]; }catch(e){} }
+  const cands=JOB_RECORDS.filter(j=>match(j.customer,label));
+  if(cands.length<=1) return cands[0]||null;
+  return cands.find(j=>j.startDate&&j.endDate&&dateStr>=j.startDate&&dateStr<=j.endDate)||cands[0];
+}
+// Same idea for a double-booked (overlay/extra) slot: trust its own jobId only if that job's
+// customer matches the label (jobId is null after every reload — not a persisted column), else
+// the same-named job whose dates cover dateStr. Mirrors the owner schedule's extra-bar lookup.
+function resolveExtraSlotJob(ex,dateStr){
+  if(!ex) return null;
+  const own=ex.jobId?getJobRecord(ex.jobId):null;
+  if(own&&own.customer===(ex.l||'')) return own;
+  const cands=JOB_RECORDS.filter(j=>j.customer===(ex.l||''));
+  if(cands.length<=1) return cands[0]||null;
+  dateStr=ex.dt||dateStr;
+  return cands.find(j=>j.startDate&&j.endDate&&dateStr>=j.startDate&&dateStr<=j.endDate)||cands[0];
+}
 
 // Work days of the job's current range. Weekdays for a normal job, every calendar
 // day when the job starts or ends on a weekend, plus any extra log days. This is
@@ -7780,7 +7816,7 @@ function cvGetDayEvents(dateObj){
   const events=[]; const seenJobs=new Set();
   for(const ci of crewList){
     const slot=newSlots[ci]?.[w]?.[d]||getSlot(ci,w,d); if(!slot) continue;
-    const jobId=SLOT_JOB_MAP[jcSlotKey(ci,w,d)]||null;
+    const jobId=resolveSlotJob(ci,w,d,slot.l||'',slot.dt)?.id||null;
     const key=jobId||('raw_'+ci+'_'+slot.l);
     if(seenJobs.has(key)) continue;
     seenJobs.add(key);
@@ -7805,10 +7841,8 @@ function cvGetWeekSpanEvents(weekSun){
     const crewList=CREW.map((_,i)=>i);
     for(const ci of crewList){
       const slot=newSlots[ci]?.[w]?.[d]||getSlot(ci,w,d); if(!slot) continue;
-      const rawJobId=SLOT_JOB_MAP[jcSlotKey(ci,w,d)]||null;
-      const rawJr=rawJobId?getJobRecord(rawJobId):null;
-      // Verify the mapped job matches the slot label — if not (stale map from double-book overwrite), fall back to label search
-      const jr=(rawJr&&rawJr.customer===(slot.l||''))?rawJr:JOB_RECORDS.find(j=>j.customer===(slot.l||''));
+      // Label-verified, date-aware lookup (stale map → same-named job covering this date)
+      const jr=resolveSlotJob(ci,w,d,slot.l||'',slot.dt||dtStr);
       const jobId=jr?.id||null; // use the verified job ID so key and isExtra detection are correct
       // Is this an extension day? (in extraDays but NOT in the original scheduled weekdays)
       let isExtra=false;
@@ -7829,8 +7863,8 @@ function cvGetWeekSpanEvents(weekSun){
       }
       // Extra (double-booked) slots — collect per-crew occurrences; merged into consecutive-day spans below
       for(const ex of getExtraSlots(ci,w,d)){
-        const exJobId=ex.jobId||(JOB_RECORDS.find(j=>j.customer===ex.l)?.id)||null;
-        const exJr=exJobId?getJobRecord(exJobId):JOB_RECORDS.find(j=>j.customer===(ex.l||''));
+        const exJr=resolveExtraSlotJob(ex,dtStr);
+        const exJobId=exJr?.id||null;
         let exIsExtra=false;
         if(exJr?.extraDays?.includes(dtStr)){
           const eSD=new Date((exJr.startDate||'')+'T00:00:00').getDay(),eED=new Date((exJr.endDate||'')+'T00:00:00').getDay();
