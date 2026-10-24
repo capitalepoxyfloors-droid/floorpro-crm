@@ -25,8 +25,10 @@
 -- SELECT on that row. They read and save through:
 --   public.fp_crew_read_job_records()
 --   public.fp_crew_write_job_records(payload)
--- The write keeps every price and wage stamp already stored. It does not stamp
--- new ones. Owner/office saves still stamp rates in the website, same as today.
+-- The write keeps every price and wage stamp already stored, and it ignores a
+-- stamp the phone tried to send. A separate migration
+-- (20261024170000_stamp_missing_labor_rates.sql) fills a person-day that has no
+-- stamp at all, at write time, using owner rights. Crew still cannot read rates.
 --
 -- PTO request reasons for other people are the same kind of problem (one JSON
 -- array). Crew use:
@@ -307,7 +309,7 @@ DECLARE
   s jsonb;
   rebuilt jsonb;
   jid text;
-  found boolean;
+  matched boolean;
 BEGIN
   IF private.fp_role() IS DISTINCT FROM 'crew' THEN
     RAISE EXCEPTION 'not allowed';
@@ -338,17 +340,17 @@ BEGIN
     IF jid IS NULL OR jid = '' THEN
       CONTINUE;
     END IF;
-    found := false;
+    matched := false;
     rebuilt := '[]'::jsonb;
     FOR s IN SELECT value FROM jsonb_array_elements(result) LOOP
       IF s ->> 'id' = jid THEN
         rebuilt := rebuilt || jsonb_build_array(private.fp_overlay_json(s, elem));
-        found := true;
+        matched := true;
       ELSE
         rebuilt := rebuilt || jsonb_build_array(s);
       END IF;
     END LOOP;
-    IF NOT found THEN
+    IF NOT matched THEN
       rebuilt := rebuilt || jsonb_build_array(private.fp_redact_json(elem));
     END IF;
     result := rebuilt;

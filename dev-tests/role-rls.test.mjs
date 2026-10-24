@@ -18,6 +18,7 @@ const phase1 = fs.readFileSync(path.join(root, 'supabase/migrations/202610091430
 const costing = fs.readFileSync(path.join(root, 'supabase/migrations/20261020120000_crew_costing_columns.sql'), 'utf8');
 const phase2 = fs.readFileSync(path.join(root, 'supabase/migrations/20261024140000_role_split_rls.sql'), 'utf8');
 const revokeAnon = fs.readFileSync(path.join(root, 'supabase/migrations/20261024153000_revoke_crew_rpc_anon.sql'), 'utf8');
+const stampRates = fs.readFileSync(path.join(root, 'supabase/migrations/20261024170000_stamp_missing_labor_rates.sql'), 'utf8');
 const rollback = fs.readFileSync(path.join(root, 'supabase/rollback/20261024140000_role_split_rls.sql'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const db = 'floorpro_role_test';
@@ -223,6 +224,180 @@ function waitForPort(p, timeoutMs) {
   });
 }
 
+// Proves the work-date stamp, then rolls the data back so the rest of the role test
+// still sees the sample jobs. Does not contact a hosted database.
+function assertLaborStamps() {
+  const crewJwt = claims(CREW_ID, 'crew');
+  const officeJwt = claims(OFFICE_ID, 'office');
+  const jobs = JSON.stringify([
+    { id: 'keep-direct', customer: 'Keep Direct', dayLogs: { '2026-10-21': { crewPresent: [{ crewIdx: 0, name: 'Seth West', directRate: 33.1, burdenedRate: '50.00' }] } } },
+    { id: 'keep-a', customer: 'Keep A', dayLogs: { '2026-10-21': { crewPresent: [{ crewIdx: 1, name: 'Brendon Bennett', burdenedRate: '38.58' }] } } },
+    { id: 'keep-b', customer: 'Keep B', dayLogs: { '2026-10-21': { crewPresent: [{ crewIdx: 1, name: 'Brendon Bennett', burdenedRate: '41.00' }] } } },
+    { id: 'fill-model', customer: 'Fill Model', dayLogs: {
+      '2026-10-21': { fullDay: true, crewPresent: [{ crewIdx: 0, name: 'Seth West' }, { crewIdx: 2, name: 'Will Bradford' }] },
+      '2026-10-24': { fullDay: true, crewPresent: [{ crewIdx: 0, name: 'Seth West' }] },
+      '2099-01-05': { fullDay: true, crewPresent: [{ crewIdx: 0, name: 'Seth West' }] },
+    } },
+    { id: 'fill-legacy', customer: 'Fill Legacy', dayLogs: { '2026-09-10': { fullDay: true, crewPresent: [{ crewIdx: 0, name: 'Seth West' }] } } },
+    { id: 'fill-brendon', customer: 'Fill Brendon', dayLogs: { '2026-10-21': { fullDay: true, crewPresent: [{ crewIdx: 1, name: 'Brendon Bennett' }] } } },
+    { id: 'pw-day', customer: 'PW Job', prevailingWage: true, prevailingWageRate: 44.7, dayLogs: { '2026-10-21': { fullDay: true, crewPresent: [{ crewIdx: 0, name: 'Seth West' }] } } },
+  ]);
+  const fallbackJob = JSON.stringify([
+    { id: 'fallback', customer: 'Fallback', dayLogs: { '2026-10-21': { fullDay: true, crewPresent: [{ crewIdx: 0, name: 'Seth West' }] } } },
+  ]);
+  psql(db, ['-f', '-'], `
+BEGIN;
+UPDATE public.crew SET
+  hourly = '30.25', hours = '40', ss = '6.20', medicare = '1.45', futa = '0.60', wc = '3.62', gl = '0',
+  benefits = '135', pto_days = '12', futa_wage_base = 7000, suta_rate = 1.848, suta_wage_base = 9000,
+  k401_match_pct = 4, fixed_fees_yr = 830, clothing_yr = 204, field_rate_override = NULL, is_owner = false
+WHERE full_name = 'Seth West';
+UPDATE public.crew SET
+  hourly = '27.60', hours = '40', ss = '6.20', medicare = '1.45', futa = '0.60', wc = '3.62', gl = '0',
+  benefits = '100', pto_days = '11', futa_wage_base = 7000, suta_rate = 1.848, suta_wage_base = 9000,
+  k401_match_pct = 4, fixed_fees_yr = 830, clothing_yr = 204, field_rate_override = NULL, is_owner = false
+WHERE full_name = 'Brendon Bennett';
+UPDATE public.crew SET
+  hourly = '72.11', hours = '40', ss = '6.20', medicare = '1.45', futa = '2.70', wc = '5.61', gl = '0',
+  benefits = '0', pto_days = '0', field_rate_override = 40.27, is_owner = true
+WHERE full_name = 'Will Bradford';
+INSERT INTO public.crew (full_name, first_name, last_name, initials, color, role, phone, specialties, hourly, hours, ss, medicare, futa, wc, gl, benefits, pto_days, sort_order, futa_wage_base, suta_rate, suta_wage_base, k401_match_pct, fixed_fees_yr, clothing_yr, is_owner)
+VALUES
+  ('Hunter Schuler', 'Hunter', 'Schuler', 'HS', '#c084fc', 'Installer', '', '[]', '24.00', '40', '6.20', '1.45', '0.60', '3.62', '0', '0', '10', 4, 7000, 1.848, 9000, 0, 830, 204, false),
+  ('Cody Faulkner', 'Cody', 'Faulkner', 'CF', '#ff9f4a', 'Installer', '', '[]', '25.20', '40', '6.20', '1.45', '2.70', '5.61', '0', '0', '10', 3, NULL, NULL, NULL, NULL, NULL, NULL, false);
+INSERT INTO public.settings (key, value) VALUES ('crew_inactive', '{"3":{"since":"2026-09-28","name":"Cody Faulkner"}}')
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+UPDATE public.settings SET value = (
+  SELECT jsonb_build_object(
+    'id_' || id::text,
+    jsonb_build_object('events', jsonb_build_array(jsonb_build_object('type','pay_change','date','2026-01-15','rate',20)))
+  )::text FROM public.crew WHERE full_name = 'Seth West'
+) WHERE key = 'crew_history';
+UPDATE public.settings SET value = $cs$
+{"history":[
+  {"id":"cs_legacy","effective":"1900-01-01","legacyOverheadPerHour":4.83},
+  {"id":"cs_20261020","effective":"2026-10-20","utilization":0.9,"paidHoursPerYear":2080,"overheadMode":"pool","overheadPool":86014,"excludeOwnerFromDivisor":true}
+]}
+$cs$ WHERE key = 'costing_settings';
+UPDATE public.settings SET value = $jobs$${jobs}$jobs$ WHERE key = 'job_records';
+
+DO $check$
+DECLARE
+  js jsonb := (SELECT value::jsonb FROM public.settings WHERE key = 'job_records');
+  seth jsonb;
+  will jsonb;
+  kept_a jsonb;
+  kept_b jsonb;
+  kept_direct jsonb;
+  legacy jsonb;
+  brendon jsonb;
+  future jsonb;
+  saturday jsonb;
+  pw jsonb;
+BEGIN
+  SELECT e INTO seth FROM jsonb_array_elements(js) j, jsonb_array_elements(j->'dayLogs'->'2026-10-21'->'crewPresent') e
+    WHERE j->>'id' = 'fill-model' AND e->>'name' = 'Seth West';
+  SELECT e INTO will FROM jsonb_array_elements(js) j, jsonb_array_elements(j->'dayLogs'->'2026-10-21'->'crewPresent') e
+    WHERE j->>'id' = 'fill-model' AND e->>'name' = 'Will Bradford';
+  SELECT e INTO saturday FROM jsonb_array_elements(js) j, jsonb_array_elements(j->'dayLogs'->'2026-10-24'->'crewPresent') e
+    WHERE j->>'id' = 'fill-model';
+  SELECT e INTO future FROM jsonb_array_elements(js) j, jsonb_array_elements(j->'dayLogs'->'2099-01-05'->'crewPresent') e
+    WHERE j->>'id' = 'fill-model';
+  SELECT e INTO legacy FROM jsonb_array_elements(js) j, jsonb_array_elements(j->'dayLogs'->'2026-09-10'->'crewPresent') e
+    WHERE j->>'id' = 'fill-legacy';
+  SELECT e INTO brendon FROM jsonb_array_elements(js) j, jsonb_array_elements(j->'dayLogs'->'2026-10-21'->'crewPresent') e
+    WHERE j->>'id' = 'fill-brendon';
+  SELECT e INTO kept_a FROM jsonb_array_elements(js) j, jsonb_array_elements(j->'dayLogs'->'2026-10-21'->'crewPresent') e
+    WHERE j->>'id' = 'keep-a';
+  SELECT e INTO kept_b FROM jsonb_array_elements(js) j, jsonb_array_elements(j->'dayLogs'->'2026-10-21'->'crewPresent') e
+    WHERE j->>'id' = 'keep-b';
+  SELECT e INTO kept_direct FROM jsonb_array_elements(js) j, jsonb_array_elements(j->'dayLogs'->'2026-10-21'->'crewPresent') e
+    WHERE j->>'id' = 'keep-direct';
+  SELECT j INTO pw FROM jsonb_array_elements(js) j WHERE j->>'id' = 'pw-day';
+
+  IF (seth->>'baseRate')::numeric <> 20 THEN RAISE EXCEPTION 'Seth baseRate %, want 20 (history, not the current 30.25)', seth->>'baseRate'; END IF;
+  IF (seth->>'directRate')::numeric <> 27.14 THEN RAISE EXCEPTION 'Seth directRate %', seth->>'directRate'; END IF;
+  IF (seth->>'otRate')::numeric <> 33.38 THEN RAISE EXCEPTION 'Seth otRate %', seth->>'otRate'; END IF;
+  IF (seth->>'overheadRate')::numeric <> 15.32 THEN RAISE EXCEPTION 'Seth overhead %', seth->>'overheadRate'; END IF;
+  IF (seth->>'statMult')::numeric <> 1.1127 THEN RAISE EXCEPTION 'Seth statMult %', seth->>'statMult'; END IF;
+  IF seth->>'burdenedRate' <> '42.46' THEN RAISE EXCEPTION 'Seth burdenedRate %', seth->>'burdenedRate'; END IF;
+  IF seth->>'rateVersion' <> 'cs_20261020' THEN RAISE EXCEPTION 'Seth version %', seth->>'rateVersion'; END IF;
+  IF seth ? 'fieldOverride' THEN RAISE EXCEPTION 'Seth is not on the field override'; END IF;
+  IF will->>'fieldOverride' <> 'true' OR (will->>'directRate')::numeric <> 40.27 THEN RAISE EXCEPTION 'Will stamp %', will; END IF;
+  IF (will->>'otRate')::numeric <> 40.27 THEN RAISE EXCEPTION 'Will ot stays the override %', will->>'otRate'; END IF;
+  IF (will->>'overheadRate')::numeric <> 15.32 THEN RAISE EXCEPTION 'Will overhead %', will->>'overheadRate'; END IF;
+  IF kept_a->>'burdenedRate' <> '38.58' OR kept_a ? 'directRate' THEN RAISE EXCEPTION 'legacy A changed %', kept_a; END IF;
+  IF kept_b->>'burdenedRate' <> '41.00' OR kept_b ? 'directRate' THEN RAISE EXCEPTION 'legacy B changed %', kept_b; END IF;
+  IF (kept_direct->>'directRate')::numeric <> 33.1 OR kept_direct->>'burdenedRate' <> '50.00' THEN RAISE EXCEPTION 'saved direct changed %', kept_direct; END IF;
+  IF legacy ? 'directRate' OR legacy->>'burdenedRate' <> '28.91' THEN RAISE EXCEPTION 'pre-model stamp %', legacy; END IF;
+  IF (brendon->>'baseRate')::numeric <> 27.60 THEN RAISE EXCEPTION 'Brendon fell back to %', brendon->>'baseRate'; END IF;
+  IF future ? 'directRate' OR future ? 'burdenedRate' THEN RAISE EXCEPTION 'future day was stamped %', future; END IF;
+  IF NOT (saturday ? 'directRate') THEN RAISE EXCEPTION 'Saturday was not stamped %', saturday; END IF;
+  IF (pw->>'prevailingWage')::boolean IS NOT TRUE THEN RAISE EXCEPTION 'PW flag changed'; END IF;
+  IF NOT ((pw->'dayLogs'->'2026-10-21'->'crewPresent'->0) ? 'directRate') THEN RAISE EXCEPTION 'PW day still needs the person stamp'; END IF;
+  IF js::text LIKE '%overtimeWage%' THEN RAISE EXCEPTION 'stamp set overtimeWage'; END IF;
+END
+$check$;
+
+CREATE TEMP TABLE stamp_out (k text PRIMARY KEY, v text);
+GRANT ALL ON stamp_out TO authenticated;
+SELECT set_config('request.jwt.claims', '${crewJwt}', true);
+SET LOCAL ROLE authenticated;
+INSERT INTO stamp_out VALUES ('read', public.fp_crew_read_job_records()::text);
+INSERT INTO stamp_out VALUES ('write', public.fp_crew_write_job_records($j$[
+  {"id":"jnew","customer":"Crew Logged","phone":"314-555-0100",
+   "dayLogs":{"2026-10-23":{"task":"Coat","fullDay":true,
+     "crewPresent":[{"crewIdx":0,"name":"Seth West"}]}}}
+]$j$::jsonb)::text);
+RESET ROLE;
+
+DO $crew$
+DECLARE
+  rd text := (SELECT v FROM stamp_out WHERE k = 'read');
+  wr text := (SELECT v FROM stamp_out WHERE k = 'write');
+  stored jsonb := (SELECT value::jsonb FROM public.settings WHERE key = 'job_records');
+  newbie jsonb;
+BEGIN
+  IF rd LIKE '%27.14%' OR rd LIKE '%directRate%' THEN RAISE EXCEPTION 'crew read leaked a rate %', left(rd, 400); END IF;
+  IF rd NOT LIKE '%Fill Model%' THEN RAISE EXCEPTION 'crew read dropped the job'; END IF;
+  IF wr LIKE '%directRate%' OR wr LIKE '%27.14%' OR wr LIKE '%42.46%' THEN RAISE EXCEPTION 'crew write returned a rate'; END IF;
+  IF wr NOT LIKE '%Crew Logged%' THEN RAISE EXCEPTION 'crew write dropped the new job'; END IF;
+  SELECT e INTO newbie FROM jsonb_array_elements(stored) j, jsonb_array_elements(j->'dayLogs'->'2026-10-23'->'crewPresent') e
+    WHERE j->>'id' = 'jnew';
+  IF (newbie->>'directRate')::numeric <> 27.14 THEN RAISE EXCEPTION 'crew save was not stamped %', newbie; END IF;
+  IF (stored::text LIKE '%overtimeWage%') THEN RAISE EXCEPTION 'crew save gained overtimeWage'; END IF;
+END
+$crew$;
+
+SELECT set_config('request.jwt.claims', '${officeJwt}', true);
+SET LOCAL ROLE authenticated;
+SELECT CASE
+  WHEN (SELECT hourly FROM public.crew_private WHERE crew_id = (SELECT id FROM public.crew WHERE full_name = 'Seth West')) = '30.25'
+  THEN 1 ELSE (SELECT 1/0) END;
+UPDATE public.settings SET value = $cs$
+{"history":[
+  {"id":"cs_a","effective":"2026-11-01","utilization":0.9,"paidHoursPerYear":2080,"overheadMode":"pool","overheadPool":50000,"excludeOwnerFromDivisor":true},
+  {"id":"cs_b","effective":"2026-12-01","utilization":0.9,"paidHoursPerYear":2080,"overheadMode":"pool","overheadPool":100000,"excludeOwnerFromDivisor":true}
+]}
+$cs$ WHERE key = 'costing_settings';
+UPDATE public.settings SET value = $fb$${fallbackJob}$fb$ WHERE key = 'job_records';
+RESET ROLE;
+
+DO $fall$
+DECLARE
+  person jsonb;
+BEGIN
+  SELECT e INTO person FROM jsonb_array_elements((SELECT value::jsonb FROM public.settings WHERE key = 'job_records')) j,
+    jsonb_array_elements(j->'dayLogs'->'2026-10-21'->'crewPresent') e;
+  IF person->>'rateVersion' <> 'cs_b' THEN RAISE EXCEPTION 'fallback version %', person->>'rateVersion'; END IF;
+  IF (person->>'overheadRate')::numeric <> 17.81 THEN RAISE EXCEPTION 'fallback overhead %', person->>'overheadRate'; END IF;
+  IF (person->>'baseRate')::numeric <> 20 THEN RAISE EXCEPTION 'fallback still uses history hourly %', person->>'baseRate'; END IF;
+END
+$fall$;
+ROLLBACK;
+`);
+}
+
 function linkAccounts() {
   psql(db, ['-c', `UPDATE public.pin_accounts SET auth_user_id = '${CREW_ID}' WHERE kind = 'crew' AND crew_idx = 0`]);
   psql(db, ['-c', `UPDATE public.pin_accounts SET auth_user_id = '${OFFICE_ID}' WHERE kind = 'office'`]);
@@ -232,6 +407,7 @@ function linkAccounts() {
 function applyPhase2() {
   psql(db, ['-f', '-'], phase2);
   psql(db, ['-f', '-'], revokeAnon);
+  psql(db, ['-f', '-'], stampRates);
 }
 
 test('the website asks for directory columns and the crew job functions', () => {
@@ -289,6 +465,9 @@ test('role-split policies hide pay from crew and keep it for office and owner', 
     assert.equal(psqlTuples(db, `SELECT has_function_privilege('anon', '${fn}', 'EXECUTE')`), 'f', fn);
     assert.equal(psqlTuples(db, `SELECT has_function_privilege('authenticated', '${fn}', 'EXECUTE')`), 't', fn);
   }
+  assert.equal(psqlTuples(db, `SELECT has_function_privilege('anon', 'private.fp_stamp_job_records_text(text)', 'EXECUTE')`), 'f');
+  assert.equal(psqlTuples(db, `SELECT has_function_privilege('authenticated', 'private.fp_stamp_job_records_text(text)', 'EXECUTE')`), 'f');
+  assert.equal(psqlTuples(db, `SELECT count(*) FROM pg_trigger WHERE tgname = 'fp_stamp_missing_labor' AND NOT tgisinternal`), '1');
 
   assert.equal(psqlTuples(db, `SELECT hourly FROM public.crew WHERE full_name = 'Seth West'`), '25.00');
   assert.equal(psqlTuples(db, `SELECT hourly FROM public.crew_private WHERE crew_id = (SELECT id FROM public.crew WHERE full_name = 'Seth West')`), '25.00');
@@ -379,6 +558,8 @@ test('role-split policies hide pay from crew and keep it for office and owner', 
   assert.equal(droppedDay.includes('2026-06-02'), false, droppedDay);
   assert.match(droppedDay, /2026-06-03/);
   assert.match(droppedDay, /18500/);
+
+  assertLaborStamps();
 
   const ptoRead = asRole(crewClaims, `SELECT public.fp_crew_read_pto_requests()::text;`);
   assert.match(ptoRead, /Seth dentist/);

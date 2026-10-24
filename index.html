@@ -4425,8 +4425,9 @@ async function _saveJobRecordsNow(){
       return false;
     }
   }
-  // Stamp today's rates onto any day-log entry (direct-rate era, up to today) still missing them.
-  // Done on the merged copy so it can't overwrite another device's edit; not audit-logged.
+  // Fill any person-day that has no stamp, at the rate in effect on that work date.
+  // A saved directRate or burdenedRate is left alone. The database trigger does this
+  // again on the way in, including a crew save, so the two have to agree.
   try{ _jcStampMissingRates(); }catch(e){ console.error('rate stamping skipped:',e); }
   let wrote;
   try{ wrote=await _jobRecordsWrite(JSON.stringify(JOB_RECORDS)); }
@@ -6410,6 +6411,12 @@ function jcHours(key,ds){
 }
 
 // ── DAY-LOG RATE STAMPS (effective-dated; never rewritten) ──
+// A stamp is a saved directRate or a saved burdenedRate (including the old all-in rate).
+// Filling never touches either one. A blank entry is filled with the rate in effect on
+// the WORK date: the latest pay_change in crew history on or before that date, otherwise
+// the current hourly, and the costing rate set in effect that date (or the latest set
+// when none covers it yet). The database trigger is what stamps a crew save. This
+// pass is the same rule for an owner/office save, so the copy in memory matches.
 // Each crew entry on a day log carries the rates in effect on that WORK date, so a later raise or
 // a new costing rate set never re-costs past days:
 //   directRate   labor $/hr (calcDirectRate, or the old burden math for someone not set up yet)
@@ -6421,6 +6428,49 @@ function jcHours(key,ds){
 //   burdenedRate kept = direct + overhead, so older code paths still see an all-in rate.
 // Days before the direct-rate model only get burdenedRate, exactly like the old code stamped it.
 const JC_RATE_STAMP_KEYS=['directRate','otRate','baseRate','statMult','overheadRate','rateVersion','fieldOverride'];
+// True when this person-day already has a wage stamp. Blank and missing are not stamps.
+// 0 is a stamp: someone saved a rate, and a fill must not replace it.
+function _jcHasStamp(c){
+  if(!c||typeof c!=='object') return false;
+  const num=v=>{
+    if(v===undefined||v===null) return false;
+    if(typeof v==='string'&&v.trim()==='') return false;
+    return !isNaN(parseFloat(v));
+  };
+  return num(c.directRate)||num(c.burdenedRate);
+}
+function _crewHistoryKeys(cd){
+  const keys=[];
+  if(cd&&cd.db_id!=null&&String(cd.db_id)!=='') keys.push('id_'+cd.db_id);
+  const slug=cd&&cd.full?String(cd.full).toLowerCase().replace(/\s+/g,'_'):'';
+  if(slug) keys.push('name_'+slug);
+  return keys;
+}
+// Hourly in effect on the work date. Latest pay_change on or before that date.
+// No covering history: the hourly on the crew record now.
+function _crewHourlyOnDate(cd, ds){
+  const cur=parseFloat(cd&&cd.hourly);
+  let best=null, ord=0;
+  _crewHistoryKeys(cd).forEach(k=>{
+    const events=(CREW_HISTORY[k]&&Array.isArray(CREW_HISTORY[k].events))?CREW_HISTORY[k].events:[];
+    events.forEach(ev=>{
+      const mine=ord++;
+      if(!ev||ev.type!=='pay_change'||typeof ev.date!=='string'||ev.date>(ds||'')) return;
+      const rate=parseFloat(ev.rate);
+      if(!(rate>0)) return;
+      if(!best||ev.date>best.date||(ev.date===best.date&&mine>=best.ord)) best={date:ev.date,rate,ord:mine};
+    });
+  });
+  if(best) return best.rate;
+  return cur>0?cur:0;
+}
+function _crewForWorkDate(cd, ds){
+  if(!cd) return null;
+  const hr=_crewHourlyOnDate(cd, ds);
+  const cur=parseFloat(cd.hourly);
+  if(hr>0&&hr!==cur) return Object.assign({}, cd, {hourly:String(hr)});
+  return cd;
+}
 // opts.forceDirect: stamp with the direct-rate model even on a day before it (today's crew rates,
 // that day's legacy overhead) — used when the owner is added to an older day after the fact.
 function jcStampEntryRates(c,ds,opts){
@@ -6432,9 +6482,9 @@ function jcStampEntryRates(c,ds,opts){
     return;
   }
   JC_RATE_STAMP_KEYS.forEach(k=>delete c[k]);
-  const cd=(c&&c.crewIdx>=0)?CREW_DATA[c.crewIdx]:null;
+  const cd=_crewForWorkDate((c&&c.crewIdx>=0)?CREW_DATA[c.crewIdx]:null, ds);
   if(!cd){ c.burdenedRate=''; return; }
-  let {entry,version}=costingSetFor(ds);
+  let {entry,version}=costingSetForStamp(ds);
   let ohOverride=null;
   if(opts&&opts.forceDirect&&_costingSettingsLoadOk&&!_csIsModel(entry)){
     ({entry,version}=costingCurrentModel());
@@ -6455,10 +6505,10 @@ function jcStampEntryRates(c,ds,opts){
   if(r.override) c.fieldOverride=true;
   c.burdenedRate=(r.direct+oh).toFixed(2);
 }
-// Save-time pass: stamp any entry that is missing directRate on a work day (up to today) covered
-// by the direct-rate model. Never touches an entry that already has directRate, and never a day
-// before the model (those keep their recorded burdenedRate). Runs on the merged copy right before
-// the write, so it can't undo another device's edit. Returns how many entries it stamped.
+// Save-time pass: fill a person-day that has no stamp at all, up through today.
+// A saved directRate or burdenedRate is never rewritten, including a legacy all-in
+// rate and a rate Operations stored from SQL. A day before the direct-rate model
+// gets only burdenedRate. A future day waits. Returns how many entries it filled.
 function _jcStampMissingRates(){
   if(!_isOwnerSession()) return 0;
   if(!_crewLoaded||!_costingSettingsLoadOk) return 0;
@@ -6466,11 +6516,10 @@ function _jcStampMissingRates(){
   JOB_RECORDS.forEach(job=>{
     Object.entries(job.dayLogs||{}).forEach(([ds,log])=>{
       if(!log||!Array.isArray(log.crewPresent)||ds>today) return;
-      if(!_csIsModel(costingSetFor(ds).entry)) return;
       log.crewPresent.forEach(c=>{
-        if(!c||!(c.crewIdx>=0)||!CREW_DATA[c.crewIdx]||parseFloat(c.directRate)>0) return;
+        if(!c||!(c.crewIdx>=0)||!CREW_DATA[c.crewIdx]||_jcHasStamp(c)) return;
         jcStampEntryRates(c,ds);
-        if(parseFloat(c.directRate)>0) n++;
+        if(_jcHasStamp(c)) n++;
       });
     });
   });
@@ -6728,7 +6777,7 @@ function jcJobCostLines(job,mode){
   const ownerIdx=jcOwnerIdx();
   // ── LABOR + OVERHEAD (per person per day; a split shift is one person with two rows) ──
   const laborRows=[];
-  let labor=0, overhead=0, hours=0, ownerHours=0, cashHrs=0, pwHrs=0, legacyOhHrs=0;
+  let labor=0, overhead=0, hours=0, ownerHours=0, cashHrs=0, pwHrs=0, legacyOhHrs=0, estimatedRows=0;
   const cashDays=new Set(), soloDays=[], noWorkDays=[], ohByRate={};
   allDates.forEach(ds=>{
     const log=logs[ds]; if(!log) return;
@@ -6749,6 +6798,8 @@ function jcJobCostLines(job,mode){
       const c=rows[0];
       const r=jcEntryRate(c,job,log,ds,mode);
       const cost=Math.round(hrs*r.labor*100)/100, oh=Math.round(hrs*r.overhead*100)/100;
+      const estimated=!recost&&!_jcHasStamp(c);
+      if(estimated) estimatedRows++;
       const isOwner=ownerIdx>=0&&parseInt(c.crewIdx)===ownerIdx;
       dayPeople++; if(isOwner) dayHasOwner=true;
       labor+=cost; overhead+=oh; hours+=hrs;
@@ -6757,7 +6808,7 @@ function jcJobCostLines(job,mode){
       if(r.kind==='pw') pwHrs+=hrs;
       if(r.kind==='legacy'||(r.kind==='live'&&!recost&&!_csIsModel(costingSetFor(ds).entry))) legacyOhHrs+=hrs;
       const rk=r.overhead.toFixed(2); ohByRate[rk]=(ohByRate[rk]||0)+hrs;
-      laborRows.push({ds,name,hrs,rate:r.labor,cost,ohRate:r.overhead,ohCost:oh,kind:r.kind,ot:r.ot,cash:r.cash,isOwner});
+      laborRows.push({ds,name,hrs,rate:r.labor,cost,ohRate:r.overhead,ohCost:oh,kind:r.kind,ot:r.ot,cash:r.cash,isOwner,estimated});
     });
     if(dayPeople===1&&!dayHasOwner&&ownerIdx>=0) soloDays.push(ds);
   });
@@ -6842,7 +6893,7 @@ function jcJobCostLines(job,mode){
     return !(log.fullDay||jcGetLogHrs(log)>0||crew.some(c=>jcGetCrewMemberHrs(c,log)>0));
   });
   const finishDate=[...(job.endDate?[job.endDate]:[]),...(job.extraDays||[]),...Object.keys(logs)].reduce((mx,d)=>(d>mx?d:mx),'');
-  return {mode:recost?'recost':'recorded',allDates,laborRows,labor,overhead,hours:Math.round(hours*10)/10,ownerHours,ohByRate,
+  return {mode:recost?'recost':'recorded',allDates,laborRows,labor,overhead,hours:Math.round(hours*10)/10,ownerHours,ohByRate,estimatedRows,
     cashHrs,cashDays:[...cashDays].sort(),pwHrs,legacyOhHrs,soloDays,noWorkDays,missingTimeDates,
     matRows:Object.values(matTotals),supplierInvoices,supplierInvTotal,materials,
     consPct:cons.pct,consSource:cons.source,consSys:cons.sys,consumables,
@@ -6878,7 +6929,7 @@ function _jcSumCostRows(members){
     commissions:r2(sum('commissions')),directCost,grossProfit,gmPct:pct(grossProfit),overhead,netProfit,netPct,
     flag:revenue>0?jcProfitFlag(netPct):null,ownerCost,trueNet:r2(netProfit-ownerCost),hours:Math.round(sum('hours')*10)/10,
     workDays:sum('workDays'),cashDayCount:cnt('cashDays'),soloDayCount:cnt('soloDays'),noWorkCount:cnt('noWorkDays'),
-    missingTimeCount:cnt('missingTimeDates'),legacyOhHrs:sum('legacyOhHrs'),pwHrs:sum('pwHrs'),sqft:sq,
+    missingTimeCount:cnt('missingTimeDates'),estimatedRows:sum('estimatedRows'),legacyOhHrs:sum('legacyOhHrs'),pwHrs:sum('pwHrs'),sqft:sq,
     breakEven:r2(sum('breakEven')),isTM:members.some(m=>m.tmJob)};
 }
 function renderJobCostingPage(){
@@ -6922,7 +6973,7 @@ function renderJobCostingPage(){
   </div>
   <div style="font-size:11.5px;color:var(--text3);margin:-4px 0 14px;line-height:1.5;">${_jcrRecost
     ?`<b style="color:var(--accent);">Re-cost:</b> every hour at today's crew rates plus $${ohNow.toFixed(2)}/hr overhead, prevailing wage with employer taxes, consumables at the job's own % or today's settings. Shown here only — nothing is saved.`
-    :`As recorded: each day at the rates stamped when it was logged. Before 10/20 the stored rate had $${_csLegacyOverheadFor('2026-10-19').toFixed(2)}/hr overhead inside it; it's split out into the Overhead column.`}</div>
+    :`As recorded: each day at the rates stamped when it was logged. Before 10/20 the stored rate had $${_csLegacyOverheadFor('2026-10-19').toFixed(2)}/hr overhead inside it; it's split out into the Overhead column. A day with no stamp is priced from the rate on file, not as $0.`}${tot.estimatedRows?` <b style="color:#b45309;">${tot.estimatedRows} person-day${tot.estimatedRows!==1?'s':''} still unstamped — estimated, flagged until a save writes the work-date rate.</b>`:''}</div>
   <div class="mgrid4" style="margin-bottom:24px;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));">
     <div class="stat-card"><div class="stat-label">Total Revenue</div><div class="stat-value">${fmt(tot.revenue)}<div style="font-size:12px;font-weight:500;color:var(--text3);margin-top:2px;">${rows.length} job${rows.length!==1?'s':''}</div></div></div>
     <div class="stat-card"><div class="stat-label">Gross Profit</div><div class="stat-value" style="color:${col(tot.grossProfit)};">${sfmt(tot.grossProfit)}<div style="font-size:12px;font-weight:500;color:var(--text3);margin-top:2px;">${tot.gmPct!==null?tot.gmPct+'% GM':''}</div></div></div>
@@ -6945,6 +6996,7 @@ function renderJobCostingPage(){
       chip((job.status||'').replace('_',' ').toUpperCase(),sc,sc+'22'),
       job._comboMembers?chip('🔗 '+job._comboMembers.length+' phases','var(--accent)','var(--accent-dim)'):'',
       r.missingTimeCount?chip('⚠ '+r.missingTimeCount+' missing time'+(r.missingTimeCount!==1?'s':''),'var(--red,#e53e3e)','var(--red-dim,#fff0f0)',r.missingTimeCount+' day(s) logged but missing a time — excluded from labor cost'):'',
+      r.estimatedRows?chip('estimated','#b45309','#d9770622','No wage stamp on '+r.estimatedRows+' person-day'+(r.estimatedRows!==1?'s':'')+' — priced from the rate on file until a save locks the work-date rate'):'',
       r.noWorkCount?chip('🚫 '+r.noWorkCount+' no-work day'+(r.noWorkCount!==1?'s':''),'var(--text2)','var(--surface3)','Marked No Work Completed — no labor or overhead'):'',
       r.cashDayCount?chip('💵 '+r.cashDayCount+' cash day'+(r.cashDayCount!==1?'s':''),'#059669','#05966922','Paid in cash — costed at base pay'+(_jcrRecost&&costingCurrentModel().entry.cashDayBurden==='statutory'?' plus SS/Medicare/WC':'')):'',
       r.pwHrs?chip('PW','#d97706','#d9770622','Prevailing wage hours'):'',
@@ -7082,19 +7134,22 @@ function _payrollCompute(offset){
         const b=bucket(key,label);
         const baseRate=hasCrew?(parseFloat(CREW_DATA[c.crewIdx].hourly)||0):0;
         const jobLabel=(job.customer||'Unnamed Job').trim();
+        // No stamp yet: still pay the current base hourly (never $0), and flag the day.
+        // The overtime checkbox is unchanged — a weekend is not overtime unless it is checked.
+        const estimated=!_jcHasStamp(c);
         if(prevailing){
           const rate=(parseFloat(job.prevailingWageRate)||0)*(ot?1.5:1);
           const pay=hrs*rate;
           b.pwHrs+=hrs; b.pwPay+=pay;
           if(!b.pwByJob[jobLabel]) b.pwByJob[jobLabel]={hrs:0,pay:0};
           b.pwByJob[jobLabel].hrs+=hrs; b.pwByJob[jobLabel].pay+=pay;
-          b.days.push({date:ds,job:jobLabel,hrs,type:'Prevailing Wage'});
+          b.days.push({date:ds,job:jobLabel,hrs,type:'Prevailing Wage',estimated});
         } else if(ot){
           b.otHrs+=hrs; b.otPay+=hrs*baseRate*1.5;
-          b.days.push({date:ds,job:jobLabel,hrs,type:'Overtime'});
+          b.days.push({date:ds,job:jobLabel,hrs,type:'Overtime',estimated});
         } else {
           b.regHrs+=hrs; b.regPay+=hrs*baseRate;
-          b.days.push({date:ds,job:jobLabel,hrs,type:'Regular'});
+          b.days.push({date:ds,job:jobLabel,hrs,type:'Regular',estimated});
         }
       });
     });
@@ -7173,6 +7228,7 @@ function renderPayroll(){
   const totReg=rows.reduce((a,r)=>a+r.regPay+r.otPay+r.ptoPay,0);
   const totHol=rows.reduce((a,r)=>a+r.holPay,0);
   const totPW=rows.reduce((a,r)=>a+r.pwPay,0);
+  const estDays=rows.reduce((a,r)=>a+(r.days||[]).filter(d=>d.estimated).length,0);
 
   let html=`
   <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:10px 14px;margin-bottom:${holidaysInPeriod.length?8:22}px;">
@@ -7181,7 +7237,8 @@ function renderPayroll(){
     <button class="btn btn-ghost" onclick="payrollShiftPeriod(1)">Next ›</button>
     ${!isCurrent?`<button class="btn btn-ghost" onclick="payrollGoToCurrent()" style="font-size:11.5px;">Current Period</button>`:''}
   </div>
-  ${holidaysInPeriod.length?`<div style="text-align:center;font-size:12px;color:var(--orange);margin-bottom:22px;">${holidaysInPeriod.map(h=>h.label+' — '+fmtPd(h.date)).join(' &nbsp;·&nbsp; ')} <span style="color:var(--text3);">(paid holiday — 8h at base rate for every crew member, unless already on PTO that day)</span></div>`:''}
+  ${holidaysInPeriod.length?`<div style="text-align:center;font-size:12px;color:var(--orange);margin-bottom:${estDays?8:22}px;">${holidaysInPeriod.map(h=>h.label+' — '+fmtPd(h.date)).join(' &nbsp;·&nbsp; ')} <span style="color:var(--text3);">(paid holiday — 8h at base rate for every crew member, unless already on PTO that day)</span></div>`:''}
+  ${estDays?`<div style="text-align:center;font-size:12px;color:#b45309;margin-bottom:22px;">Estimated — ${estDays} logged day${estDays!==1?'s':''} ha${estDays!==1?'ve':'s'} no wage stamp. Pay still uses the current base hourly (not $0) until a save writes the rate that was in effect on the work date.</div>`:''}
   <div class="mgrid4" style="margin-bottom:24px;">
     <div class="stat-card"><div class="stat-label">Regular Payroll</div><div class="stat-value">${fmt(totReg)}</div></div>
     <div class="stat-card"><div class="stat-label">Holiday Pay</div><div class="stat-value" style="color:var(--orange);">${fmt(totHol)}</div></div>
@@ -7209,8 +7266,9 @@ function renderPayroll(){
       const dateKeys=Object.keys(byDate).sort();
       const dayRow=(e,indent)=>{
         const tag=(e.type==='Overtime'||e.type==='Prevailing Wage')?` <span style="color:${dayTypeColor[e.type]};font-size:10.5px;font-weight:600;">(${e.type})</span>`:'';
+        const est=e.estimated?' <span style="color:#b45309;font-size:10.5px;font-weight:600;">estimated</span>':'';
         return `<div style="display:flex;justify-content:space-between;gap:10px;${indent?'padding-left:14px;font-size:12px;color:var(--text2);':''}">
-          <span>${e.job}${tag}</span><span style="font-family:'DM Mono',monospace;flex-shrink:0;">${fmtH(e.hrs)}</span>
+          <span>${e.job}${tag}${est}</span><span style="font-family:'DM Mono',monospace;flex-shrink:0;">${fmtH(e.hrs)}</span>
         </div>`;
       };
       const dayGroups=dateKeys.map(ds=>{
@@ -7221,8 +7279,9 @@ function renderPayroll(){
         if(entries.length===1){
           const e=entries[0];
           const tag=(e.type==='Overtime'||e.type==='Prevailing Wage')?` <span style="color:${dayTypeColor[e.type]};font-size:10.5px;font-weight:600;">(${e.type})</span>`:'';
+          const est=e.estimated?' <span style="color:#b45309;font-size:10.5px;font-weight:600;">estimated</span>':'';
           return `<div style="display:flex;justify-content:space-between;gap:10px;${flagStyle}">
-            <span><span style="font-family:'DM Mono',monospace;color:var(--text3);">${fmtDay(ds)}</span> — ${e.job}${tag}</span>
+            <span><span style="font-family:'DM Mono',monospace;color:var(--text3);">${fmtDay(ds)}</span> — ${e.job}${tag}${est}</span>
             <span style="font-family:'DM Mono',monospace;flex-shrink:0;${flag?'color:var(--red);font-weight:700;':''}">${fmtH(dayTotal)}${flag?' ⚠':''}</span>
           </div>`;
         }
@@ -7424,6 +7483,13 @@ function renderJobCosting(){
 
   // Labor
   html+=sec('Labor Cost');
+  if(laborRows.some(r=>r.estimated)){
+    const n=laborRows.filter(r=>r.estimated).length;
+    html+=`<div style="background:#d9770614;border:1px solid #d97706;border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:10px;">
+      <div style="font-size:13px;font-weight:600;color:#b45309;">Estimated — ${n} person-day${n!==1?'s':''} ha${n!==1?'ve':'s'} no wage stamp</div>
+      <div style="font-size:11.5px;color:var(--text2);margin-top:3px;">Priced from the rate on file so labor is not $0. A save writes the rate that was in effect on the work date and clears this flag. Prevailing-wage and cash days keep their own rates.</div>
+    </div>`;
+  }
   if(laborRows.length===0){
     html+=`<div style="font-size:13px;color:var(--text3);">No time entries yet — fill in start/end times in the Daily Log.</div>`;
   } else {
@@ -7441,7 +7507,7 @@ function renderJobCosting(){
         </span>
       </div>`;
       rows.forEach(r=>{
-        const tags=[r.kind==='pw'?'prevailing wage':'',r.kind==='cash'?'cash':'',r.ot?'1.5×':'',r.kind==='legacy'?'stored rate − $'+r.ohRate.toFixed(2)+' overhead':'',r.isOwner&&r.kind!=='pw'?'owner':''].filter(Boolean);
+        const tags=[r.estimated?'estimated':'',r.kind==='pw'?'prevailing wage':'',r.kind==='cash'?'cash':'',r.ot?'1.5×':'',r.kind==='legacy'?'stored rate − $'+r.ohRate.toFixed(2)+' overhead':'',r.isOwner&&r.kind!=='pw'?'owner':''].filter(Boolean);
         html+=`<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);padding:2px 0 2px 10px;">
           <span>${r.name}${r.rate>0?' <span style="color:var(--text3);">× '+r.hrs.toFixed(1)+'h @ $'+r.rate.toFixed(2)+'/hr'+(tags.length?' · '+tags.join(' · '):'')+'</span>':' <span style="color:var(--text3);">(no rate set)</span>'}</span>
           <span style="font-family:'DM Mono',monospace;">${r.rate>0?fmt(r.cost):'—'}</span>
@@ -12510,6 +12576,16 @@ function costingSetFor(ds){
   let hit=null;
   for(const x of all){ if(x.e.effective<=d) hit=x; else break; }
   if(!hit) hit=all[0]||null;
+  return hit?{entry:hit.e,version:_csVersion(hit)}:{entry:{},version:''};
+}
+// Rate set used when FILLING a missing stamp. Same as costingSetFor when some entry
+// is already in effect. When none covers the work date, use the latest set (the
+// current one), not the oldest.
+function costingSetForStamp(ds){
+  const d=ds||_csToday(), all=_csSorted();
+  let hit=null;
+  for(const x of all){ if(x.e.effective<=d) hit=x; else break; }
+  if(!hit) hit=all.length?all[all.length-1]:null;
   return hit?{entry:hit.e,version:_csVersion(hit)}:{entry:{},version:''};
 }
 // The direct-rate model set in effect today (or the first one, if it only starts later).
