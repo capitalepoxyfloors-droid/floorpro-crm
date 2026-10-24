@@ -181,12 +181,147 @@ test('save stamps missing rates only on direct-model days, never on older days',
   assert.equal(old.burdenedRate, '38.58');
   assert.equal(old.directRate, undefined, 'an older day is never re-stamped');
   const [b, will] = saved.dayLogs['2026-10-20'].crewPresent;
-  assert.ok(Math.abs(b.directRate - 36.66) <= 0.03);
-  assert.equal(b.overheadRate, 15.32);
+  assert.equal(b.burdenedRate, '38.58', 'a legacy burdenedRate is a stamp');
+  assert.equal(b.directRate, undefined, 'a saved burdenedRate is never replaced with a direct rate');
   assert.equal(will.directRate, 40.27);
   assert.equal(will.fieldOverride, true);
   assert.equal(will.overheadRate, 15.32, "the owner's field hours carry overhead too");
   assert.equal(saved.dayLogs['2099-01-05'].crewPresent[0].directRate, undefined, 'future days wait for their date');
+});
+
+test('a missing stamp uses the rate on the work date, and a full day with no times is 8 hours', async () => {
+  await freshCrewAndSettings();
+  ev(`CREW_HISTORY={id_seth:{events:[
+    {type:'pay_change',date:'2026-01-15',rate:20},
+    {type:'pay_change',date:'2026-11-01',rate:30.25}
+  ]}};`);
+  ev(`window.__at20=calcDirectRate(Object.assign({}, CREW_DATA[0], {hourly:'20'}));`);
+  const expectDirect = ev('window.__at20.direct');
+  w.__job = { id: 'hist', customer: 'History', status: 'complete', value: '5000', startDate: '2026-10-21', endDate: '2026-10-24', dayLogs: {
+    '2026-10-21': { fullDay: true, crewPresent: [{ crewIdx: 0, name: 'Seth West' }, { crewIdx: 1, name: 'Brendon Bennett', burdenedRate: '38.58' }] },
+    '2026-10-24': { fullDay: true, crewPresent: [{ crewIdx: 0, name: 'Seth West', directRate: 33.1 }] },
+    '2026-09-10': { fullDay: true, crewPresent: [{ crewIdx: 0, name: 'Seth West' }] },
+  } };
+  ev('JOB_RECORDS.push(window.__job); _jcId="hist"; _jrBaseline=JSON.parse(JSON.stringify(JOB_RECORDS));');
+  state.settings.job_records = JSON.stringify(plain(ev('JOB_RECORDS')));
+  await ev('saveJobRecords()');
+  const saved = JSON.parse(state.settings.job_records).find(j => j.id === 'hist');
+  const seth = saved.dayLogs['2026-10-21'].crewPresent[0];
+  const kept = saved.dayLogs['2026-10-21'].crewPresent[1];
+  const already = saved.dayLogs['2026-10-24'].crewPresent[0];
+  const old = saved.dayLogs['2026-09-10'].crewPresent[0];
+  assert.equal(seth.baseRate, 20, 'pay_change on 2026-01-15 is the hourly on 2026-10-21');
+  assert.equal(seth.directRate, expectDirect);
+  assert.equal(seth.otRate, ev('window.__at20.ot'));
+  assert.equal(seth.overheadRate, 15.32);
+  assert.equal(seth.rateVersion, 'cs_20261020');
+  assert.equal(seth.burdenedRate, (expectDirect + 15.32).toFixed(2));
+  assert.equal(kept.burdenedRate, '38.58');
+  assert.equal(kept.directRate, undefined);
+  assert.equal(already.directRate, 33.1, 'a saved directRate is not replaced, even on a Saturday');
+  assert.equal(saved.dayLogs['2026-10-24'].overtimeWage, undefined, 'a weekend does not turn overtime on');
+  assert.equal(old.directRate, undefined, 'a day before the model does not gain a direct rate');
+  assert.equal(old.burdenedRate, (parseFloat(ev(`calcBurdenForCrew(Object.assign({}, CREW_DATA[0], {hourly:'20'}))`)) + 4.83).toFixed(2));
+  const L = lines('hist');
+  const row = L.laborRows.find(r => r.ds === '2026-10-21' && r.name === 'Seth West');
+  assert.equal(row.hrs, 8, 'full day with no clock times is 8 hours');
+  assert.equal(row.estimated, false, 'the save wrote the stamp');
+  assert.equal(L.laborRows.find(r => r.name === 'Brendon Bennett').estimated, false);
+  // No history covers a brand-new blank day for Brendon: current hourly, and the screen flags it until saved.
+  ev(`CREW_HISTORY={};`);
+  putJob({ id: 'open', customer: 'Open Day', status: 'in_progress', value: '1000', startDate: '2026-10-22', endDate: '2026-10-22',
+    dayLogs: { '2026-10-22': { fullDay: true, crewPresent: [{ crewIdx: 1, name: 'Brendon Bennett' }] } } });
+  const open = lines('open');
+  assert.equal(open.hours, 8);
+  assert.ok(open.labor > 0, 'an unstamped day is not $0');
+  assert.equal(open.laborRows[0].estimated, true);
+  assert.equal(open.estimatedRows, 1);
+  ev(`document.body.insertAdjacentHTML('beforeend','<div id=jc-costing-content></div><div id=jc-cost-page-content></div><div id=payroll-content></div>');`);
+  ev(`_jcId='open'; renderJobCosting();`);
+  assert.match(ev(`document.getElementById('jc-costing-content').textContent`), /Estimated/);
+  ev(`_jcrRecost=false; renderJobCostingPage();`);
+  // open is not complete; the stamped history job is. It should not say estimated.
+  const page = ev(`document.getElementById('jc-cost-page-content').textContent`);
+  assert.equal(page.includes('estimated'), false);
+  putJob({ id: 'estjob', customer: 'Needs Stamp', status: 'complete', value: '1000', jobType: 'flake-good', startDate: '2026-10-22', endDate: '2026-10-22',
+    dayLogs: { '2026-10-22': { fullDay: true, crewPresent: [{ crewIdx: 1, name: 'Brendon Bennett' }] } } });
+  ev('renderJobCostingPage();');
+  assert.match(ev(`document.getElementById('jc-cost-page-content').textContent`), /estimated/);
+  // Saturday with no overtime checkbox stays regular pay. Full day, no times, current base hourly.
+  putJob({ id: 'sat', customer: 'Saturday', status: 'in_progress', startDate: '2026-06-27', endDate: '2026-06-27',
+    dayLogs: { '2026-06-27': { fullDay: true, crewPresent: [{ crewIdx: 0, name: 'Seth West' }] } } });
+  const pay = plain(ev('_payrollCompute(0)'));
+  const sethPay = pay.rows.find(r => r.label === 'Seth West');
+  const sat = sethPay.days.find(d => d.date === '2026-06-27');
+  assert.equal(sat.hrs, 8);
+  assert.equal(sat.type, 'Regular');
+  assert.equal(sat.estimated, true);
+  assert.equal(sethPay.regPay, 8 * 30.25);
+  ev(`renderPayroll();`);
+  assert.match(ev(`document.getElementById('payroll-content').textContent`), /estimated/);
+  // A prevailing-wage day keeps the PW branch after a stamp is written.
+  ev(`window.__seth={crewIdx:0,name:'Seth West'}; jcStampEntryRates(window.__seth,'2026-10-21');`);
+  const pw = plain(ev(`jcEntryRate(window.__seth,{prevailingWage:true,prevailingWageRate:44.7,prevailingWageBurden:true},{},'2026-10-21')`));
+  assert.equal(pw.kind, 'pw');
+  assert.equal(pw.ot, false);
+  const cash = plain(ev(`jcEntryRate(window.__seth,{cashWages:true},{},'2026-10-21')`));
+  assert.equal(cash.kind, 'cash');
+  assert.equal(cash.labor, ev('window.__seth.baseRate'));
+  // No costing entry covers the date: the fill uses the latest set, not the oldest.
+  ev(`COSTING_SETTINGS={history:[
+    {id:'cs_a',effective:'2026-11-01',utilization:0.9,paidHoursPerYear:2080,overheadPool:50000,overheadMode:'pool',excludeOwnerFromDivisor:true},
+    {id:'cs_b',effective:'2026-12-01',utilization:0.9,paidHoursPerYear:2080,overheadPool:100000,overheadMode:'pool',excludeOwnerFromDivisor:true}
+  ]};`);
+  assert.equal(ev(`costingSetFor('2026-10-21').version`), 'cs_a');
+  assert.equal(ev(`costingSetForStamp('2026-10-21').version`), 'cs_b');
+  ev(`window.__late={crewIdx:0,name:'Seth West'}; jcStampEntryRates(window.__late,'2026-10-21');`);
+  assert.equal(ev('window.__late.rateVersion'), 'cs_b');
+  assert.equal(ev('window.__late.overheadRate'), r2(100000 / (3 * 2080 * 0.9)));
+  ev('CREW_HISTORY={};');
+});
+
+test('a pre-model fill matches the all-in the page wrote before 2026-10-20', async () => {
+  await freshCrewAndSettings();
+  ev(`window.__cs=JSON.parse(JSON.stringify(COSTING_SETTINGS)); window.__oh=JSON.parse(JSON.stringify(OVERHEAD));`);
+  ev(`COSTING_SETTINGS.history[0].legacyFutaPct=2.70; COSTING_SETTINGS.history[0].legacyWcPct=5.61;`);
+  ev(`OVERHEAD={items:[{id:'pool',name:'Live pool',amount:'86014',period:'yr'}]};`);
+  ev(`CREW_HISTORY={
+    id_cody:{events:[{type:'pay_change',date:'2026-06-01',rate:25.2,note:'Previous wage was $24.00'}]},
+    id_hunter:{events:[{type:'pay_change',date:'2026-08-01',rate:24,oldRate:22,note:'Previous wage was $20.00'}]}
+  };`);
+  const stamp = (name, idx, ds) => {
+    ev(`window.__row={crewIdx:${idx},name:'${name}'}; jcStampEntryRates(window.__row,'${ds}');`);
+    return plain(ev('window.__row'));
+  };
+  const seth = stamp('Seth West', 0, '2026-10-02');
+  const hunter = stamp('Hunter Schuler', 4, '2026-10-01');
+  const may = stamp('Cody Faulkner', 3, '2026-05-15');
+  const june = stamp('Cody Faulkner', 3, '2026-06-15');
+  const prior = stamp('Hunter Schuler', 4, '2026-07-01');
+  assert.equal(seth.burdenedRate, '42.08');
+  assert.equal(seth.directRate, undefined);
+  assert.equal(seth.rateEstimated, undefined);
+  assert.equal(hunter.burdenedRate, '33.58');
+  assert.equal(hunter.rateEstimated, undefined);
+  assert.equal(may.burdenedRate, '33.58');
+  assert.equal(may.rateEstimated, true);
+  assert.equal(june.burdenedRate, '35.02');
+  assert.equal(june.rateEstimated, undefined);
+  assert.equal(prior.burdenedRate, '31.19', 'a structured oldRate beats the note');
+  assert.equal(prior.rateEstimated, undefined);
+  const model = stamp('Seth West', 0, '2026-10-21');
+  assert.equal(model.overheadRate, 15.32, 'a model day uses the dated pool, not the $86,014 list');
+  assert.equal(model.directRate, 40.27);
+  assert.equal(model.rateEstimated, undefined);
+  ev(`delete COSTING_SETTINGS.history[0].legacyOverheadPerHour;`);
+  const missing = stamp('Seth West', 0, '2026-10-02');
+  assert.equal(missing.burdenedRate, '42.08', 'a missing stored figure falls back to 4.83, not the list');
+  assert.equal(missing.rateEstimated, true);
+  ev(`CREW_HISTORY={id_cody:{events:[{type:'pay_change',date:'2026-06-01',rate:25.2,note:'Raise approved'}]}};`);
+  const blank = stamp('Cody Faulkner', 3, '2026-05-01');
+  assert.equal(blank.burdenedRate, '35.02', 'no amount in the note keeps today hourly');
+  assert.equal(blank.rateEstimated, true);
+  ev(`COSTING_SETTINGS=window.__cs; OVERHEAD=window.__oh; CREW_HISTORY={};`);
 });
 
 test('old unstamped logs cost exactly what they did before (as recorded)', async () => {
@@ -376,6 +511,22 @@ test('crew cannot write costing_settings (it is not on the crew settings allowli
   for (const l of lists) assert.ok(!l.includes('costing_settings'), 'crew allowlist must not include costing_settings');
   const mig = fs.readFileSync(path.join(root, 'supabase/migrations/20261020120000_crew_costing_columns.sql'), 'utf8');
   assert.ok(!/\bDROP\b|\bRENAME\b|job_records/i.test(mig.replace(/--.*$/gm, '')), 'migration only adds columns');
+});
+
+test('a crew person past the five seed names is locked on the request forms', async () => {
+  const extra = { ...base, id: 'rls', full_name: 'RLS Test Crew', first_name: 'RLS Test', last_name: 'Crew', hourly: '19.00', phone: '555-0100', sort_order: 5, is_owner: false, specialties: '[]' };
+  state.crewRows = plain(CREW_ROWS).concat([extra]);
+  ev(`localStorage.setItem('fpRole','crew'); localStorage.setItem('fpClockCrew','5'); localStorage.setItem('fpCvCrew','5');`);
+  await ev('loadCrew()');
+  const read = (id) => ev(`(function(){ const sel=document.getElementById('${id}'); _fillCrewNameSelect(sel,-1); return [sel.options.length, sel.value, sel.options[0]&&sel.options[0].text, sel.disabled].join('|'); })()`);
+  assert.equal(read('ptoreq-crew'), '1|5|RLS Test Crew|true');
+  assert.equal(read('mrq-crew'), '1|5|RLS Test Crew|true');
+  assert.equal(ev('CREW_DATA[5].hourly'), '');
+  assert.equal(ev('CREW_DATA[5].phone'), '');
+  assert.equal(ev('CREW[0].full'), 'Seth West');
+  ev(`localStorage.removeItem('fpRole'); localStorage.removeItem('fpClockCrew'); CREW_DATA.length=5; CREW.length=5;`);
+  state.crewRows = plain(CREW_ROWS);
+  await ev('loadCrew()');
 });
 
 test('no page errors', () => {
