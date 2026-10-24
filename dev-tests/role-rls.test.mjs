@@ -371,9 +371,13 @@ $crew$;
 
 SELECT set_config('request.jwt.claims', '${officeJwt}', true);
 SET LOCAL ROLE authenticated;
-SELECT CASE
-  WHEN (SELECT hourly FROM public.crew_private WHERE crew_id = (SELECT id FROM public.crew WHERE full_name = 'Seth West')) = '30.25'
-  THEN 1 ELSE (SELECT 1/0) END;
+DO $office$
+BEGIN
+  IF (SELECT hourly FROM public.crew_private WHERE crew_id = (SELECT id FROM public.crew WHERE full_name = 'Seth West')) IS DISTINCT FROM '30.25' THEN
+    RAISE EXCEPTION 'office could not read Seth hourly from crew_private';
+  END IF;
+END
+$office$;
 UPDATE public.settings SET value = $cs$
 {"history":[
   {"id":"cs_a","effective":"2026-11-01","utilization":0.9,"paidHoursPerYear":2080,"overheadMode":"pool","overheadPool":50000,"excludeOwnerFromDivisor":true},
