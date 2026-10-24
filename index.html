@@ -2945,6 +2945,18 @@ async function autoAdvanceJobsByDate(){
     if(job.status === 'scheduled' && start <= today){
       newBoardStatus  = 'inprogress';
       newRecordStatus = 'in_progress';
+    } else if(_isOwnerSession() && job.status === 'in_progress' && start <= today){
+      // A crew login can move the job record, and cannot write the jobs board.
+      // The next owner or office load moves a board card that is still Scheduled.
+      // This does not create a card. Invoiced cards are left where they are.
+      const behind=_boardRowForRecord(job);
+      if(behind && behind.status==='scheduled'){
+        await sb.update('jobs', behind.id, {status:'inprogress'});
+        behind.status='inprogress';
+        if(!job.boardRowId){ job.boardRowId=behind.id; changed=true; }
+        boardChanged=true;
+      }
+      continue;
     }
     if(!newBoardStatus) continue;
 
@@ -2963,8 +2975,8 @@ async function autoAdvanceJobsByDate(){
       // Already at the destination (or invoiced, which never moves backward) — nothing to do.
       if(!job.boardRowId) job.boardRowId = row.id;
     } else if(_isOwnerSession()){
-      // Crew cannot write the jobs board. The job-record status above still saves, and the
-      // board catches up the next time owner or office open the app.
+      // Crew cannot write the jobs board. The job-record status above still saves.
+      // The branch above moves the board card the next time owner or office open the app.
       if(row){
         await sb.update('jobs', row.id, {status: newBoardStatus});
         row.status = newBoardStatus;   // keep the cache coherent for the rest of this pass
@@ -2989,10 +3001,8 @@ async function autoAdvanceJobsByDate(){
     }
   }
 
-  if(changed){
-    saveJobRecords();
-    showToast('📅 Auto-advanced: '+advanced.join(', '));
-  }
+  if(changed) saveJobRecords();
+  if(advanced.length) showToast('📅 Auto-advanced: '+advanced.join(', '));
   // Board rows were changed in the DB — re-render the board/list from the fresh data.
   if(boardChanged){ try{ await loadJobs(); if(_jobsListActive()) renderJobsListView(); }catch(e){} }
 }
@@ -3072,6 +3082,22 @@ function _crewBlankPay(c){
   c.isOwner=false;
   CREW_COST_COLS.forEach(([k])=>{ c[k]=null; });
 }
+// The seed lists the original five people. A later person (sort_order 5 and up) still has to
+// land on that same index, because schedules and PINs are keyed by position.
+function _crewSlotIndex(r, pos){
+  const raw=r&&r.sort_order;
+  const n=Number(raw);
+  if(raw!==null&&raw!==undefined&&raw!==''&&Number.isInteger(n)&&n>=0&&n<=64) return n;
+  return pos;
+}
+function _crewEnsureSlot(i){
+  if(!Number.isInteger(i)||i<0||i>64) return false;
+  while(CREW_DATA.length<=i){
+    CREW_DATA.push({name:'',full:'',initials:'',color:'#94a3b8',role:'',phone:'',specialties:[],hourly:'',hours:'40',ss:'6.20',medicare:'1.45',futa:'0.60',wc:'10.00',gl:'0',benefits:'0',ptoDays:'0'});
+    CREW.push({name:'',full:'',color:'#94a3b8'});
+  }
+  return true;
+}
 function _crewApplyPayRow(c,r){
   if(!r) return;
   c.phone=r.phone||'';
@@ -3126,8 +3152,9 @@ async function loadCrew(){
   _crewLoaded=rows.length>0;
   let sawPay=false;
   if(rows.length>0){
-    rows.forEach((r,i)=>{
-      if(!CREW_DATA[i]) return;
+    rows.forEach((r,pos)=>{
+      const i=_crewSlotIndex(r,pos);
+      if(!_crewEnsureSlot(i)) return;
       Object.assign(CREW_DATA[i],{db_id:r.id,full:r.full_name,name:r.first_name,initials:r.initials,color:r.color,role:r.role,specialties:JSON.parse(r.specialties||'[]')});
       _crewBlankPay(CREW_DATA[i]);
       // A row that still contains hourly is a database where phase 2 is not applied (or a test double).
@@ -6355,8 +6382,17 @@ function _fillCrewNameSelect(sel, selectedIdx){
   if(!sel) return;
   if(!_isOwnerSession()){
     const me=_tcCrewIdentity();
-    const i=(me>=0&&CREW[me])?me:(selectedIdx>=0?selectedIdx:-1);
-    sel.innerHTML=(i>=0&&CREW[i])?`<option value="${i}">${CREW[i].full}</option>`:'';
+    let i=(me>=0&&CREW[me]&&CREW[me].full)?me:-1;
+    if(i<0&&me>=0){
+      const label=String(((_readAuthBlob()||{}).display_name)||'').trim();
+      if(label&&_crewEnsureSlot(me)){
+        CREW[me].full=label;
+        CREW[me].name=label.split(' ')[0]||label;
+        if(CREW_DATA[me]&&!CREW_DATA[me].full){ CREW_DATA[me].full=label; CREW_DATA[me].name=CREW[me].name; }
+        i=me;
+      }
+    }
+    sel.innerHTML=(i>=0&&CREW[i]&&CREW[i].full)?`<option value="${i}">${CREW[i].full}</option>`:'';
     if(i>=0) sel.value=String(i);
     sel.disabled=true;
     return;
@@ -12196,7 +12232,8 @@ function openModal(id){
 }
 // ORDER MATTERS — must match the live `crew` table's sort_order (Seth 0, Brendon 1, Will 2, Cody 3,
 // Hunter 4). Every per-person record (scheduled_slots/pto_blocks crew_idx, crew_pins, SLOT_JOB_MAP
-// keys) is keyed by POSITION, and this seed is what CREW holds until loadCrew() replaces it. It used
+// keys) is keyed by POSITION. loadCrew() fills these slots from sort_order and adds a slot
+// for anyone past this list. It used
 // to list Will first, so any slot written before the crew load finished landed on the wrong person
 // (confirmed: "Brendon" slots for Marino Garage and George Belchik were saved on Will's row).
 const CREW_DATA = [

@@ -378,6 +378,22 @@ test('crew cannot write costing_settings (it is not on the crew settings allowli
   assert.ok(!/\bDROP\b|\bRENAME\b|job_records/i.test(mig.replace(/--.*$/gm, '')), 'migration only adds columns');
 });
 
+test('a crew person past the five seed names is locked on the request forms', async () => {
+  const extra = { ...base, id: 'rls', full_name: 'RLS Test Crew', first_name: 'RLS Test', last_name: 'Crew', hourly: '19.00', phone: '555-0100', sort_order: 5, is_owner: false, specialties: '[]' };
+  state.crewRows = plain(CREW_ROWS).concat([extra]);
+  ev(`localStorage.setItem('fpRole','crew'); localStorage.setItem('fpClockCrew','5'); localStorage.setItem('fpCvCrew','5');`);
+  await ev('loadCrew()');
+  const read = (id) => ev(`(function(){ const sel=document.getElementById('${id}'); _fillCrewNameSelect(sel,-1); return [sel.options.length, sel.value, sel.options[0]&&sel.options[0].text, sel.disabled].join('|'); })()`);
+  assert.equal(read('ptoreq-crew'), '1|5|RLS Test Crew|true');
+  assert.equal(read('mrq-crew'), '1|5|RLS Test Crew|true');
+  assert.equal(ev('CREW_DATA[5].hourly'), '');
+  assert.equal(ev('CREW_DATA[5].phone'), '');
+  assert.equal(ev('CREW[0].full'), 'Seth West');
+  ev(`localStorage.removeItem('fpRole'); localStorage.removeItem('fpClockCrew'); CREW_DATA.length=5; CREW.length=5;`);
+  state.crewRows = plain(CREW_ROWS);
+  await ev('loadCrew()');
+});
+
 test('no page errors', () => {
   assert.deepEqual(consoleErrors.filter(e => !/fetch|network|Not implemented|loadCostingSettings: saved value is not usable/i.test(e)), []);
 });
