@@ -262,6 +262,6 @@ Until you do this, the old anon key is still inside the previous website and thi
 
 1. ~~Wave watcher~~ — answered Oct 19, see step 8.
 2. ~~Google Photos by public URL~~ — no; photo-jobs uses the service role.
-3. **Phase 2 (about a week after cutover):** crew can still *read* every table and settings key once signed in (pay, crew personal info, costing, leads, audit log). Split policies by role so crew get jobs, schedule, day logs, photos and materials only. Moving pay and `job_records` / `job_photos` out of shared settings keys is part of that.
+3. **Phase 2 role-split** is written and not applied to the live project. Crew can still read pay, personal info, costing, leads, and the audit log until `supabase/migrations/20261024140000_role_split_rls.sql` is run on the test project, checked, and only then on live — and only together with the website from that same change. Pay and phone are copied into `crew_private`; material prices into `materials_private`. The original columns stay. Rollback is `supabase/rollback/20261024140000_role_split_rls.sql` (it does not delete the copies). Apply order is in that migration's header and in the pull request.
 4. ~~4-digit guessing~~ — name-first + per-person lockout + 6-digit owner/office (Oct 19).
 5. The per-network backstop reads the first `X-Forwarded-For` value. Check on the test project whether a caller can set that header themselves (test checklist step 9c). It's only a backstop now; the per-person lockout doesn't depend on it.

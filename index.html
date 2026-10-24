@@ -2153,6 +2153,23 @@ const sb = {
     let rows;
     try{ rows=await res.json(); }catch(e){ return {ok:false, value:null}; }
     return {ok:true, value:(rows&&rows.length)?rows[rows.length-1].value:null};
+  },
+  // PostgREST RPC. data is the function's JSON result (often an array), or null.
+  async rpc(fn, args){
+    let res;
+    try{
+      await fpEnsureSession();
+      res=await _fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/${encodeURIComponent(fn)}`,{
+        method:'POST',
+        headers:this.headers,
+        body:JSON.stringify(args||{})
+      },25000);
+    }catch(e){ return {ok:false, data:null}; }
+    if(!res.ok) return {ok:false, data:null};
+    try{
+      const text=await res.text();
+      return {ok:true, data:text?JSON.parse(text):null};
+    }catch(e){ return {ok:false, data:null}; }
   }
 };
 
@@ -2160,6 +2177,27 @@ const sb = {
 // settings stays off unless these are set, and never runs for a crew session.
 let _slotsLoadOk=false,_leadsLoadOk=false,_jobRecordsLoadOk=false,_slotMapLoadOk=false,_materialsFromServer=false,_leadQuotedDatesLoadOk=false;
 function _isOwnerSession(){ return localStorage.getItem('fpRole')!=='crew'; }
+// A crew login must not keep wages, prices, or another person's file in memory from a
+// previous owner session in this tab. The database is what actually blocks the read;
+// this only clears what the page already had. Called before the loaders run.
+function _crewClearHiddenMemory(){
+  if(_isOwnerSession()) return;
+  OVERHEAD={items:[]};
+  COSTING_SETTINGS={history:[]};
+  _costingSettingsLoadOk=false;
+  MILEAGE_RATES={tiers:[]};
+  CREW_HISTORY={};
+  CREW_ATTACHMENTS={};
+  SALES_VISITS=[];
+  LEADS=[];
+  _leadsLoadOk=false;
+  _lastJobRows=[];
+  VEHICLES=[];
+  VEHICLE_MAINT=[];
+  AUDIT_LOG_CACHE=null;
+  if(Array.isArray(CREW_DATA)) CREW_DATA.forEach(c=>{ if(c) _crewBlankPay(c); });
+  if(Array.isArray(MATERIALS)) MATERIALS.forEach(m=>{ if(m){ m.price=''; m.date=''; } });
+}
 
 // ── AUDIT LOG ──────────────────────────────────────────────────────────────
 // Fire-and-forget: never let a logging failure block the real action it's recording.
@@ -2173,8 +2211,16 @@ function currentActorName(){
   return 'Manager';
 }
 async function logAudit(action,entity,details){
-  try{ await sb.insert('audit_log',{actor:currentActorName(),action,entity:entity||'',details:details||''}); }
-  catch(e){ console.error('logAudit failed:',e); }
+  // return=minimal: crew can insert an audit row but cannot read the log back.
+  // Asking PostgREST to return the new row would fail that insert.
+  try{
+    await fpEnsureSession();
+    await _fetchWithTimeout(`${SUPABASE_URL}/rest/v1/audit_log`,{
+      method:'POST',
+      headers:{...sb.headers,'Prefer':'return=minimal'},
+      body:JSON.stringify({actor:currentActorName(),action,entity:entity||'',details:details||''})
+    },25000);
+  }catch(e){ console.error('logAudit failed:',e); }
 }
 
 let AUDIT_LOG_CACHE=null;
@@ -2720,6 +2766,7 @@ async function dbSaveLead(lead){
 async function dbDeleteLead(lead){if(lead.db_id){await sb.delete('leads',lead.db_id);logAudit('lead_deleted',lead.name||'Lead','');}}
 async function loadLeads(){
   _leadsLoadOk=false;
+  if(!_isOwnerSession()){ LEADS=[]; return; }
   const got=await sb.getResult('leads');
   if(!got.ok){ console.error('loadLeads: read failed — keeping leads already in memory'); return; }
   LEADS=got.rows.map(r=>({db_id:r.id,name:r.name,phone:r.phone,phone2:r.phone2||'',email:r.email,jobType:r.job_type,custType:r.cust_type,sqft:r.sqft,value:r.value,address:r.address,source:r.source,notes:r.notes,stage:r.stage,detail:r.detail,date:r.date_added}));
@@ -2741,6 +2788,8 @@ async function dbDeleteJob(db_id,customerName){if(db_id){await sb.delete('jobs',
 // duplicate no-Wave rows — e.g. Bob Gerke appearing twice in Complete).
 let _lastJobRows=[];
 async function loadJobs(){
+  // The jobs board holds prices. Crew use the schedule and job records, not this table.
+  if(!_isOwnerSession()){ _lastJobRows=[]; return; }
   // Newest-added jobs first (created_at ≈ when a Wave estimate was accepted/imported),
   // so just-approved jobs land at the top of each column instead of in arbitrary id order.
   const rows=await sb.get('jobs','order=created_at.desc');
@@ -2900,7 +2949,9 @@ async function autoAdvanceJobsByDate(){
     if(row && (row.status === newBoardStatus || row.status === 'invoiced')){
       // Already at the destination (or invoiced, which never moves backward) — nothing to do.
       if(!job.boardRowId) job.boardRowId = row.id;
-    } else {
+    } else if(_isOwnerSession()){
+      // Crew cannot write the jobs board. The job-record status above still saves, and the
+      // board catches up the next time owner or office open the app.
       if(row){
         await sb.update('jobs', row.id, {status: newBoardStatus});
         row.status = newBoardStatus;   // keep the cache coherent for the rest of this pass
@@ -2933,11 +2984,29 @@ async function autoAdvanceJobsByDate(){
   if(boardChanged){ try{ await loadJobs(); if(_jobsListActive()) renderJobsListView(); }catch(e){} }
 }
 
+// Directory columns the signed-in role can still select after phase 2. Price lives in materials_private.
+const MAT_DIRECTORY_SELECT='id,name,mfr,cat,unit,coverage,coverage_unit,supplier,notes';
+let _materialsPrivateLoadOk=false;
+// True when this database still returns price on the materials row (phase 2 not applied yet).
+let _materialPriceOnDirectory=false;
 async function dbSaveMaterial(mat,idx){
   const isNew=!mat.db_id;
-  const row={name:mat.name,mfr:mat.mfr||'',cat:mat.cat||'',unit:mat.unit||'',price:parseFloat(mat.price)||0,price_date:mat.date||'',coverage:parseFloat(mat.coverage)||0,coverage_unit:mat.coverageUnit||'',supplier:mat.supplier||'',notes:mat.notes||''};
-  if(mat.db_id){const ok=await sb.update('materials',mat.db_id,row);if(!ok){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}}
-  else{const res=await sb.insert('materials',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}MATERIALS[idx].db_id=res[0].id;}
+  const directory={name:mat.name,mfr:mat.mfr||'',cat:mat.cat||'',unit:mat.unit||'',coverage:parseFloat(mat.coverage)||0,coverage_unit:mat.coverageUnit||'',supplier:mat.supplier||'',notes:mat.notes||''};
+  const price={price:parseFloat(mat.price)||0,price_date:mat.date||''};
+  if(!_materialsPrivateLoadOk){
+    showSyncStatus('⚠ Material prices did not load — nothing was saved, so a price was not wiped.','var(--red)');
+    return false;
+  }
+  if(_materialPriceOnDirectory){
+    const row={...directory,...price};
+    if(mat.db_id){const ok=await sb.update('materials',mat.db_id,row);if(!ok){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}}
+    else{const res=await sb.insert('materials',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}MATERIALS[idx].db_id=res[0].id;}
+  }else{
+    if(mat.db_id){const ok=await sb.update('materials',mat.db_id,directory);if(!ok){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}}
+    else{const res=await sb.insert('materials',directory);if(!res||!res[0]){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}MATERIALS[idx].db_id=res[0].id;mat.db_id=res[0].id;}
+    const saved=await sb.upsert('materials_private',{material_id:mat.db_id,...price},'material_id');
+    if(!saved){showSyncStatus('⚠ Material price did not save.','var(--red)');return false;}
+  }
   logAudit(isNew?'material_created':'material_updated',mat.name||'Material','$'+(mat.price||0)+'/'+(mat.unit||''));
   showSyncStatus('✓ Synced');
   return true;
@@ -2945,30 +3014,89 @@ async function dbSaveMaterial(mat,idx){
 async function dbDeleteMaterial(db_id,matName){if(db_id){await sb.delete('materials',db_id);logAudit('material_deleted',matName||'Material','');}}
 async function loadMaterials(){
   _materialsFromServer=false;
-  const got=await sb.getResult('materials');
+  _materialsPrivateLoadOk=false;
+  _materialPriceOnDirectory=false;
+  const got=await sb.getResult('materials','select='+MAT_DIRECTORY_SELECT);
   if(!got.ok){ console.error('loadMaterials: read failed — not anchoring day-log materials off a partial price list'); return; }
+  const priced=_isOwnerSession()&&got.rows.some(r=>r&&('price'in r));
   if(got.rows.length>0){
-    MATERIALS=got.rows.map(r=>({db_id:r.id,name:r.name,mfr:r.mfr,cat:r.cat,unit:r.unit,price:r.price,date:r.price_date,coverage:r.coverage,coverageUnit:r.coverage_unit,supplier:r.supplier,notes:r.notes}));
+    MATERIALS=got.rows.map(r=>({db_id:r.id,name:r.name,mfr:r.mfr,cat:r.cat,unit:r.unit,price:priced?r.price:'',date:priced?r.price_date:'',coverage:r.coverage,coverageUnit:r.coverage_unit,supplier:r.supplier,notes:r.notes}));
     _materialsFromServer=true;
+    if(priced){ _materialPriceOnDirectory=true; _materialsPrivateLoadOk=true; return; }
+  }else if(!_isOwnerSession()){
+    MATERIALS=MATERIALS.map(m=>({...m,price:'',date:''}));
   }
+  if(!_isOwnerSession()) return;
+  const priv=await sb.getResult('materials_private','select=material_id,price,price_date');
+  if(!priv.ok){ console.error('loadMaterials: price table did not load — prices will not be saved'); return; }
+  _materialsPrivateLoadOk=true;
+  const byId=new Map(priv.rows.map(p=>[String(p.material_id),p]));
+  MATERIALS.forEach(m=>{
+    if(!m||!m.db_id) return;
+    const p=byId.get(String(m.db_id));
+    if(!p) return;
+    m.price=p.price; m.date=p.price_date;
+  });
 }
 
 // Crew costing columns added 2026-10 (numeric, NULL = not filled in). Every one must be in BOTH
 // dbSaveCrew's row and loadCrew's mapping: the save writes the whole row from memory, so a field
 // missing from the load would be blanked on the next save.
 const CREW_COST_COLS=[['futaWageBase','futa_wage_base'],['sutaRate','suta_rate'],['sutaWageBase','suta_wage_base'],['k401MatchPct','k401_match_pct'],['fixedFeesYr','fixed_fees_yr'],['clothingYr','clothing_yr'],['fieldRateOverride','field_rate_override']];
+// Columns crew are still allowed to select. Pay, phone, and is_owner are not in this list.
+const CREW_DIRECTORY_SELECT='id,full_name,first_name,last_name,initials,color,role,specialties,sort_order';
+const CREW_PRIVATE_SELECT='crew_id,phone,hourly,hours,ss,medicare,futa,wc,gl,benefits,pto_days,futa_wage_base,suta_rate,suta_wage_base,k401_match_pct,fixed_fees_yr,clothing_yr,field_rate_override,is_owner';
+let _crewPrivateLoadOk=false;
+// True when pay columns still come back on the crew row (phase 2 not applied yet).
+let _crewPayOnDirectory=false;
 function _crewNumOrNull(v){
   if(v===null||v===undefined||String(v).trim()==='') return null;
   const n=parseFloat(v);
   return isNaN(n)?null:n;
 }
+function _crewBlankPay(c){
+  c.phone=''; c.hourly=''; c.hours='40'; c.ss=''; c.medicare=''; c.futa=''; c.wc=''; c.gl=''; c.benefits=''; c.ptoDays='';
+  c.isOwner=false;
+  CREW_COST_COLS.forEach(([k])=>{ c[k]=null; });
+}
+function _crewApplyPayRow(c,r){
+  if(!r) return;
+  c.phone=r.phone||'';
+  c.hourly=r.hourly??'';
+  c.hours=r.hours||'40';
+  c.ss=r.ss??'';
+  c.medicare=r.medicare??'';
+  c.futa=r.futa??'';
+  c.wc=r.wc??'';
+  c.gl=r.gl??'';
+  c.benefits=r.benefits??'';
+  c.ptoDays=r.pto_days??'';
+  c.isOwner=r.is_owner===true;
+  CREW_COST_COLS.forEach(([k,col])=>{ c[k]=_crewNumOrNull(r[col]); });
+}
+function _crewPayPayload(c){
+  const pay={phone:c.phone||'',hourly:c.hourly||'',hours:c.hours||'40',ss:c.ss||'6.20',medicare:c.medicare||'1.45',futa:c.futa||'0.60',wc:c.wc||'10.00',gl:c.gl||'0',benefits:c.benefits||'0',pto_days:c.ptoDays||'0',is_owner:c.isOwner===true};
+  CREW_COST_COLS.forEach(([k,col])=>{ pay[col]=_crewNumOrNull(c[k]); });
+  return pay;
+}
 async function dbSaveCrew(c,idx){
   const isNew=!c.db_id;
-  const row={full_name:c.full,first_name:c.name,last_name:c.full.split(' ').slice(1).join(' '),initials:c.initials,color:c.color,role:c.role||'',phone:c.phone||'',specialties:JSON.stringify(c.specialties||[]),hourly:c.hourly||'',hours:c.hours||'40',ss:c.ss||'6.20',medicare:c.medicare||'1.45',futa:c.futa||'0.60',wc:c.wc||'10.00',gl:c.gl||'0',benefits:c.benefits||'0',pto_days:c.ptoDays||'0',sort_order:idx};
-  CREW_COST_COLS.forEach(([k,col])=>{ row[col]=_crewNumOrNull(c[k]); });
-  row.is_owner=c.isOwner===true;
-  if(c.db_id){const ok=await sb.update('crew',c.db_id,row);if(!ok){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}}
-  else{const res=await sb.insert('crew',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}CREW_DATA[idx].db_id=res[0].id;}
+  const directory={full_name:c.full,first_name:c.name,last_name:c.full.split(' ').slice(1).join(' '),initials:c.initials,color:c.color,role:c.role||'',specialties:JSON.stringify(c.specialties||[]),sort_order:idx};
+  const pay=_crewPayPayload(c);
+  if(!_crewPrivateLoadOk){
+    showSyncStatus('⚠ Pay rates did not load — nothing was saved, so wages were not wiped.','var(--red)');
+    return false;
+  }
+  if(_crewPayOnDirectory){
+    const row={...directory,...pay};
+    if(c.db_id){const ok=await sb.update('crew',c.db_id,row);if(!ok){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}}
+    else{const res=await sb.insert('crew',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}CREW_DATA[idx].db_id=res[0].id;}
+  }else{
+    if(c.db_id){const ok=await sb.update('crew',c.db_id,directory);if(!ok){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}}
+    else{const res=await sb.insert('crew',directory);if(!res||!res[0]){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}CREW_DATA[idx].db_id=res[0].id;c.db_id=res[0].id;}
+    const saved=await sb.upsert('crew_private',{crew_id:c.db_id,...pay},'crew_id');
+    if(!saved){showSyncStatus('⚠ Pay rates did not save — the name was stored but wages were not.','var(--red)');return false;}
+  }
   logAudit(isNew?'crew_created':'crew_updated',c.full||'Crew member','');
   showSyncStatus('✓ Synced');
   return true;
@@ -2976,11 +3104,36 @@ async function dbSaveCrew(c,idx){
 // True once CREW/CREW_DATA hold the live crew table (not the hardcoded seed).
 let _crewLoaded=false;
 async function loadCrew(){
-  let rows=await sb.get('crew','order=sort_order.asc');
-  if(!rows.length) rows=await sb.get('crew','order=sort_order.asc'); // one retry on a failed/empty read
+  _crewPrivateLoadOk=false;
+  _crewPayOnDirectory=false;
+  const q='select='+CREW_DIRECTORY_SELECT+'&order=sort_order.asc';
+  let rows=await sb.get('crew',q);
+  if(!rows.length) rows=await sb.get('crew',q); // one retry on a failed/empty read
   if(!rows.length) console.error('loadCrew: crew table did not load — schedule auto-sync paused until it does');
   _crewLoaded=rows.length>0;
-  if(rows.length>0){rows.forEach((r,i)=>{if(CREW_DATA[i]){Object.assign(CREW_DATA[i],{db_id:r.id,full:r.full_name,name:r.first_name,initials:r.initials,color:r.color,role:r.role,phone:r.phone,specialties:JSON.parse(r.specialties||'[]'),hourly:r.hourly,hours:r.hours,ss:r.ss,medicare:r.medicare,futa:r.futa,wc:r.wc,gl:r.gl,benefits:r.benefits,ptoDays:r.pto_days,isOwner:r.is_owner===true});CREW_COST_COLS.forEach(([k,col])=>{CREW_DATA[i][k]=_crewNumOrNull(r[col]);});CREW[i].name=r.first_name;CREW[i].full=r.full_name;CREW[i].color=r.color;}});}
+  let sawPay=false;
+  if(rows.length>0){
+    rows.forEach((r,i)=>{
+      if(!CREW_DATA[i]) return;
+      Object.assign(CREW_DATA[i],{db_id:r.id,full:r.full_name,name:r.first_name,initials:r.initials,color:r.color,role:r.role,specialties:JSON.parse(r.specialties||'[]')});
+      _crewBlankPay(CREW_DATA[i]);
+      // A row that still contains hourly is a database where phase 2 is not applied (or a test double).
+      // Crew never keep those fields, even if a response includes them.
+      if(_isOwnerSession()&&r&&('hourly'in r||'phone'in r||'is_owner'in r)){ _crewApplyPayRow(CREW_DATA[i],r); sawPay=true; }
+      if(CREW[i]){ CREW[i].name=r.first_name; CREW[i].full=r.full_name; CREW[i].color=r.color; }
+    });
+  }
+  if(!_isOwnerSession()) return;
+  if(sawPay){ _crewPayOnDirectory=true; _crewPrivateLoadOk=true; return; }
+  const priv=await sb.getResult('crew_private','select='+CREW_PRIVATE_SELECT);
+  if(!priv.ok){ console.error('loadCrew: pay table did not load — crew pay will not be saved'); return; }
+  _crewPrivateLoadOk=true;
+  const byId=new Map(priv.rows.map(p=>[String(p.crew_id),p]));
+  CREW_DATA.forEach(c=>{
+    if(!c||!c.db_id) return;
+    const p=byId.get(String(c.db_id));
+    if(p) _crewApplyPayRow(c,p);
+  });
 }
 
 async function dbSavePTOEntry(crewIdx,wOff,dIdx,label,dateStr,partial,fromTime,toTime){
@@ -3301,6 +3454,7 @@ async function deduplicateSlotsByJobRecord(){
 
 async function loadAllFromSupabase(){
   showSyncStatus('⟳ Loading...','var(--blue)');
+  _crewClearHiddenMemory();
   try{
     const _loadResults=await Promise.allSettled([loadLeads(),loadLeadQuotedDates(),loadLeadDupAcks(),loadMaterials(),loadCrew(),loadCrewInactive(),loadPTO(),loadScheduledSlots(),loadSettings(),loadCustomJobTypes(),loadJobSystems(),loadTodos(),loadDashOrder(),loadNavOrder(),loadRefs(),loadJobRecords(),loadSlotJobMap(),loadSalesVisits(),loadMatCategories(),loadCrewHistory(),loadOverhead(),loadCostingSettings(),loadMileageRates(),loadCrewAttachments(),loadMatRequests(),loadPtoRequests(),loadVehicles(),loadVehicleMaintenance(),loadVehicleDocs(),loadMaterialDocs(),loadMaterialNotes(),loadJobPhotos(),loadJobDocs(),loadSalesScopePhotos(),loadPhotoArchive()]);
     const _failedLoads=_loadResults.filter(r=>r.status==='rejected');
@@ -4148,9 +4302,32 @@ let _seForceOpen = false; // bypass job-card routing for reschedule flow
 function _jrClone(x){ try{ return JSON.parse(JSON.stringify(x)); }catch(e){ return x; } }
 function _jrEq(a,b){ return JSON.stringify(a===undefined?null:a)===JSON.stringify(b===undefined?null:b); }
 
+// Crew have no SELECT on settings.job_records. The functions strip prices and wage stamps
+// on the way out and keep the stored ones on the way in.
+function _jobRecordsLookReal(arr){
+  if(!arr.length) return true;
+  return arr.every(j=>j&&typeof j==='object'&&('customer'in j||'dayLogs'in j||'startDate'in j));
+}
+async function _jobRecordsRead(){
+  if(_isOwnerSession()) return sb.readKV('job_records');
+  const r=await sb.rpc('fp_crew_read_job_records',{});
+  if(r.ok&&Array.isArray(r.data)&&_jobRecordsLookReal(r.data)) return {ok:true, value:JSON.stringify(r.data)};
+  // The function is missing, or this response is not a job list. A hidden settings row
+  // (phase 2, function failed) must NOT look like "there are no jobs".
+  const legacy=await sb.readKV('job_records');
+  if(legacy.ok&&legacy.value!=null) return legacy;
+  return {ok:false, value:null};
+}
+async function _jobRecordsWrite(text){
+  if(_isOwnerSession()) return sb.setKV('job_records', text);
+  let payload;
+  try{ payload=JSON.parse(text); }catch(e){ return null; }
+  const r=await sb.rpc('fp_crew_write_job_records',{payload});
+  return r.ok?r.data:null;
+}
 async function loadJobRecords(){
   _jobRecordsLoadOk=false;
-  const read=await sb.readKV('job_records');
+  const read=await _jobRecordsRead();
   if(!read.ok){ console.error('loadJobRecords: read failed — keeping jobs already in memory'); return; }
   if(read.value!=null){
     try{
@@ -4180,7 +4357,7 @@ async function _saveJobRecordsNow(){
   // devices' edits too, which shouldn't be attributed to this session's actor.
   const preLocal=_jrClone(JOB_RECORDS);
   const priorBaseline=_jrBaseline;
-  const read=await sb.readKV('job_records');
+  const read=await _jobRecordsRead();
   // A failed re-read must NOT be treated as an empty server. Writing the local copy then
   // would wipe edits made on another phone. Keep the in-memory edits and let the user retry.
   if(!read.ok){
@@ -4212,7 +4389,7 @@ async function _saveJobRecordsNow(){
   // Done on the merged copy so it can't overwrite another device's edit; not audit-logged.
   try{ _jcStampMissingRates(); }catch(e){ console.error('rate stamping skipped:',e); }
   let wrote;
-  try{ wrote=await sb.setKV('job_records',JSON.stringify(JOB_RECORDS)); }
+  try{ wrote=await _jobRecordsWrite(JSON.stringify(JOB_RECORDS)); }
   catch(e){
     showSyncStatus('⚠ '+((e&&e.message)||'Save failed')+' Your edits are still here; try again.','var(--red)');
     return false;
@@ -4852,6 +5029,7 @@ function jcSetStatus(val){
 // (George Belchik ×2, 2026-07-13) — see the identical fix already applied to autoAdvanceJobsByDate.
 // Takes the job RECORD (older callers passed just the customer name — still accepted).
 async function syncBoardCardStatus(job, recordStatus){
+  if(!_isOwnerSession()) return; // job-record status is already saved; the board row is staff-only
   const want={scheduled:'scheduled', in_progress:'inprogress', complete:'complete'}[recordStatus];
   if(!want) return;
   const rec=typeof job==='string'?(JOB_RECORDS.find(j=>j.customer===job)||{customer:job}):job;
@@ -6013,6 +6191,7 @@ function jcSetMileageRate(val){
 // time, and it stays on the live schedule (picking up future tiers automatically) going forward.
 let MILEAGE_RATES={tiers:[]};
 async function loadMileageRates(){
+  if(!_isOwnerSession()){ MILEAGE_RATES={tiers:[]}; return; }
   const read=await sb.readKV('mileage_rates');
   if(!read.ok){ console.error('loadMileageRates: read failed — not saving default rates'); return; }
   if(read.value!=null){
@@ -6158,6 +6337,22 @@ function _tcCrewIdentity(){
     return (s!==null&&s!=='')?parseInt(s):-1;
   }catch(e){ return -1; }
 }
+// PTO and material-request name lists. Crew are locked to the person who signed in.
+function _fillCrewNameSelect(sel, selectedIdx){
+  if(!sel) return;
+  if(!_isOwnerSession()){
+    const me=_tcCrewIdentity();
+    const i=(me>=0&&CREW[me])?me:(selectedIdx>=0?selectedIdx:-1);
+    sel.innerHTML=(i>=0&&CREW[i])?`<option value="${i}">${CREW[i].full}</option>`:'';
+    if(i>=0) sel.value=String(i);
+    sel.disabled=true;
+    return;
+  }
+  sel.disabled=false;
+  sel.innerHTML=CREW.map((c,i)=>(isCrewInactive(i)&&i!==selectedIdx)?'':`<option value="${i}">${c.full}</option>`).join('');
+  if(selectedIdx>=0&&selectedIdx<CREW.length) sel.value=selectedIdx;
+  else if(typeof cvCrewIdx==='number'&&cvCrewIdx>=0&&cvCrewIdx<CREW.length&&!isCrewInactive(cvCrewIdx)) sel.value=cvCrewIdx;
+}
 
 function jcHours(key,ds){
   const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
@@ -6180,6 +6375,13 @@ const JC_RATE_STAMP_KEYS=['directRate','otRate','baseRate','statMult','overheadR
 // opts.forceDirect: stamp with the direct-rate model even on a day before it (today's crew rates,
 // that day's legacy overhead) — used when the owner is added to an older day after the fact.
 function jcStampEntryRates(c,ds,opts){
+  // Crew phones do not carry the rate formula. A stamp already stored stays on the server
+  // (the crew write keeps it). Owner and office still stamp on save, same as before.
+  if(!_isOwnerSession()){
+    JC_RATE_STAMP_KEYS.forEach(k=>delete c[k]);
+    delete c.burdenedRate;
+    return;
+  }
   JC_RATE_STAMP_KEYS.forEach(k=>delete c[k]);
   const cd=(c&&c.crewIdx>=0)?CREW_DATA[c.crewIdx]:null;
   if(!cd){ c.burdenedRate=''; return; }
@@ -6209,6 +6411,7 @@ function jcStampEntryRates(c,ds,opts){
 // before the model (those keep their recorded burdenedRate). Runs on the merged copy right before
 // the write, so it can't undo another device's edit. Returns how many entries it stamped.
 function _jcStampMissingRates(){
+  if(!_isOwnerSession()) return 0;
   if(!_crewLoaded||!_costingSettingsLoadOk) return 0;
   const today=_csToday(); let n=0;
   JOB_RECORDS.forEach(job=>{
@@ -7423,7 +7626,8 @@ async function saveJobCard(){
   job.address=document.getElementById('jc-address').value.trim();
   job.scope=document.getElementById('jc-scope').value.trim();
   job.jobType=document.getElementById('jc-jobtype').value;
-  job.value=document.getElementById('jc-value').value;
+  // The value box is hidden for crew and would otherwise save a blank over the price.
+  if(_isOwnerSession()) job.value=document.getElementById('jc-value').value;
   // Sync schedule slot labels if name changed
   if(job.customer&&job.customer!==oldName){
     Object.entries(SLOT_JOB_MAP).forEach(([key,jid])=>{
@@ -9582,9 +9786,7 @@ function _mrGenId(){ return Date.now().toString(36)+'_'+Math.random().toString(3
 
 // Material requests are submitted from the Crew View top bar (not inside a job).
 function openMatRequestModal(){
-  const sel=document.getElementById('mrq-crew');
-  sel.innerHTML=CREW.map((c,i)=>isCrewInactive(i)?'':`<option value="${i}">${c.full}</option>`).join('');
-  if(typeof cvCrewIdx==='number'&&cvCrewIdx>=0&&cvCrewIdx<CREW.length&&!isCrewInactive(cvCrewIdx)) sel.value=cvCrewIdx;
+  _fillCrewNameSelect(document.getElementById('mrq-crew'), -1);
   const jobSel=document.getElementById('mrq-job');
   const jobs=(JOB_RECORDS||[]).filter(j=>j.customer).slice().sort((a,b)=>(a.customer||'').localeCompare(b.customer||''));
   jobSel.innerHTML='<option value="">— No specific job —</option>'+jobs.map(j=>`<option value="${j.id}">${(j.customer||'').replace(/</g,'&lt;')}</option>`).join('');
@@ -9597,7 +9799,12 @@ function closeMatRequestModal(){ closeModal('matrequest'); }
 function submitMatRequest(){
   const mat=document.getElementById('mrq-material').value.trim();
   if(!mat){showToast('Enter the material name.');return;}
-  const crewIdx=parseInt(document.getElementById('mrq-crew').value);
+  let crewIdx=parseInt(document.getElementById('mrq-crew').value);
+  if(!_isOwnerSession()){
+    const me=_tcCrewIdentity();
+    if(!(me>=0)){ showToast('Sign in again to send this request.'); return; }
+    crewIdx=me;
+  }
   const crewName=(CREW[crewIdx]&&CREW[crewIdx].full)||'';
   const jobId=document.getElementById('mrq-job').value;
   const job=jobId?getJobRecord(jobId):null;
@@ -9685,11 +9892,50 @@ let PTO_REQUESTS = [];
 const PTO_STATUS_COLOR={pending:'var(--accent)',clarify:'var(--orange)',approved:'var(--green)',denied:'var(--red)'};
 const PTO_STATUS_LABEL={pending:'Pending',clarify:'Needs Info',approved:'Approved',denied:'Denied'};
 
+function _ptoRequestsLookReal(arr){
+  if(!arr.length) return true;
+  return arr.every(r=>r&&typeof r==='object'&&('crewIdx'in r||'startDate'in r||'status'in r));
+}
 async function loadPtoRequests(){
+  if(!_isOwnerSession()){
+    const r=await sb.rpc('fp_crew_read_pto_requests',{});
+    if(r.ok&&Array.isArray(r.data)&&_ptoRequestsLookReal(r.data)){
+      PTO_REQUESTS=r.data;
+      _updatePtoBadge();
+      return;
+    }
+    try{const v=await sb.getKV('pto_requests');if(v){try{PTO_REQUESTS=JSON.parse(v)||[];}catch(e){PTO_REQUESTS=[];}}}catch(e){}
+    _updatePtoBadge();
+    return;
+  }
   try{const v=await sb.getKV('pto_requests');if(v){try{PTO_REQUESTS=JSON.parse(v)||[];}catch(e){PTO_REQUESTS=[];}}}catch(e){}
   _updatePtoBadge();
 }
 async function savePtoRequests(){
+  if(!_isOwnerSession()){
+    const read=await sb.rpc('fp_crew_read_pto_requests',{});
+    if(!read.ok||!Array.isArray(read.data)){
+      showSyncStatus('⚠ Could not re-read time-off requests — nothing was saved.','var(--red)');
+      return PTO_REQUESTS;
+    }
+    let merged=PTO_REQUESTS;
+    try{ merged=merge3(_kvBaselines['pto_requests'], PTO_REQUESTS, read.data); }
+    catch(e){
+      console.error('pto merge failed', e);
+      showSyncStatus('⚠ Could not merge time-off requests — nothing was saved.','var(--red)');
+      return PTO_REQUESTS;
+    }
+    const wrote=await sb.rpc('fp_crew_write_pto_requests',{payload:merged});
+    if(!wrote.ok||!Array.isArray(wrote.data)){
+      showSyncStatus('⚠ Time-off request did not save. Your edits are still here; try again.','var(--red)');
+      return PTO_REQUESTS;
+    }
+    PTO_REQUESTS=wrote.data;
+    _kvBaselines['pto_requests']=_jrClone(PTO_REQUESTS);
+    _kvSaveOk['pto_requests']=true;
+    _updatePtoBadge();
+    return PTO_REQUESTS;
+  }
   PTO_REQUESTS = await _saveKVMerged('pto_requests', PTO_REQUESTS);
   _updatePtoBadge();
 }
@@ -9719,10 +9965,8 @@ function ptoreqSetType(type){
 }
 
 function openPtoRequestModal(){
-  // Populate crew dropdown — pre-select based on active crew view filter
-  const sel=document.getElementById('ptoreq-crew');
-  sel.innerHTML=CREW.map((c,i)=>isCrewInactive(i)?'':`<option value="${i}">${c.full}</option>`).join('');
-  if(cvCrewIdx>=0&&cvCrewIdx<CREW.length&&!isCrewInactive(cvCrewIdx)) sel.value=cvCrewIdx;
+  // Crew file time off as themselves. Owner and office can still pick a name.
+  _fillCrewNameSelect(document.getElementById('ptoreq-crew'), -1);
   // Default dates: next weekday
   const today=new Date(); today.setHours(0,0,0,0);
   const next=new Date(today); do{next.setDate(next.getDate()+1);}while(next.getDay()===0||next.getDay()===6);
@@ -9769,10 +10013,7 @@ function closePtoRequestModal(){
 function editPtoRequest(id, replyMode){
   const req=PTO_REQUESTS.find(r=>r.id===id); if(!req) return;
   _editingPtoReqId=id;
-  // Pre-fill crew
-  const sel=document.getElementById('ptoreq-crew');
-  sel.innerHTML=CREW.map((c,i)=>(isCrewInactive(i)&&i!==req.crewIdx)?'':`<option value="${i}">${c.full}</option>`).join('');
-  sel.value=req.crewIdx;
+  _fillCrewNameSelect(document.getElementById('ptoreq-crew'), req.crewIdx);
   // Pre-fill dates & times
   document.getElementById('ptoreq-start').value=req.startDate;
   document.getElementById('ptoreq-end').value=req.endDate||req.startDate;
@@ -9791,7 +10032,12 @@ function editPtoRequest(id, replyMode){
 }
 
 function submitPtoRequest(){
-  const crewIdx=parseInt(document.getElementById('ptoreq-crew').value);
+  let crewIdx=parseInt(document.getElementById('ptoreq-crew').value);
+  if(!_isOwnerSession()){
+    const me=_tcCrewIdentity();
+    if(!(me>=0)){ showToast('Sign in again to send this request.'); return; }
+    crewIdx=me;
+  }
   const startDate=document.getElementById('ptoreq-start').value;
   const isPartial=document.getElementById('ptoreq-btn-full').dataset.type==='partial';
   const endDate=isPartial?startDate:document.getElementById('ptoreq-end').value;
@@ -12139,6 +12385,7 @@ function openCrewEdit(idx){
 let OVERHEAD = { items: [] };  // items: [{id, name, amount, period:'yr'|'mo', fixed?:bool, note?:string}]
 
 async function loadOverhead(){
+  if(!_isOwnerSession()){ OVERHEAD={items:[]}; return; }
   const v = await sb.getKV('overhead');
   if(v){ try{ const o=JSON.parse(v); if(o&&typeof o==='object'&&Array.isArray(o.items)) OVERHEAD={items:o.items}; }catch(e){ console.error('loadOverhead parse error:',e); } }
 }
@@ -12176,6 +12423,7 @@ function _csToday(){ const d=new Date(); return d.getFullYear()+'-'+String(d.get
 function _r2(n){ return Math.round((parseFloat(n)||0)*100)/100; }
 async function loadCostingSettings(){
   _costingSettingsLoadOk=false;
+  if(!_isOwnerSession()){ COSTING_SETTINGS={history:[]}; return; }
   const read=await sb.readKV('costing_settings');
   if(!read.ok){ console.error('loadCostingSettings: read failed — day-log rates will not be stamped until it loads'); return; }
   if(read.value!=null){
@@ -12724,6 +12972,7 @@ function ceHistoryKey(){
 }
 
 async function loadCrewHistory(){
+  if(!_isOwnerSession()){ CREW_HISTORY={}; return; }
   const v = await sb.getKV('crew_history');
   if(v){ try{ CREW_HISTORY=JSON.parse(v)||{}; }catch(e){ console.error('loadCrewHistory parse error:',e); } }
 }
@@ -12807,6 +13056,7 @@ function renderEmpLog(){
 let CREW_ATTACHMENTS = {}; // { "crewKey": [{id,date,category,name,url}] }
 
 async function loadCrewAttachments(){
+  if(!_isOwnerSession()){ CREW_ATTACHMENTS={}; return; }
   const v = await sb.getKV('crew_attachments');
   if(v){ try{ CREW_ATTACHMENTS=JSON.parse(v)||{}; }catch(e){ console.error('loadCrewAttachments parse error:',e); } }
 }
@@ -15072,10 +15322,12 @@ let _activeVehicleId = null;
 let _maintVehicleId = null;
 
 async function loadVehicles(){
+  if(!_isOwnerSession()){ VEHICLES=[]; return; }
   const rows = await sb.get('vehicles','order=created_at.asc');
   if(rows && rows.length) VEHICLES = rows.map(r=>({id:r.id,make:r.make,model:r.model,year:r.year,vin:r.vin,purchase_date:r.purchase_date,license_plate:r.license_plate||'',notes:r.notes||''}));
 }
 async function loadVehicleMaintenance(){
+  if(!_isOwnerSession()){ VEHICLE_MAINT=[]; return; }
   const rows = await sb.get('vehicle_maintenance','order=date.desc');
   if(rows && rows.length) VEHICLE_MAINT = rows.map(r=>({id:r.id,vehicle_id:r.vehicle_id,date:r.date,description:r.description,cost:parseFloat(r.cost)||0,mileage:r.mileage||null,notes:r.notes||''}));
 }
