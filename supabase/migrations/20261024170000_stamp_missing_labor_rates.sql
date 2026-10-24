@@ -16,16 +16,28 @@
 --
 -- Which rate:
 --   The hourly is the latest crew_history pay_change on or before the work date
---   (keys id_<crew id> and name_<full name>). If none covers that date, the
---   current crew_private.hourly is used. SS, Medicare, workers' comp, FUTA, SUTA,
---   benefits, and the field-rate override are not in the history; they come from
---   the current crew_private row. The costing_settings history entry in effect on
---   the work date supplies utilization, paid hours, and the overhead pool. If no
---   entry is in effect yet, the latest entry is used. Days before the direct-rate
---   model get only burdenedRate (the old all-in stamp). Model days get directRate,
---   otRate, baseRate, statMult, overheadRate, rateVersion, and burdenedRate.
+--   (keys id_<crew id> and name_<full name>). A date before every pay_change uses
+--   a structured old-wage field on the earliest change when one exists. Otherwise
+--   a dollar amount in that note ("Previous wage was $24.00") is used and the
+--   stamp is marked rateEstimated. If the note has no amount, the current hourly
+--   is used and still marked estimated. No history at all: the current hourly,
+--   not estimated. SS, Medicare, benefits, and the field-rate override are not in
+--   the history; they come from the current crew_private row. FUTA and workers'
+--   comp on a pre-model day come from legacyFutaPct / legacyWcPct on the costing
+--   entry in effect that day, else the row. The pre-model all-in is one round of
+--   burden plus the itemized overhead list divided by active weekly hours × 52
+--   (owner included). With no item list, the burden is rounded and then the flat
+--   legacyOverheadPerHour is added. Model days get directRate, otRate, baseRate,
+--   statMult, overheadRate, rateVersion, and burdenedRate from the costing entry
+--   in effect on the work date (the latest entry when none is in effect yet).
 --   The owner's field_rate_override is the direct rate. This does not set
 --   overtimeWage. Weekend overtime stays the checkbox the office already uses.
+--
+-- A database that already applied an earlier copy of this file does not
+-- re-run it. Apply
+-- supabase/migrations/20261024193000_stamp_prior_wage_and_legacy_burden.sql
+-- there. That file replaces the stamp functions and does not rewrite a
+-- job_records row that already has a stamp.
 --
 -- What it refuses to change:
 --   An entry that already has a directRate or a burdenedRate, including a legacy
@@ -113,10 +125,17 @@ AS $$
   SELECT round(COALESCE(n, 0), 2);
 $$;
 
--- Latest pay_change on or before the work date. Otherwise the current hourly.
-CREATE OR REPLACE FUNCTION private.fp_hourly_on_date(
+-- Hourly for a stamp, and whether that hourly was inferred.
+-- A pay_change on or before the work date wins (its rate is the new wage).
+-- A work date before every pay_change uses a structured old-wage field on the
+-- earliest change when one exists. Otherwise a dollar amount in that note
+-- ("Previous wage was $24.00") is used and marked estimated. If the note has
+-- no amount either, the current hourly is used and still marked estimated,
+-- so a date before the first change is not silently today's wage.
+-- No history at all: the current hourly, not estimated.
+CREATE OR REPLACE FUNCTION private.fp_wage_for_stamp(
   history jsonb, crew_id text, full_name text, work_date text, current_hourly numeric
-) RETURNS numeric
+) RETURNS jsonb
 LANGUAGE plpgsql
 STABLE
 SET search_path = ''
@@ -129,8 +148,16 @@ DECLARE
   best_date text;
   best_ord integer := -1;
   best_rate numeric;
+  first_date text;
+  first_ord integer := 2147483647;
+  first_ev jsonb;
   rate numeric;
   ev_date text;
+  prior numeric;
+  note text;
+  neu numeric;
+  amt numeric;
+  m text[];
 BEGIN
   keys := ARRAY[
     'id_' || COALESCE(crew_id, ''),
@@ -146,25 +173,104 @@ BEGIN
         CONTINUE;
       END IF;
       ev_date := ev ->> 'date';
-      IF ev_date IS NULL OR ev_date > work_date THEN
-        CONTINUE;
-      END IF;
       rate := private.fp_json_num(ev -> 'rate');
-      IF rate IS NULL OR rate <= 0 THEN
+      IF ev_date IS NULL OR rate IS NULL OR rate <= 0 THEN
         CONTINUE;
       END IF;
-      IF best_date IS NULL OR ev_date > best_date OR (ev_date = best_date AND ord >= best_ord) THEN
+      IF ev_date <= work_date AND (best_date IS NULL OR ev_date > best_date OR (ev_date = best_date AND ord >= best_ord)) THEN
         best_date := ev_date;
         best_ord := ord;
         best_rate := rate;
       END IF;
+      IF first_date IS NULL OR ev_date < first_date OR (ev_date = first_date AND ord < first_ord) THEN
+        first_date := ev_date;
+        first_ord := ord;
+        first_ev := ev;
+      END IF;
     END LOOP;
   END LOOP;
+
   IF best_rate IS NOT NULL THEN
-    RETURN best_rate;
+    RETURN jsonb_build_object('hourly', best_rate, 'estimated', false);
   END IF;
+
+  IF first_ev IS NOT NULL THEN
+    prior := COALESCE(
+      private.fp_json_num(first_ev -> 'oldRate'),
+      private.fp_json_num(first_ev -> 'previousRate'),
+      private.fp_json_num(first_ev -> 'priorRate'),
+      private.fp_json_num(first_ev -> 'fromRate'),
+      private.fp_json_num(first_ev -> 'old_rate'),
+      private.fp_json_num(first_ev -> 'previous')
+    );
+    IF prior IS NOT NULL AND prior > 0 THEN
+      RETURN jsonb_build_object('hourly', prior, 'estimated', false);
+    END IF;
+    note := COALESCE(first_ev ->> 'note', '');
+    neu := private.fp_json_num(first_ev -> 'rate');
+    IF note ~* '(previous|prior|old|\ywas\y|from)' THEN
+      FOR m IN SELECT regexp_matches(note, '\$?\s*([0-9]+(?:\.[0-9]+)?)', 'g') LOOP
+        amt := m[1]::numeric;
+        IF amt > 0 AND (neu IS NULL OR amt IS DISTINCT FROM neu) THEN
+          RETURN jsonb_build_object('hourly', amt, 'estimated', true);
+        END IF;
+      END LOOP;
+    END IF;
+    IF current_hourly IS NOT NULL AND current_hourly > 0 THEN
+      RETURN jsonb_build_object('hourly', current_hourly, 'estimated', true);
+    END IF;
+    RETURN jsonb_build_object('hourly', NULL, 'estimated', true);
+  END IF;
+
   IF current_hourly IS NOT NULL AND current_hourly > 0 THEN
-    RETURN current_hourly;
+    RETURN jsonb_build_object('hourly', current_hourly, 'estimated', false);
+  END IF;
+  RETURN jsonb_build_object('hourly', NULL, 'estimated', false);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION private.fp_hourly_on_date(
+  history jsonb, crew_id text, full_name text, work_date text, current_hourly numeric
+) RETURNS numeric
+LANGUAGE sql
+STABLE
+SET search_path = ''
+AS $$
+  SELECT private.fp_json_num(private.fp_wage_for_stamp(history, crew_id, full_name, work_date, current_hourly) -> 'hourly');
+$$;
+
+-- Overhead $/hr the website folded into burdenedRate before 2026-10-20:
+-- the itemized overhead list ÷ (each active person's weekly hours × 52).
+-- The owner is included. Inactive people are not. NULL when the list is empty,
+-- so the caller keeps the flat legacyOverheadPerHour constant.
+CREATE OR REPLACE FUNCTION private.fp_legacy_item_overhead(inactive jsonb, items jsonb)
+RETURNS numeric
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  pool numeric;
+  hrs numeric;
+BEGIN
+  SELECT COALESCE(sum(
+    CASE WHEN it ->> 'period' = 'mo' THEN COALESCE(private.fp_json_num(it -> 'amount'), 0) * 12
+         ELSE COALESCE(private.fp_json_num(it -> 'amount'), 0) END
+  ), 0)
+    INTO pool
+  FROM jsonb_array_elements(COALESCE(items, '[]'::jsonb)) AS it;
+  IF pool <= 0 THEN
+    RETURN NULL;
+  END IF;
+  SELECT COALESCE(sum(COALESCE(private.fp_to_num(p.hours), 40) * 52), 0)
+    INTO hrs
+  FROM public.crew AS c
+  JOIN public.crew_private AS p ON p.crew_id = c.id
+  WHERE COALESCE(private.fp_to_num(p.hourly), 0) > 0
+    AND NOT (COALESCE(inactive, '{}'::jsonb) ? c.sort_order::text);
+  IF hrs > 0 THEN
+    RETURN pool / hrs;
   END IF;
   RETURN NULL;
 END;
@@ -327,6 +433,13 @@ DECLARE
   burden numeric;
   e jsonb;
   eff text;
+  tax_eff text := '';
+  wage_meta jsonb;
+  est boolean := false;
+  futa_use numeric;
+  wc_use numeric;
+  item_oh numeric;
+  all_in numeric;
 BEGIN
   IF person IS NULL OR jsonb_typeof(person) <> 'object' THEN
     RETURN person;
@@ -400,7 +513,9 @@ BEGIN
   version := chosen ->> 'version';
   model := COALESCE(private.fp_json_num(entry -> 'paidHoursPerYear'), 0) > 0
        AND COALESCE(private.fp_json_num(entry -> 'utilization'), 0) > 0;
-  hourly := private.fp_hourly_on_date(history, crew_id, full_name, work_date, cur_hourly);
+  wage_meta := private.fp_wage_for_stamp(history, crew_id, full_name, work_date, cur_hourly);
+  hourly := private.fp_json_num(wage_meta -> 'hourly');
+  est := COALESCE((wage_meta ->> 'estimated')::boolean, false);
   hr := COALESCE(hourly, 0);
   IF hrs_wk IS NULL OR hrs_wk <= 0 THEN
     hrs_wk := 40;
@@ -413,6 +528,11 @@ BEGIN
       RETURN person;
     END IF;
     legacy_oh := 0;
+    -- FUTA and workers' comp on the crew row were changed on the direct-rate
+    -- cutover. A legacy costing entry can name the percents that were in effect
+    -- before that (legacyFutaPct, legacyWcPct). Absent those, the row's percents.
+    futa_use := futa;
+    wc_use := wc;
     FOR e IN SELECT value FROM jsonb_array_elements(sets) LOOP
       IF jsonb_typeof(e) <> 'object' THEN
         CONTINUE;
@@ -425,14 +545,36 @@ BEGIN
         legacy_oh := COALESCE(private.fp_json_num(e -> 'legacyOverheadPerHour'), 0);
         legacy_eff := eff;
       END IF;
+      IF (e ? 'legacyFutaPct' OR e ? 'legacyWcPct') AND (tax_eff = '' OR eff >= tax_eff) THEN
+        IF e ? 'legacyFutaPct' THEN
+          futa_use := COALESCE(private.fp_json_num(e -> 'legacyFutaPct'), futa_use);
+        END IF;
+        IF e ? 'legacyWcPct' THEN
+          wc_use := COALESCE(private.fp_json_num(e -> 'legacyWcPct'), wc_use);
+        END IF;
+        tax_eff := eff;
+      END IF;
     END LOOP;
     benefits_hr := benefits * 12 / (hrs_wk * 52);
     pto_hr := (pto * 8 * hr) / (hrs_wk * 52);
-    burden := hr * (1 + ss / 100 + med / 100 + futa / 100 + wc / 100 + gl / 100) + benefits_hr + pto_hr;
+    burden := hr * (1 + ss / 100 + med / 100 + futa_use / 100 + wc_use / 100 + gl / 100) + benefits_hr + pto_hr;
     IF burden <= 0 THEN
       RETURN person;
     END IF;
-    RETURN person || jsonb_build_object('burdenedRate', (round(burden + legacy_oh, 2))::text);
+    -- The pre-2026-10-20 page added the live itemized overhead inside one round.
+    -- The flat constant is the fallback, added after the burden is rounded to
+    -- cents, which is what the page does when it has no item list.
+    item_oh := private.fp_legacy_item_overhead(inactive, items);
+    IF item_oh IS NULL THEN
+      all_in := round(round(burden, 2) + legacy_oh, 2);
+    ELSE
+      all_in := round(burden + item_oh, 2);
+    END IF;
+    person := person || jsonb_build_object('burdenedRate', all_in::text);
+    IF est THEN
+      person := person || jsonb_build_object('rateEstimated', true);
+    END IF;
+    RETURN person;
   END IF;
 
   -- Model day, person still on the old burden math: directRate is that burden
@@ -447,7 +589,7 @@ BEGIN
     stat_mult := 1 + ss / 100 + med / 100 + wc / 100;
     ot := 1.5 * hr * stat_mult;
     oh := private.fp_overhead_per_hour(entry, inactive, items);
-    RETURN person || jsonb_build_object(
+    person := person || jsonb_build_object(
       'directRate', private.fp_r2(direct),
       'otRate', private.fp_r2(ot),
       'baseRate', private.fp_r2(hr),
@@ -456,6 +598,10 @@ BEGIN
       'rateVersion', version,
       'burdenedRate', (round(private.fp_r2(direct) + private.fp_r2(oh), 2))::text
     );
+    IF est THEN
+      person := person || jsonb_build_object('rateEstimated', true);
+    END IF;
+    RETURN person;
   END IF;
 
   IF hr <= 0 AND (override IS NULL OR override <= 0) THEN
@@ -493,6 +639,9 @@ BEGIN
   );
   IF override IS NOT NULL AND override > 0 THEN
     person := person || jsonb_build_object('fieldOverride', true);
+  END IF;
+  IF est THEN
+    person := person || jsonb_build_object('rateEstimated', true);
   END IF;
   RETURN person;
 END;
@@ -611,10 +760,12 @@ BEGIN
   IF NEW.key IS DISTINCT FROM 'job_records' THEN
     RETURN NEW;
   END IF;
-  IF current_setting('fp.stamping', true) = '1' THEN
+  -- Depth 1 is this call. A nested settings write inside the stamp would be
+  -- deeper and must not stamp again. The next statement in the same transaction
+  -- is a new call at depth 1, so it still stamps.
+  IF pg_trigger_depth() > 1 THEN
     RETURN NEW;
   END IF;
-  PERFORM set_config('fp.stamping', '1', true);
   BEGIN
     NEW.value := private.fp_stamp_job_records_text(NEW.value);
   EXCEPTION WHEN OTHERS THEN
@@ -628,7 +779,9 @@ REVOKE ALL ON FUNCTION private.fp_to_num(text) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION private.fp_json_num(jsonb) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION private.fp_has_labor_stamp(jsonb) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION private.fp_r2(numeric) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION private.fp_wage_for_stamp(jsonb, text, text, text, numeric) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION private.fp_hourly_on_date(jsonb, text, text, text, numeric) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION private.fp_legacy_item_overhead(jsonb, jsonb) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION private.fp_rate_set_for_stamp(jsonb, text) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION private.fp_overhead_per_hour(jsonb, jsonb, jsonb) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION private.fp_fill_labor_stamp(jsonb, text, jsonb, jsonb, jsonb, jsonb) FROM PUBLIC, anon, authenticated;

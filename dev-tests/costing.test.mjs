@@ -280,6 +280,48 @@ test('a missing stamp uses the rate on the work date, and a full day with no tim
   ev('CREW_HISTORY={};');
 });
 
+test('a pre-model fill matches the all-in the page wrote before 2026-10-20', async () => {
+  await freshCrewAndSettings();
+  ev(`window.__cs=JSON.parse(JSON.stringify(COSTING_SETTINGS)); window.__oh=JSON.parse(JSON.stringify(OVERHEAD));`);
+  ev(`COSTING_SETTINGS.history[0].legacyFutaPct=2.70; COSTING_SETTINGS.history[0].legacyWcPct=5.61;`);
+  ev(`OVERHEAD={items:[
+    {id:'auto',name:'Progressive Auto',amount:'7488',period:'yr'},
+    {id:'rent',name:'Rent',amount:'2000',period:'mo'},
+    {id:'wave',name:'Wave',amount:'190',period:'yr'},
+    {id:'gl',name:'GL',amount:'1776.88',period:'yr'},
+    {id:'wc',name:'Work Comp',amount:'6756',period:'yr'}
+  ]};`);
+  ev(`CREW_HISTORY={
+    id_cody:{events:[{type:'pay_change',date:'2026-06-01',rate:25.2,note:'Previous wage was $24.00'}]},
+    id_hunter:{events:[{type:'pay_change',date:'2026-08-01',rate:24,oldRate:22,note:'Previous wage was $20.00'}]}
+  };`);
+  const stamp = (name, idx, ds) => {
+    ev(`window.__row={crewIdx:${idx},name:'${name}'}; jcStampEntryRates(window.__row,'${ds}');`);
+    return plain(ev('window.__row'));
+  };
+  const seth = stamp('Seth West', 0, '2026-10-02');
+  const hunter = stamp('Hunter Schuler', 4, '2026-10-01');
+  const may = stamp('Cody Faulkner', 3, '2026-05-15');
+  const june = stamp('Cody Faulkner', 3, '2026-06-15');
+  const prior = stamp('Hunter Schuler', 4, '2026-07-01');
+  assert.equal(seth.burdenedRate, '42.09');
+  assert.equal(seth.directRate, undefined);
+  assert.equal(seth.rateEstimated, undefined);
+  assert.equal(hunter.burdenedRate, '33.59');
+  assert.equal(hunter.rateEstimated, undefined);
+  assert.equal(may.burdenedRate, '33.59');
+  assert.equal(may.rateEstimated, true);
+  assert.equal(june.burdenedRate, '35.02');
+  assert.equal(june.rateEstimated, undefined);
+  assert.equal(prior.burdenedRate, '31.19', 'a structured oldRate beats the note');
+  assert.equal(prior.rateEstimated, undefined);
+  ev(`CREW_HISTORY={id_cody:{events:[{type:'pay_change',date:'2026-06-01',rate:25.2,note:'Raise approved'}]}};`);
+  const blank = stamp('Cody Faulkner', 3, '2026-05-01');
+  assert.equal(blank.burdenedRate, '35.02', 'no amount in the note keeps today hourly');
+  assert.equal(blank.rateEstimated, true);
+  ev(`COSTING_SETTINGS=window.__cs; OVERHEAD=window.__oh; CREW_HISTORY={};`);
+});
+
 test('old unstamped logs cost exactly what they did before (as recorded)', async () => {
   await freshCrewAndSettings();
   const job = { id: 'j3', customer: 'Old', status: 'complete' };

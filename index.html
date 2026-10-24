@@ -6427,7 +6427,7 @@ function jcHours(key,ds){
 //   rateVersion  id of the costing rate set used; fieldOverride true when the person's override was used
 //   burdenedRate kept = direct + overhead, so older code paths still see an all-in rate.
 // Days before the direct-rate model only get burdenedRate, exactly like the old code stamped it.
-const JC_RATE_STAMP_KEYS=['directRate','otRate','baseRate','statMult','overheadRate','rateVersion','fieldOverride'];
+const JC_RATE_STAMP_KEYS=['directRate','otRate','baseRate','statMult','overheadRate','rateVersion','fieldOverride','rateEstimated'];
 // True when this person-day already has a wage stamp. Blank and missing are not stamps.
 // 0 is a stamp: someone saved a rate, and a fill must not replace it.
 function _jcHasStamp(c){
@@ -6439,6 +6439,13 @@ function _jcHasStamp(c){
   };
   return num(c.directRate)||num(c.burdenedRate);
 }
+// Unstamped days, and a stamp whose hourly was inferred from a pay-history note, stay flagged.
+// A structured old wage is a real prior rate and is not flagged.
+function _jcShowEstimated(c){
+  if(!c) return false;
+  if(!_jcHasStamp(c)) return true;
+  return c.rateEstimated===true || c.rateEstimated==='true';
+}
 function _crewHistoryKeys(cd){
   const keys=[];
   if(cd&&cd.db_id!=null&&String(cd.db_id)!=='') keys.push('id_'+cd.db_id);
@@ -6446,23 +6453,63 @@ function _crewHistoryKeys(cd){
   if(slug) keys.push('name_'+slug);
   return keys;
 }
-// Hourly in effect on the work date. Latest pay_change on or before that date.
-// No covering history: the hourly on the crew record now.
-function _crewHourlyOnDate(cd, ds){
+// A dollar amount in a pay-change note, when the note says it is the previous wage.
+// The event's own rate is the new wage, so that amount is skipped.
+function _priorWageFromNote(ev){
+  const note=String(ev&&ev.note||'');
+  if(!/(previous|prior|old|\bwas\b|from)/i.test(note)) return null;
+  const neu=parseFloat(ev.rate);
+  const amounts=[];
+  const re=/\$?\s*(\d+(?:\.\d+)?)/g;
+  let m;
+  while((m=re.exec(note))){
+    const n=parseFloat(m[1]);
+    if(n>0 && !(neu>0 && n===neu)) amounts.push(n);
+  }
+  return amounts.length?amounts[0]:null;
+}
+function _structuredPriorWage(ev){
+  if(!ev) return null;
+  const keys=['oldRate','previousRate','priorRate','fromRate','old_rate','previous'];
+  for(const k of keys){
+    const n=parseFloat(ev[k]);
+    if(n>0) return n;
+  }
+  return null;
+}
+// {hourly, estimated}. A pay_change on or before the work date is that new wage.
+// Before every pay_change: a structured old wage if the earliest change has one,
+// otherwise a dollar amount in its note (estimated), otherwise today's hourly
+// (also estimated, so it is not a silent stand-in). No history at all: today's hourly.
+function _crewWageOnDate(cd, ds){
   const cur=parseFloat(cd&&cd.hourly);
-  let best=null, ord=0;
+  let best=null, first=null, ord=0, any=false;
   _crewHistoryKeys(cd).forEach(k=>{
     const events=(CREW_HISTORY[k]&&Array.isArray(CREW_HISTORY[k].events))?CREW_HISTORY[k].events:[];
     events.forEach(ev=>{
       const mine=ord++;
-      if(!ev||ev.type!=='pay_change'||typeof ev.date!=='string'||ev.date>(ds||'')) return;
+      if(!ev||ev.type!=='pay_change'||typeof ev.date!=='string') return;
       const rate=parseFloat(ev.rate);
       if(!(rate>0)) return;
-      if(!best||ev.date>best.date||(ev.date===best.date&&mine>=best.ord)) best={date:ev.date,rate,ord:mine};
+      any=true;
+      if(ev.date<=(ds||'') && (!best||ev.date>best.date||(ev.date===best.date&&mine>=best.ord))) best={date:ev.date,rate,ord:mine};
+      if(!first||ev.date<first.date||(ev.date===first.date&&mine<first.ord)) first={date:ev.date,ev,ord:mine};
     });
   });
-  if(best) return best.rate;
-  return cur>0?cur:0;
+  if(best) return {hourly:best.rate, estimated:false};
+  if(any&&first){
+    const structured=_structuredPriorWage(first.ev);
+    if(structured) return {hourly:structured, estimated:false};
+    const noted=_priorWageFromNote(first.ev);
+    if(noted) return {hourly:noted, estimated:true};
+    return {hourly:cur>0?cur:0, estimated:true};
+  }
+  return {hourly:cur>0?cur:0, estimated:false};
+}
+// Hourly in effect on the work date. Latest pay_change on or before that date.
+// No covering history: the hourly on the crew record now.
+function _crewHourlyOnDate(cd, ds){
+  return _crewWageOnDate(cd, ds).hourly;
 }
 function _crewForWorkDate(cd, ds){
   if(!cd) return null;
@@ -6470,6 +6517,56 @@ function _crewForWorkDate(cd, ds){
   const cur=parseFloat(cd.hourly);
   if(hr>0&&hr!==cur) return Object.assign({}, cd, {hourly:String(hr)});
   return cd;
+}
+// FUTA / workers' comp named on the legacy costing entry (the pre-cutover card).
+// Absent those fields, the percents on the crew record.
+function _csLegacyTaxPct(ds, key, fallback){
+  let v=null;
+  for(const x of _csSorted()){
+    if((x.e.effective||'')>(ds||_csToday())) break;
+    if(x.e[key]!==undefined&&x.e[key]!==null&&x.e[key]!==''){
+      const n=parseFloat(x.e[key]);
+      if(!isNaN(n)) v=n;
+    }
+  }
+  return v!==null?v:fallback;
+}
+// Overhead $/hr the page folded into the all-in rate before 2026-10-20:
+// itemized list ÷ (each active person's weekly hours × 52), owner included.
+// Null when the list is empty, so the flat legacy constant is used instead.
+function _legacyItemOverheadPerHour(){
+  const items=(OVERHEAD&&Array.isArray(OVERHEAD.items))?OVERHEAD.items:[];
+  const pool=items.reduce((s,it)=>{
+    const amt=parseFloat(it.amount)||0;
+    return s+(it.period==='mo'?amt*12:amt);
+  },0);
+  if(!(pool>0)) return null;
+  let hrs=0;
+  (CREW_DATA||[]).forEach((c,i)=>{
+    if(!((parseFloat(c&&c.hourly)||0)>0)||isCrewInactive(i)) return;
+    hrs+=(parseFloat(c.hours)||40)*52;
+  });
+  return hrs>0?pool/hrs:null;
+}
+// The all-in burdenedRate the page wrote before the direct-rate model.
+function _legacyAllIn(cd, ds){
+  const hr=parseFloat(cd&&cd.hourly);
+  const hrs=parseFloat(cd&&cd.hours)||40;
+  if(!(hr>0)||!(hrs>0)) return '';
+  const futa=_csLegacyTaxPct(ds,'legacyFutaPct',parseFloat(cd.futa||0)||0);
+  const wc=_csLegacyTaxPct(ds,'legacyWcPct',parseFloat(cd.wc||0)||0);
+  const ss=parseFloat(cd.ss||0)||0, med=parseFloat(cd.medicare||0)||0, gl=parseFloat(cd.gl||0)||0;
+  const annual=hrs*52;
+  const benefitsHr=(parseFloat(cd.benefits||0)||0)*12/annual;
+  const ptoHr=(parseFloat(cd.ptoDays||0)||0)*8*hr/annual;
+  const burden=hr*(1+ss/100+med/100+futa/100+wc/100+gl/100)+benefitsHr+ptoHr;
+  if(!(burden>0)) return '';
+  const live=_legacyItemOverheadPerHour();
+  if(live===null) return (parseFloat(burden.toFixed(2))+_csLegacyOverheadFor(ds)).toFixed(2);
+  return (burden+live).toFixed(2);
+}
+function _markRateEstimated(c, src, ds){
+  if(src&&_crewWageOnDate(src, ds).estimated) c.rateEstimated=true;
 }
 // opts.forceDirect: stamp with the direct-rate model even on a day before it (today's crew rates,
 // that day's legacy overhead) — used when the owner is added to an older day after the fact.
@@ -6482,7 +6579,8 @@ function jcStampEntryRates(c,ds,opts){
     return;
   }
   JC_RATE_STAMP_KEYS.forEach(k=>delete c[k]);
-  const cd=_crewForWorkDate((c&&c.crewIdx>=0)?CREW_DATA[c.crewIdx]:null, ds);
+  const src=(c&&c.crewIdx>=0)?CREW_DATA[c.crewIdx]:null;
+  const cd=_crewForWorkDate(src, ds);
   if(!cd){ c.burdenedRate=''; return; }
   let {entry,version}=costingSetForStamp(ds);
   let ohOverride=null;
@@ -6492,9 +6590,10 @@ function jcStampEntryRates(c,ds,opts){
   }
   if(!_costingSettingsLoadOk||!_csIsModel(entry)){
     // Settings not loaded yet (stamped later, on save), or a day before the direct-rate model:
-    // the old stamp (old burden math + the overhead old code added on top).
-    const b=parseFloat(calcBurdenForCrew(cd));
-    c.burdenedRate=b>0?(b+_csLegacyOverheadFor(ds)).toFixed(2):'';
+    // the old all-in stamp. With an itemized overhead list, that is one round of
+    // burden + (list ÷ active hours). Otherwise burden rounded to cents, then the flat constant.
+    c.burdenedRate=_legacyAllIn(cd, ds);
+    if(c.burdenedRate) _markRateEstimated(c, src, ds);
     return;
   }
   const r=crewLaborRates(cd,entry);
@@ -6504,6 +6603,7 @@ function jcStampEntryRates(c,ds,opts){
   c.overheadRate=oh; c.rateVersion=version;
   if(r.override) c.fieldOverride=true;
   c.burdenedRate=(r.direct+oh).toFixed(2);
+  _markRateEstimated(c, src, ds);
 }
 // Save-time pass: fill a person-day that has no stamp at all, up through today.
 // A saved directRate or burdenedRate is never rewritten, including a legacy all-in
@@ -6798,7 +6898,7 @@ function jcJobCostLines(job,mode){
       const c=rows[0];
       const r=jcEntryRate(c,job,log,ds,mode);
       const cost=Math.round(hrs*r.labor*100)/100, oh=Math.round(hrs*r.overhead*100)/100;
-      const estimated=!recost&&!_jcHasStamp(c);
+      const estimated=!recost&&_jcShowEstimated(c);
       if(estimated) estimatedRows++;
       const isOwner=ownerIdx>=0&&parseInt(c.crewIdx)===ownerIdx;
       dayPeople++; if(isOwner) dayHasOwner=true;
@@ -6973,7 +7073,7 @@ function renderJobCostingPage(){
   </div>
   <div style="font-size:11.5px;color:var(--text3);margin:-4px 0 14px;line-height:1.5;">${_jcrRecost
     ?`<b style="color:var(--accent);">Re-cost:</b> every hour at today's crew rates plus $${ohNow.toFixed(2)}/hr overhead, prevailing wage with employer taxes, consumables at the job's own % or today's settings. Shown here only — nothing is saved.`
-    :`As recorded: each day at the rates stamped when it was logged. Before 10/20 the stored rate had $${_csLegacyOverheadFor('2026-10-19').toFixed(2)}/hr overhead inside it; it's split out into the Overhead column. A day with no stamp is priced from the rate on file, not as $0.`}${tot.estimatedRows?` <b style="color:#b45309;">${tot.estimatedRows} person-day${tot.estimatedRows!==1?'s':''} still unstamped — estimated, flagged until a save writes the work-date rate.</b>`:''}</div>
+    :`As recorded: each day at the rates stamped when it was logged. Before 10/20 the stored rate had $${_csLegacyOverheadFor('2026-10-19').toFixed(2)}/hr overhead inside it; it's split out into the Overhead column. A day with no stamp is priced from the rate on file, not as $0.`}${tot.estimatedRows?` <b style="color:#b45309;">${tot.estimatedRows} person-day${tot.estimatedRows!==1?'s':''} estimated — no wage stamp, or a rate taken from a pay-history note, until a save writes the work-date rate.</b>`:''}</div>
   <div class="mgrid4" style="margin-bottom:24px;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));">
     <div class="stat-card"><div class="stat-label">Total Revenue</div><div class="stat-value">${fmt(tot.revenue)}<div style="font-size:12px;font-weight:500;color:var(--text3);margin-top:2px;">${rows.length} job${rows.length!==1?'s':''}</div></div></div>
     <div class="stat-card"><div class="stat-label">Gross Profit</div><div class="stat-value" style="color:${col(tot.grossProfit)};">${sfmt(tot.grossProfit)}<div style="font-size:12px;font-weight:500;color:var(--text3);margin-top:2px;">${tot.gmPct!==null?tot.gmPct+'% GM':''}</div></div></div>
@@ -6996,7 +7096,7 @@ function renderJobCostingPage(){
       chip((job.status||'').replace('_',' ').toUpperCase(),sc,sc+'22'),
       job._comboMembers?chip('🔗 '+job._comboMembers.length+' phases','var(--accent)','var(--accent-dim)'):'',
       r.missingTimeCount?chip('⚠ '+r.missingTimeCount+' missing time'+(r.missingTimeCount!==1?'s':''),'var(--red,#e53e3e)','var(--red-dim,#fff0f0)',r.missingTimeCount+' day(s) logged but missing a time — excluded from labor cost'):'',
-      r.estimatedRows?chip('estimated','#b45309','#d9770622','No wage stamp on '+r.estimatedRows+' person-day'+(r.estimatedRows!==1?'s':'')+' — priced from the rate on file until a save locks the work-date rate'):'',
+      r.estimatedRows?chip('estimated','#b45309','#d9770622','No wage stamp, or a rate taken from a pay-history note, on '+r.estimatedRows+' person-day'+(r.estimatedRows!==1?'s':'')+' — priced from the rate on file until a save locks the work-date rate'):'',
       r.noWorkCount?chip('🚫 '+r.noWorkCount+' no-work day'+(r.noWorkCount!==1?'s':''),'var(--text2)','var(--surface3)','Marked No Work Completed — no labor or overhead'):'',
       r.cashDayCount?chip('💵 '+r.cashDayCount+' cash day'+(r.cashDayCount!==1?'s':''),'#059669','#05966922','Paid in cash — costed at base pay'+(_jcrRecost&&costingCurrentModel().entry.cashDayBurden==='statutory'?' plus SS/Medicare/WC':'')):'',
       r.pwHrs?chip('PW','#d97706','#d9770622','Prevailing wage hours'):'',
@@ -7136,7 +7236,7 @@ function _payrollCompute(offset){
         const jobLabel=(job.customer||'Unnamed Job').trim();
         // No stamp yet: still pay the current base hourly (never $0), and flag the day.
         // The overtime checkbox is unchanged — a weekend is not overtime unless it is checked.
-        const estimated=!_jcHasStamp(c);
+        const estimated=_jcShowEstimated(c);
         if(prevailing){
           const rate=(parseFloat(job.prevailingWageRate)||0)*(ot?1.5:1);
           const pay=hrs*rate;
@@ -7238,7 +7338,7 @@ function renderPayroll(){
     ${!isCurrent?`<button class="btn btn-ghost" onclick="payrollGoToCurrent()" style="font-size:11.5px;">Current Period</button>`:''}
   </div>
   ${holidaysInPeriod.length?`<div style="text-align:center;font-size:12px;color:var(--orange);margin-bottom:${estDays?8:22}px;">${holidaysInPeriod.map(h=>h.label+' — '+fmtPd(h.date)).join(' &nbsp;·&nbsp; ')} <span style="color:var(--text3);">(paid holiday — 8h at base rate for every crew member, unless already on PTO that day)</span></div>`:''}
-  ${estDays?`<div style="text-align:center;font-size:12px;color:#b45309;margin-bottom:22px;">Estimated — ${estDays} logged day${estDays!==1?'s':''} ha${estDays!==1?'ve':'s'} no wage stamp. Pay still uses the current base hourly (not $0) until a save writes the rate that was in effect on the work date.</div>`:''}
+  ${estDays?`<div style="text-align:center;font-size:12px;color:#b45309;margin-bottom:22px;">Estimated — ${estDays} logged day${estDays!==1?'s':''} ha${estDays!==1?'ve':'s'} no wage stamp, or a rate taken from a pay-history note. Pay still uses the current base hourly (not $0) until a save writes the rate that was in effect on the work date.</div>`:''}
   <div class="mgrid4" style="margin-bottom:24px;">
     <div class="stat-card"><div class="stat-label">Regular Payroll</div><div class="stat-value">${fmt(totReg)}</div></div>
     <div class="stat-card"><div class="stat-label">Holiday Pay</div><div class="stat-value" style="color:var(--orange);">${fmt(totHol)}</div></div>
@@ -7486,7 +7586,7 @@ function renderJobCosting(){
   if(laborRows.some(r=>r.estimated)){
     const n=laborRows.filter(r=>r.estimated).length;
     html+=`<div style="background:#d9770614;border:1px solid #d97706;border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:10px;">
-      <div style="font-size:13px;font-weight:600;color:#b45309;">Estimated — ${n} person-day${n!==1?'s':''} ha${n!==1?'ve':'s'} no wage stamp</div>
+      <div style="font-size:13px;font-weight:600;color:#b45309;">Estimated — ${n} person-day${n!==1?'s':''} ha${n!==1?'ve':'s'} no wage stamp, or a rate taken from a pay-history note</div>
       <div style="font-size:11.5px;color:var(--text2);margin-top:3px;">Priced from the rate on file so labor is not $0. A save writes the rate that was in effect on the work date and clears this flag. Prevailing-wage and cash days keep their own rates.</div>
     </div>`;
   }

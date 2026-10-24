@@ -89,7 +89,7 @@ AS $$
     'mileagerate', 'mileageoneway',
     'prevailingwage', 'prevailingwagerate', 'prevailingwageburden',
     'burdenedrate', 'directrate', 'otrate', 'baserate', 'statmult',
-    'overheadrate', 'rateversion', 'fieldoverride',
+    'overheadrate', 'rateversion', 'fieldoverride', 'rateestimated',
     'overtimewage', 'cashwages',
     'consumablespct', 'consumablespctset',
     'costcategory', 'costlinkid', 'commissions',

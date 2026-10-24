@@ -19,6 +19,7 @@ const costing = fs.readFileSync(path.join(root, 'supabase/migrations/20261020120
 const phase2 = fs.readFileSync(path.join(root, 'supabase/migrations/20261024140000_role_split_rls.sql'), 'utf8');
 const revokeAnon = fs.readFileSync(path.join(root, 'supabase/migrations/20261024153000_revoke_crew_rpc_anon.sql'), 'utf8');
 const stampRates = fs.readFileSync(path.join(root, 'supabase/migrations/20261024170000_stamp_missing_labor_rates.sql'), 'utf8');
+const stampFollowup = fs.readFileSync(path.join(root, 'supabase/migrations/20261024193000_stamp_prior_wage_and_legacy_burden.sql'), 'utf8');
 const rollback = fs.readFileSync(path.join(root, 'supabase/rollback/20261024140000_role_split_rls.sql'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const db = 'floorpro_role_test';
@@ -245,6 +246,24 @@ function assertLaborStamps() {
   const fallbackJob = JSON.stringify([
     { id: 'fallback', customer: 'Fallback', dayLogs: { '2026-10-21': { fullDay: true, crewPresent: [{ crewIdx: 0, name: 'Seth West' }] } } },
   ]);
+  const heliasFirst = JSON.stringify([
+    { id: 'helias', customer: 'Helias Polishing Phase 3', dayLogs: {
+      '2026-10-02': { fullDay: true, crewPresent: [{ crewIdx: 0, name: 'Seth West' }] },
+      '2026-10-01': { fullDay: true, crewPresent: [{ crewIdx: 4, name: 'Hunter Schuler' }] },
+    } },
+    { id: 'cody-may', customer: 'Cody May', dayLogs: {
+      '2026-05-15': { fullDay: true, crewPresent: [{ crewIdx: 3, name: 'Cody Faulkner' }] },
+    } },
+  ]);
+  const heliasSecond = JSON.stringify([
+    ...JSON.parse(heliasFirst),
+    { id: 'cody-june', customer: 'Cody June', dayLogs: {
+      '2026-06-15': { fullDay: true, crewPresent: [{ crewIdx: 3, name: 'Cody Faulkner' }] },
+    } },
+    { id: 'hunter-prior', customer: 'Hunter Prior', dayLogs: {
+      '2026-07-01': { fullDay: true, crewPresent: [{ crewIdx: 4, name: 'Hunter Schuler' }] },
+    } },
+  ]);
   psql(db, ['-f', '-'], `
 BEGIN;
 UPDATE public.crew SET
@@ -398,6 +417,106 @@ BEGIN
   IF (person->>'baseRate')::numeric <> 20 THEN RAISE EXCEPTION 'fallback still uses history hourly %', person->>'baseRate'; END IF;
 END
 $fall$;
+
+-- Pre-model replay: old FUTA/WC on the legacy costing entry, itemized overhead,
+-- and a second job_records write in this same transaction. The pool-only entry
+-- must not gain the legacy percents. Existing stamps are not in this payload.
+UPDATE public.settings SET value = $cs$
+{"history":[
+  {"id":"cs_legacy","effective":"1900-01-01","legacyOverheadPerHour":4.83},
+  {"id":"cs_pool_only","effective":"2026-10-19","overheadPool":1},
+  {"id":"cs_20261020","effective":"2026-10-20","utilization":0.9,"paidHoursPerYear":2080,"overheadMode":"pool","overheadPool":86014,"excludeOwnerFromDivisor":true}
+]}
+$cs$ WHERE key = 'costing_settings';
+SELECT private.fp_note_legacy_payroll_taxes();
+INSERT INTO public.settings (key, value) VALUES ('overhead', $oh$
+{"items":[
+  {"id":"auto","name":"Progressive Auto","amount":"7488","period":"yr"},
+  {"id":"rent","name":"Rent","amount":"2000","period":"mo"},
+  {"id":"wave","name":"Wave","amount":"190","period":"yr"},
+  {"id":"gl","name":"GL","amount":"1776.88","period":"yr"},
+  {"id":"wc","name":"Work Comp","amount":"6756","period":"yr"}
+]}
+$oh$)
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+UPDATE public.settings SET value = (
+  SELECT jsonb_build_object(
+    'id_' || (SELECT id::text FROM public.crew WHERE full_name = 'Cody Faulkner'),
+    jsonb_build_object('events', jsonb_build_array(jsonb_build_object(
+      'type','pay_change','date','2026-06-01','rate',25.2,'note','Previous wage was $24.00'))),
+    'id_' || (SELECT id::text FROM public.crew WHERE full_name = 'Hunter Schuler'),
+    jsonb_build_object('events', jsonb_build_array(jsonb_build_object(
+      'type','pay_change','date','2026-08-01','rate',24,'oldRate',22,'note','Previous wage was $20.00')))
+  )::text
+) WHERE key = 'crew_history';
+UPDATE public.settings SET value = $h1$${heliasFirst}$h1$ WHERE key = 'job_records';
+UPDATE public.settings SET value = $h2$${heliasSecond}$h2$ WHERE key = 'job_records';
+
+DO $replay$
+DECLARE
+  cs jsonb := (SELECT value::jsonb FROM public.settings WHERE key = 'costing_settings');
+  js jsonb := (SELECT value::jsonb FROM public.settings WHERE key = 'job_records');
+  seth jsonb;
+  hunter jsonb;
+  cody_may jsonb;
+  cody_june jsonb;
+  hunter_prior jsonb;
+BEGIN
+  IF (cs->'history'->0->>'legacyFutaPct')::numeric <> 2.70
+     OR (cs->'history'->0->>'legacyWcPct')::numeric <> 5.61 THEN
+    RAISE EXCEPTION 'legacy percents %', cs->'history'->0;
+  END IF;
+  IF cs->'history'->1 ? 'legacyFutaPct' OR cs->'history'->1 ? 'legacyWcPct' THEN
+    RAISE EXCEPTION 'pool-only entry gained legacy percents %', cs->'history'->1;
+  END IF;
+  IF cs->'history'->2 ? 'legacyFutaPct' THEN
+    RAISE EXCEPTION 'model entry gained legacy percents';
+  END IF;
+  SELECT e INTO seth FROM jsonb_array_elements(js) j, jsonb_array_elements(j->'dayLogs'->'2026-10-02'->'crewPresent') e
+    WHERE j->>'id' = 'helias';
+  SELECT e INTO hunter FROM jsonb_array_elements(js) j, jsonb_array_elements(j->'dayLogs'->'2026-10-01'->'crewPresent') e
+    WHERE j->>'id' = 'helias';
+  SELECT e INTO cody_may FROM jsonb_array_elements(js) j, jsonb_array_elements(j->'dayLogs'->'2026-05-15'->'crewPresent') e
+    WHERE j->>'id' = 'cody-may';
+  SELECT e INTO cody_june FROM jsonb_array_elements(js) j, jsonb_array_elements(j->'dayLogs'->'2026-06-15'->'crewPresent') e
+    WHERE j->>'id' = 'cody-june';
+  SELECT e INTO hunter_prior FROM jsonb_array_elements(js) j, jsonb_array_elements(j->'dayLogs'->'2026-07-01'->'crewPresent') e
+    WHERE j->>'id' = 'hunter-prior';
+  IF seth->>'burdenedRate' <> '42.09' OR seth ? 'directRate' OR seth ? 'rateEstimated' THEN
+    RAISE EXCEPTION 'Seth Helias %', seth;
+  END IF;
+  IF hunter->>'burdenedRate' <> '33.59' OR hunter ? 'directRate' OR hunter ? 'rateEstimated' THEN
+    RAISE EXCEPTION 'Hunter Helias %', hunter;
+  END IF;
+  IF cody_may->>'burdenedRate' <> '33.59' OR cody_may->>'rateEstimated' <> 'true' OR cody_may ? 'directRate' THEN
+    RAISE EXCEPTION 'Cody May %', cody_may;
+  END IF;
+  IF cody_june->>'burdenedRate' <> '35.02' OR cody_june ? 'rateEstimated' OR cody_june ? 'directRate' THEN
+    RAISE EXCEPTION 'Cody June was not stamped in the second save %', cody_june;
+  END IF;
+  IF hunter_prior->>'burdenedRate' <> '31.19' OR hunter_prior ? 'rateEstimated' THEN
+    RAISE EXCEPTION 'structured oldRate %', hunter_prior;
+  END IF;
+  IF js::text LIKE '%overtimeWage%' THEN RAISE EXCEPTION 'replay set overtimeWage'; END IF;
+END
+$replay$;
+
+SELECT set_config('request.jwt.claims', '${crewJwt}', true);
+SET LOCAL ROLE authenticated;
+INSERT INTO stamp_out VALUES ('replay-read', public.fp_crew_read_job_records()::text)
+ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v;
+RESET ROLE;
+
+DO $hid$
+DECLARE
+  rd text := (SELECT v FROM stamp_out WHERE k = 'replay-read');
+BEGIN
+  IF rd LIKE '%rateEstimated%' OR rd LIKE '%42.09%' OR rd LIKE '%burdenedRate%' THEN
+    RAISE EXCEPTION 'crew read leaked a replay stamp %', left(rd, 500);
+  END IF;
+  IF rd NOT LIKE '%Helias Polishing Phase 3%' THEN RAISE EXCEPTION 'crew read dropped Helias'; END IF;
+END
+$hid$;
 ROLLBACK;
 `);
 }
@@ -412,6 +531,7 @@ function applyPhase2() {
   psql(db, ['-f', '-'], phase2);
   psql(db, ['-f', '-'], revokeAnon);
   psql(db, ['-f', '-'], stampRates);
+  psql(db, ['-f', '-'], stampFollowup);
 }
 
 test('the website asks for directory columns and the crew job functions', () => {
@@ -432,6 +552,11 @@ test('the website asks for directory columns and the crew job functions', () => 
   assert.match(indexHtml, /const _fpTestUrl = 'https:\/\/nndjnywtkgxwvxajwztg\.supabase\.co'/);
   assert.equal(phase2.includes('DROP COLUMN'), false);
   assert.equal(phase2.includes('DELETE FROM public.crew'), false);
+  assert.match(stampFollowup, /pg_trigger_depth\(\)/);
+  assert.equal(stampFollowup.includes("set_config('fp.stamping'"), false);
+  assert.equal(stampFollowup.includes("WHERE key = 'job_records'"), false);
+  assert.match(stampFollowup, /legacyFutaPct/);
+  assert.match(phase2, /'rateestimated'/);
   assert.equal(rollback.includes('DROP TABLE'), false);
   assert.match(phase2, /REVOKE ALL ON FUNCTION public\.fp_crew_read_job_records\(\) FROM PUBLIC, anon/);
   assert.match(revokeAnon, /REVOKE ALL ON FUNCTION public\.fp_crew_write_pto_requests\(jsonb\) FROM PUBLIC, anon/);
@@ -471,6 +596,15 @@ test('role-split policies hide pay from crew and keep it for office and owner', 
   }
   assert.equal(psqlTuples(db, `SELECT has_function_privilege('anon', 'private.fp_stamp_job_records_text(text)', 'EXECUTE')`), 'f');
   assert.equal(psqlTuples(db, `SELECT has_function_privilege('authenticated', 'private.fp_stamp_job_records_text(text)', 'EXECUTE')`), 'f');
+  for (const fn of [
+    'private.fp_wage_for_stamp(jsonb,text,text,text,numeric)',
+    'private.fp_legacy_item_overhead(jsonb,jsonb)',
+    'private.fp_note_legacy_payroll_taxes()',
+    'private.fp_stamp_missing_labor()',
+  ]) {
+    assert.equal(psqlTuples(db, `SELECT has_function_privilege('anon', '${fn}', 'EXECUTE')`), 'f', fn);
+    assert.equal(psqlTuples(db, `SELECT has_function_privilege('authenticated', '${fn}', 'EXECUTE')`), 'f', fn);
+  }
   assert.equal(psqlTuples(db, `SELECT count(*) FROM pg_trigger WHERE tgname = 'fp_stamp_missing_labor' AND NOT tgisinternal`), '1');
 
   assert.equal(psqlTuples(db, `SELECT hourly FROM public.crew WHERE full_name = 'Seth West'`), '25.00');
