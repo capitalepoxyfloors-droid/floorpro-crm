@@ -520,10 +520,14 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.fp_crew_read_job_records() FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.fp_crew_write_job_records(jsonb) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.fp_crew_read_pto_requests() FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.fp_crew_write_pto_requests(jsonb) FROM PUBLIC;
+-- Supabase also grants EXECUTE to anon when a function is created in public.
+-- Revoking from PUBLIC does not remove that grant. Signed-in users only.
+-- A project that already applied an older copy of this file should also run
+-- supabase/migrations/20261024153000_revoke_crew_rpc_anon.sql.
+REVOKE ALL ON FUNCTION public.fp_crew_read_job_records() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.fp_crew_write_job_records(jsonb) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.fp_crew_read_pto_requests() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.fp_crew_write_pto_requests(jsonb) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.fp_crew_read_job_records() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.fp_crew_write_job_records(jsonb) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.fp_crew_read_pto_requests() TO authenticated;
@@ -1005,6 +1009,19 @@ BEGIN
   WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relrowsecurity;
   IF open_tables IS NOT NULL THEN
     RAISE EXCEPTION 'Row security is still off on: %', open_tables;
+  END IF;
+
+  IF has_function_privilege('anon', 'public.fp_crew_read_job_records()', 'EXECUTE')
+     OR has_function_privilege('anon', 'public.fp_crew_write_job_records(jsonb)', 'EXECUTE')
+     OR has_function_privilege('anon', 'public.fp_crew_read_pto_requests()', 'EXECUTE')
+     OR has_function_privilege('anon', 'public.fp_crew_write_pto_requests(jsonb)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'anon can still execute a crew job or PTO function';
+  END IF;
+  IF NOT has_function_privilege('authenticated', 'public.fp_crew_read_job_records()', 'EXECUTE')
+     OR NOT has_function_privilege('authenticated', 'public.fp_crew_write_job_records(jsonb)', 'EXECUTE')
+     OR NOT has_function_privilege('authenticated', 'public.fp_crew_read_pto_requests()', 'EXECUTE')
+     OR NOT has_function_privilege('authenticated', 'public.fp_crew_write_pto_requests(jsonb)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'authenticated cannot execute a crew job or PTO function';
   END IF;
 END
 $check$;

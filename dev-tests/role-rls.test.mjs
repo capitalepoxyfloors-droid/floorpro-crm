@@ -17,6 +17,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const phase1 = fs.readFileSync(path.join(root, 'supabase/migrations/20261009143000_rls_pin_auth_private_storage.sql'), 'utf8');
 const costing = fs.readFileSync(path.join(root, 'supabase/migrations/20261020120000_crew_costing_columns.sql'), 'utf8');
 const phase2 = fs.readFileSync(path.join(root, 'supabase/migrations/20261024140000_role_split_rls.sql'), 'utf8');
+const revokeAnon = fs.readFileSync(path.join(root, 'supabase/migrations/20261024153000_revoke_crew_rpc_anon.sql'), 'utf8');
 const rollback = fs.readFileSync(path.join(root, 'supabase/rollback/20261024140000_role_split_rls.sql'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const db = 'floorpro_role_test';
@@ -230,6 +231,7 @@ function linkAccounts() {
 
 function applyPhase2() {
   psql(db, ['-f', '-'], phase2);
+  psql(db, ['-f', '-'], revokeAnon);
 }
 
 test('the website asks for directory columns and the crew job functions', () => {
@@ -245,9 +247,16 @@ test('the website asks for directory columns and the crew job functions', () => 
   assert.ok(mat, 'material directory select list');
   assert.equal(mat[1].includes('price'), false);
   assert.match(indexHtml, /const mult=ot\?1\.5:1/);
+  assert.match(indexHtml, /const SUPABASE_URL = _fpUseTest \? _fpTestUrl : _fpLiveUrl/);
+  assert.match(indexHtml, /const _fpLiveUrl = 'https:\/\/cngbsmmdfxmerlqnkate\.supabase\.co'/);
+  assert.match(indexHtml, /const _fpTestUrl = 'https:\/\/nndjnywtkgxwvxajwztg\.supabase\.co'/);
   assert.equal(phase2.includes('DROP COLUMN'), false);
   assert.equal(phase2.includes('DELETE FROM public.crew'), false);
   assert.equal(rollback.includes('DROP TABLE'), false);
+  assert.match(phase2, /REVOKE ALL ON FUNCTION public\.fp_crew_read_job_records\(\) FROM PUBLIC, anon/);
+  assert.match(revokeAnon, /REVOKE ALL ON FUNCTION public\.fp_crew_write_pto_requests\(jsonb\) FROM PUBLIC, anon/);
+  assert.match(rollback, /REVOKE ALL ON FUNCTION public\.fp_crew_read_job_records\(\) FROM PUBLIC, anon/);
+  assert.equal(revokeAnon.includes('TO anon;'), false);
   assert.match(phase1, /key IN \('job_records'/);
 });
 
@@ -262,6 +271,24 @@ test('role-split policies hide pay from crew and keep it for office and owner', 
   applyPhase2();
   applyPhase2();
   linkAccounts();
+
+  psql(db, ['-c', `
+    GRANT EXECUTE ON FUNCTION public.fp_crew_read_job_records() TO anon;
+    GRANT EXECUTE ON FUNCTION public.fp_crew_write_job_records(jsonb) TO anon;
+    GRANT EXECUTE ON FUNCTION public.fp_crew_read_pto_requests() TO anon;
+    GRANT EXECUTE ON FUNCTION public.fp_crew_write_pto_requests(jsonb) TO anon;
+  `]);
+  assert.equal(psqlTuples(db, `SELECT has_function_privilege('anon', 'public.fp_crew_read_job_records()', 'EXECUTE')`), 't');
+  psql(db, ['-f', '-'], revokeAnon);
+  for (const fn of [
+    'public.fp_crew_read_job_records()',
+    'public.fp_crew_write_job_records(jsonb)',
+    'public.fp_crew_read_pto_requests()',
+    'public.fp_crew_write_pto_requests(jsonb)',
+  ]) {
+    assert.equal(psqlTuples(db, `SELECT has_function_privilege('anon', '${fn}', 'EXECUTE')`), 'f', fn);
+    assert.equal(psqlTuples(db, `SELECT has_function_privilege('authenticated', '${fn}', 'EXECUTE')`), 't', fn);
+  }
 
   assert.equal(psqlTuples(db, `SELECT hourly FROM public.crew WHERE full_name = 'Seth West'`), '25.00');
   assert.equal(psqlTuples(db, `SELECT hourly FROM public.crew_private WHERE crew_id = (SELECT id FROM public.crew WHERE full_name = 'Seth West')`), '25.00');
@@ -387,6 +414,8 @@ test('role-split policies hide pay from crew and keep it for office and owner', 
   psql(db, ['-f', '-'], rollback);
   const restored = asRole(crewClaims, `SELECT 'wage=' || hourly FROM public.crew WHERE full_name = 'Seth West';`);
   assert.match(restored, /wage=25\.00/);
+  const anonAfterRollback = asRoleText(claims('00000000-0000-0000-0000-000000000000', 'anon'), `SET LOCAL ROLE anon; SELECT public.fp_crew_read_job_records();`);
+  assert.match(anonAfterRollback, /permission denied/i);
   assert.equal(psqlTuples(db, `SELECT count(*) FROM public.crew_private`), '3');
   assert.equal(psqlTuples(db, `SELECT price FROM public.materials WHERE name = 'ArmorSeal'`), '14');
 

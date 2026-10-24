@@ -417,6 +417,7 @@
   <div id="login-card" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:36px 26px 28px;width:100%;max-width:290px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,.5);">
     <div style="font-size:11px;letter-spacing:2.5px;text-transform:uppercase;color:var(--text3);font-family:'DM Mono',monospace;margin-bottom:6px;">FloorPro</div>
     <div style="font-size:26px;font-weight:800;letter-spacing:-.5px;margin-bottom:2px;">CRM</div>
+    <div id="login-env" style="display:none;font-size:11px;letter-spacing:.4px;color:#d97706;margin:6px 0 2px;font-family:'DM Mono',monospace;">Test project</div>
     <!-- Step 1: tap your name. Step 2: your PIN. A phone remembers who used it last. -->
     <div id="login-who" style="display:none;">
       <div style="font-size:12px;color:var(--text3);margin-bottom:16px;">Tap your name to sign in</div>
@@ -2050,10 +2051,22 @@
 
 <script>
 // ── SUPABASE CONFIG ────────────────────────────────────────────────────────────
-const SUPABASE_URL = 'https://cngbsmmdfxmerlqnkate.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNuZ2JzbW1kZnhtZXJscW5rYXRlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg3NzcxNTEsImV4cCI6MjA5NDM1MzE1MX0.WYzlfn8OHPYsWCY-P7bXjvl_v78wozwjk2ajEBxa-7I';
-// The anon key only identifies the project. Data calls send the signed-in user's
-// access token. Until the first sign-in (and in the local tests) there is no token.
+// The live project is the default, including the published site. Add ?env=test
+// to the page address to use the floorpro-crm-test project instead. The anon
+// key only identifies the project.
+const _fpLiveUrl = 'https://cngbsmmdfxmerlqnkate.supabase.co';
+const _fpLiveKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNuZ2JzbW1kZnhtZXJscW5rYXRlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg3NzcxNTEsImV4cCI6MjA5NDM1MzE1MX0.WYzlfn8OHPYsWCY-P7bXjvl_v78wozwjk2ajEBxa-7I';
+const _fpTestUrl = 'https://nndjnywtkgxwvxajwztg.supabase.co';
+const _fpTestKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5uZGpueXd0a2d4d3Z4YWp3enRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTExNzExNDAsImV4cCI6MjEwNjc0NzE0MH0.SuEB9y7eDtkzPz0NikqF4J_6CLi3iGJV6N4a0AlLmYk';
+const _fpUseTest = typeof location !== 'undefined' && new URLSearchParams(location.search || '').get('env') === 'test';
+const SUPABASE_URL = _fpUseTest ? _fpTestUrl : _fpLiveUrl;
+const SUPABASE_KEY = _fpUseTest ? _fpTestKey : _fpLiveKey;
+if (_fpUseTest) {
+  const _fpEnvNote = document.getElementById('login-env');
+  if (_fpEnvNote) _fpEnvNote.style.display = 'block';
+}
+// Data calls send the signed-in user's access token. Until the first sign-in
+// (and in the local tests) there is no token.
 let _accessToken = '';
 let _refreshToken = '';
 let _accessExp = 0;

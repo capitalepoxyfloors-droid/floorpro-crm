@@ -14,6 +14,8 @@
 --   Those stay so the copied rows are still there if you apply the forward
 --   file again. Applying the forward file copies the original columns over
 --   the private rows again.
+--   It does not give the anon key EXECUTE on those functions. They stay
+--   limited to signed-in users.
 --
 -- After this file, signed-in crew can read and write the same tables they
 -- could after phase 1. Owner and office are unchanged from phase 1.
@@ -139,6 +141,17 @@ CREATE POLICY fp_settings_delete ON public.settings
     AND (SELECT private.fp_role()) IN ('owner', 'office')
   );
 
+-- Keep the crew functions callable by signed-in users only. Restoring the
+-- old table grants must not hand these functions back to the anon key.
+REVOKE ALL ON FUNCTION public.fp_crew_read_job_records() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.fp_crew_write_job_records(jsonb) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.fp_crew_read_pto_requests() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.fp_crew_write_pto_requests(jsonb) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.fp_crew_read_job_records() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.fp_crew_write_job_records(jsonb) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.fp_crew_read_pto_requests() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.fp_crew_write_pto_requests(jsonb) TO authenticated;
+
 DO $check$
 BEGIN
   IF EXISTS (
@@ -152,6 +165,12 @@ BEGIN
   END IF;
   IF to_regclass('public.materials_private') IS NULL THEN
     RAISE EXCEPTION 'rollback removed public.materials_private; the copied prices must stay';
+  END IF;
+  IF has_function_privilege('anon', 'public.fp_crew_read_job_records()', 'EXECUTE')
+     OR has_function_privilege('anon', 'public.fp_crew_write_job_records(jsonb)', 'EXECUTE')
+     OR has_function_privilege('anon', 'public.fp_crew_read_pto_requests()', 'EXECUTE')
+     OR has_function_privilege('anon', 'public.fp_crew_write_pto_requests(jsonb)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'rollback left anon able to execute a crew job or PTO function';
   END IF;
 END
 $check$;

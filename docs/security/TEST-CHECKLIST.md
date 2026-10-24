@@ -2,7 +2,7 @@
 
 Project: **floorpro-crm-test** (`nndjnywtkgxwvxajwztg`). Do not run this list against the live project.
 
-Use a copy of the new `index.html` pointed at the test project: set `SUPABASE_URL` and `SUPABASE_KEY` to the test project's URL and anon key, and open the file locally. Do not commit that edit.
+Open the page with `?env=test` on the address (for example `index.html?env=test`, or the GitHub Pages address plus `?env=test`). That uses the test project. Without that parameter the page stays on the live project. The sign-in screen shows "Test project" when the switch is on. Do not edit `SUPABASE_URL` in the file.
 
 ## Setup
 
