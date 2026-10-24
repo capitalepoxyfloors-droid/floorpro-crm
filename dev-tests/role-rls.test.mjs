@@ -20,6 +20,7 @@ const phase2 = fs.readFileSync(path.join(root, 'supabase/migrations/202610241400
 const revokeAnon = fs.readFileSync(path.join(root, 'supabase/migrations/20261024153000_revoke_crew_rpc_anon.sql'), 'utf8');
 const stampRates = fs.readFileSync(path.join(root, 'supabase/migrations/20261024170000_stamp_missing_labor_rates.sql'), 'utf8');
 const stampFollowup = fs.readFileSync(path.join(root, 'supabase/migrations/20261024193000_stamp_prior_wage_and_legacy_burden.sql'), 'utf8');
+const stampStoredOh = fs.readFileSync(path.join(root, 'supabase/migrations/20261024220000_legacy_overhead_stored_rate.sql'), 'utf8');
 const rollback = fs.readFileSync(path.join(root, 'supabase/rollback/20261024140000_role_split_rls.sql'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const db = 'floorpro_role_test';
@@ -263,6 +264,9 @@ function assertLaborStamps() {
     { id: 'hunter-prior', customer: 'Hunter Prior', dayLogs: {
       '2026-07-01': { fullDay: true, crewPresent: [{ crewIdx: 4, name: 'Hunter Schuler' }] },
     } },
+    { id: 'model-day', customer: 'Model Day', dayLogs: {
+      '2026-10-21': { fullDay: true, crewPresent: [{ crewIdx: 0, name: 'Seth West' }] },
+    } },
   ]);
   psql(db, ['-f', '-'], `
 BEGIN;
@@ -348,7 +352,7 @@ BEGIN
   IF kept_a->>'burdenedRate' <> '38.58' OR kept_a ? 'directRate' THEN RAISE EXCEPTION 'legacy A changed %', kept_a; END IF;
   IF kept_b->>'burdenedRate' <> '41.00' OR kept_b ? 'directRate' THEN RAISE EXCEPTION 'legacy B changed %', kept_b; END IF;
   IF (kept_direct->>'directRate')::numeric <> 33.1 OR kept_direct->>'burdenedRate' <> '50.00' THEN RAISE EXCEPTION 'saved direct changed %', kept_direct; END IF;
-  IF legacy ? 'directRate' OR legacy->>'burdenedRate' <> '28.91' THEN RAISE EXCEPTION 'pre-model stamp %', legacy; END IF;
+  IF legacy ? 'directRate' OR legacy ? 'rateEstimated' OR legacy->>'burdenedRate' <> '28.91' THEN RAISE EXCEPTION 'pre-model stamp %', legacy; END IF;
   IF (brendon->>'baseRate')::numeric <> 27.60 THEN RAISE EXCEPTION 'Brendon fell back to %', brendon->>'baseRate'; END IF;
   IF future ? 'directRate' OR future ? 'burdenedRate' THEN RAISE EXCEPTION 'future day was stamped %', future; END IF;
   IF NOT (saturday ? 'directRate') THEN RAISE EXCEPTION 'Saturday was not stamped %', saturday; END IF;
@@ -430,13 +434,7 @@ UPDATE public.settings SET value = $cs$
 $cs$ WHERE key = 'costing_settings';
 SELECT private.fp_note_legacy_payroll_taxes();
 INSERT INTO public.settings (key, value) VALUES ('overhead', $oh$
-{"items":[
-  {"id":"auto","name":"Progressive Auto","amount":"7488","period":"yr"},
-  {"id":"rent","name":"Rent","amount":"2000","period":"mo"},
-  {"id":"wave","name":"Wave","amount":"190","period":"yr"},
-  {"id":"gl","name":"GL","amount":"1776.88","period":"yr"},
-  {"id":"wc","name":"Work Comp","amount":"6756","period":"yr"}
-]}
+{"items":[{"id":"pool","name":"Live pool","amount":"86014","period":"yr"}]}
 $oh$)
 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
 UPDATE public.settings SET value = (
@@ -461,6 +459,7 @@ DECLARE
   cody_may jsonb;
   cody_june jsonb;
   hunter_prior jsonb;
+  model_day jsonb;
 BEGIN
   IF (cs->'history'->0->>'legacyFutaPct')::numeric <> 2.70
      OR (cs->'history'->0->>'legacyWcPct')::numeric <> 5.61 THEN
@@ -482,13 +481,13 @@ BEGIN
     WHERE j->>'id' = 'cody-june';
   SELECT e INTO hunter_prior FROM jsonb_array_elements(js) j, jsonb_array_elements(j->'dayLogs'->'2026-07-01'->'crewPresent') e
     WHERE j->>'id' = 'hunter-prior';
-  IF seth->>'burdenedRate' <> '42.09' OR seth ? 'directRate' OR seth ? 'rateEstimated' THEN
+  IF seth->>'burdenedRate' <> '42.08' OR seth ? 'directRate' OR seth ? 'rateEstimated' THEN
     RAISE EXCEPTION 'Seth Helias %', seth;
   END IF;
-  IF hunter->>'burdenedRate' <> '33.59' OR hunter ? 'directRate' OR hunter ? 'rateEstimated' THEN
+  IF hunter->>'burdenedRate' <> '33.58' OR hunter ? 'directRate' OR hunter ? 'rateEstimated' THEN
     RAISE EXCEPTION 'Hunter Helias %', hunter;
   END IF;
-  IF cody_may->>'burdenedRate' <> '33.59' OR cody_may->>'rateEstimated' <> 'true' OR cody_may ? 'directRate' THEN
+  IF cody_may->>'burdenedRate' <> '33.58' OR cody_may->>'rateEstimated' <> 'true' OR cody_may ? 'directRate' THEN
     RAISE EXCEPTION 'Cody May %', cody_may;
   END IF;
   IF cody_june->>'burdenedRate' <> '35.02' OR cody_june ? 'rateEstimated' OR cody_june ? 'directRate' THEN
@@ -496,6 +495,12 @@ BEGIN
   END IF;
   IF hunter_prior->>'burdenedRate' <> '31.19' OR hunter_prior ? 'rateEstimated' THEN
     RAISE EXCEPTION 'structured oldRate %', hunter_prior;
+  END IF;
+  SELECT e INTO model_day FROM jsonb_array_elements(js) j, jsonb_array_elements(j->'dayLogs'->'2026-10-21'->'crewPresent') e
+    WHERE j->>'id' = 'model-day';
+  IF (model_day->>'overheadRate')::numeric <> 15.32 OR (model_day->>'directRate')::numeric <> 40.27
+     OR model_day->>'burdenedRate' <> '55.59' OR model_day ? 'rateEstimated' THEN
+    RAISE EXCEPTION 'model day followed the overhead list %', model_day;
   END IF;
   IF js::text LIKE '%overtimeWage%' THEN RAISE EXCEPTION 'replay set overtimeWage'; END IF;
 END
@@ -511,12 +516,33 @@ DO $hid$
 DECLARE
   rd text := (SELECT v FROM stamp_out WHERE k = 'replay-read');
 BEGIN
-  IF rd LIKE '%rateEstimated%' OR rd LIKE '%42.09%' OR rd LIKE '%burdenedRate%' THEN
+  IF rd LIKE '%rateEstimated%' OR rd LIKE '%42.08%' OR rd LIKE '%burdenedRate%' THEN
     RAISE EXCEPTION 'crew read leaked a replay stamp %', left(rd, 500);
   END IF;
   IF rd NOT LIKE '%Helias Polishing Phase 3%' THEN RAISE EXCEPTION 'crew read dropped Helias'; END IF;
 END
 $hid$;
+
+UPDATE public.settings SET value = $cs$
+{"history":[
+  {"id":"cs_blank","effective":"1900-01-01"},
+  {"id":"cs_20261020","effective":"2026-10-20","utilization":0.9,"paidHoursPerYear":2080,"overheadMode":"pool","overheadPool":86014,"excludeOwnerFromDivisor":true}
+]}
+$cs$ WHERE key = 'costing_settings';
+UPDATE public.settings SET value = $miss$[{"id":"missing-oh","customer":"Missing Overhead","dayLogs":{"2026-09-10":{"fullDay":true,"crewPresent":[{"crewIdx":0,"name":"Seth West"}]}}}]$miss$ WHERE key = 'job_records';
+
+DO $missing$
+DECLARE
+  person jsonb;
+BEGIN
+  SELECT e INTO person FROM jsonb_array_elements((SELECT value::jsonb FROM public.settings WHERE key = 'job_records')) j,
+    jsonb_array_elements(j->'dayLogs'->'2026-09-10'->'crewPresent') e
+    WHERE j->>'id' = 'missing-oh';
+  IF person->>'burdenedRate' <> '40.85' OR person->>'rateEstimated' <> 'true' OR person ? 'directRate' THEN
+    RAISE EXCEPTION 'missing legacy overhead %', person;
+  END IF;
+END
+$missing$;
 ROLLBACK;
 `);
 }
@@ -532,6 +558,7 @@ function applyPhase2() {
   psql(db, ['-f', '-'], revokeAnon);
   psql(db, ['-f', '-'], stampRates);
   psql(db, ['-f', '-'], stampFollowup);
+  psql(db, ['-f', '-'], stampStoredOh);
 }
 
 test('the website asks for directory columns and the crew job functions', () => {
@@ -555,6 +582,8 @@ test('the website asks for directory columns and the crew job functions', () => 
   assert.match(stampFollowup, /pg_trigger_depth\(\)/);
   assert.equal(stampFollowup.includes("set_config('fp.stamping'"), false);
   assert.equal(stampFollowup.includes("WHERE key = 'job_records'"), false);
+  assert.equal(stampStoredOh.includes("WHERE key = 'job_records'"), false);
+  assert.match(stampStoredOh, /legacy_oh := 4\.83/);
   assert.match(stampFollowup, /legacyFutaPct/);
   assert.match(phase2, /'rateestimated'/);
   assert.equal(rollback.includes('DROP TABLE'), false);

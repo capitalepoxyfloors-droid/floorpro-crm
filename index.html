@@ -6531,28 +6531,25 @@ function _csLegacyTaxPct(ds, key, fallback){
   }
   return v!==null?v:fallback;
 }
-// Overhead $/hr the page folded into the all-in rate before 2026-10-20:
-// itemized list ÷ (each active person's weekly hours × 52), owner included.
-// Null when the list is empty, so the flat legacy constant is used instead.
-function _legacyItemOverheadPerHour(){
-  const items=(OVERHEAD&&Array.isArray(OVERHEAD.items))?OVERHEAD.items:[];
-  const pool=items.reduce((s,it)=>{
-    const amt=parseFloat(it.amount)||0;
-    return s+(it.period==='mo'?amt*12:amt);
-  },0);
-  if(!(pool>0)) return null;
-  let hrs=0;
-  (CREW_DATA||[]).forEach((c,i)=>{
-    if(!((parseFloat(c&&c.hourly)||0)>0)||isCrewInactive(i)) return;
-    hrs+=(parseFloat(c.hours)||40)*52;
-  });
-  return hrs>0?pool/hrs:null;
+// Overhead $/hr baked into a pre-2026-10-20 all-in. The figure is the one stored on
+// the costing set in effect that day (cs_legacy.legacyOverheadPerHour, 4.83).
+// The current overhead list is not used: on 2026-10-22 that list became the full
+// pool, about $86,014, which would price an old day near $10.34/hr.
+// Missing figure: the page seed, 4.83, and the stamp is estimated.
+function _legacyOverheadForFill(entry){
+  const raw=entry&&entry.legacyOverheadPerHour;
+  if(raw!==undefined&&raw!==null&&raw!==''){
+    const n=parseFloat(raw);
+    if(!isNaN(n)) return {oh:n, estimated:false};
+  }
+  return {oh:4.83, estimated:true};
 }
-// The all-in burdenedRate the page wrote before the direct-rate model.
-function _legacyAllIn(cd, ds){
+// The all-in burdenedRate for a day before the direct-rate model.
+// One round of (burden + the stored $/hr). Not burden rounded, then the $/hr added.
+function _legacyAllIn(cd, ds, entry){
   const hr=parseFloat(cd&&cd.hourly);
   const hrs=parseFloat(cd&&cd.hours)||40;
-  if(!(hr>0)||!(hrs>0)) return '';
+  if(!(hr>0)||!(hrs>0)) return {rate:'', overheadEstimated:false};
   const futa=_csLegacyTaxPct(ds,'legacyFutaPct',parseFloat(cd.futa||0)||0);
   const wc=_csLegacyTaxPct(ds,'legacyWcPct',parseFloat(cd.wc||0)||0);
   const ss=parseFloat(cd.ss||0)||0, med=parseFloat(cd.medicare||0)||0, gl=parseFloat(cd.gl||0)||0;
@@ -6560,13 +6557,12 @@ function _legacyAllIn(cd, ds){
   const benefitsHr=(parseFloat(cd.benefits||0)||0)*12/annual;
   const ptoHr=(parseFloat(cd.ptoDays||0)||0)*8*hr/annual;
   const burden=hr*(1+ss/100+med/100+futa/100+wc/100+gl/100)+benefitsHr+ptoHr;
-  if(!(burden>0)) return '';
-  const live=_legacyItemOverheadPerHour();
-  if(live===null) return (parseFloat(burden.toFixed(2))+_csLegacyOverheadFor(ds)).toFixed(2);
-  return (burden+live).toFixed(2);
+  if(!(burden>0)) return {rate:'', overheadEstimated:false};
+  const oh=_legacyOverheadForFill(entry);
+  return {rate:(burden+oh.oh).toFixed(2), overheadEstimated:oh.estimated};
 }
-function _markRateEstimated(c, src, ds){
-  if(src&&_crewWageOnDate(src, ds).estimated) c.rateEstimated=true;
+function _markRateEstimated(c, src, ds, overheadEstimated){
+  if((src&&_crewWageOnDate(src, ds).estimated)||overheadEstimated) c.rateEstimated=true;
 }
 // opts.forceDirect: stamp with the direct-rate model even on a day before it (today's crew rates,
 // that day's legacy overhead) — used when the owner is added to an older day after the fact.
@@ -6590,10 +6586,10 @@ function jcStampEntryRates(c,ds,opts){
   }
   if(!_costingSettingsLoadOk||!_csIsModel(entry)){
     // Settings not loaded yet (stamped later, on save), or a day before the direct-rate model:
-    // the old all-in stamp. With an itemized overhead list, that is one round of
-    // burden + (list ÷ active hours). Otherwise burden rounded to cents, then the flat constant.
-    c.burdenedRate=_legacyAllIn(cd, ds);
-    if(c.burdenedRate) _markRateEstimated(c, src, ds);
+    // one round of burden + the stored legacyOverheadPerHour. The overhead list is not used.
+    const all=_legacyAllIn(cd, ds, entry);
+    c.burdenedRate=all.rate;
+    if(c.burdenedRate) _markRateEstimated(c, src, ds, all.overheadEstimated);
     return;
   }
   const r=crewLaborRates(cd,entry);
@@ -6603,7 +6599,7 @@ function jcStampEntryRates(c,ds,opts){
   c.overheadRate=oh; c.rateVersion=version;
   if(r.override) c.fieldOverride=true;
   c.burdenedRate=(r.direct+oh).toFixed(2);
-  _markRateEstimated(c, src, ds);
+  _markRateEstimated(c, src, ds, false);
 }
 // Save-time pass: fill a person-day that has no stamp at all, up through today.
 // A saved directRate or burdenedRate is never rewritten, including a legacy all-in

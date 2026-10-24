@@ -284,13 +284,7 @@ test('a pre-model fill matches the all-in the page wrote before 2026-10-20', asy
   await freshCrewAndSettings();
   ev(`window.__cs=JSON.parse(JSON.stringify(COSTING_SETTINGS)); window.__oh=JSON.parse(JSON.stringify(OVERHEAD));`);
   ev(`COSTING_SETTINGS.history[0].legacyFutaPct=2.70; COSTING_SETTINGS.history[0].legacyWcPct=5.61;`);
-  ev(`OVERHEAD={items:[
-    {id:'auto',name:'Progressive Auto',amount:'7488',period:'yr'},
-    {id:'rent',name:'Rent',amount:'2000',period:'mo'},
-    {id:'wave',name:'Wave',amount:'190',period:'yr'},
-    {id:'gl',name:'GL',amount:'1776.88',period:'yr'},
-    {id:'wc',name:'Work Comp',amount:'6756',period:'yr'}
-  ]};`);
+  ev(`OVERHEAD={items:[{id:'pool',name:'Live pool',amount:'86014',period:'yr'}]};`);
   ev(`CREW_HISTORY={
     id_cody:{events:[{type:'pay_change',date:'2026-06-01',rate:25.2,note:'Previous wage was $24.00'}]},
     id_hunter:{events:[{type:'pay_change',date:'2026-08-01',rate:24,oldRate:22,note:'Previous wage was $20.00'}]}
@@ -304,17 +298,25 @@ test('a pre-model fill matches the all-in the page wrote before 2026-10-20', asy
   const may = stamp('Cody Faulkner', 3, '2026-05-15');
   const june = stamp('Cody Faulkner', 3, '2026-06-15');
   const prior = stamp('Hunter Schuler', 4, '2026-07-01');
-  assert.equal(seth.burdenedRate, '42.09');
+  assert.equal(seth.burdenedRate, '42.08');
   assert.equal(seth.directRate, undefined);
   assert.equal(seth.rateEstimated, undefined);
-  assert.equal(hunter.burdenedRate, '33.59');
+  assert.equal(hunter.burdenedRate, '33.58');
   assert.equal(hunter.rateEstimated, undefined);
-  assert.equal(may.burdenedRate, '33.59');
+  assert.equal(may.burdenedRate, '33.58');
   assert.equal(may.rateEstimated, true);
   assert.equal(june.burdenedRate, '35.02');
   assert.equal(june.rateEstimated, undefined);
   assert.equal(prior.burdenedRate, '31.19', 'a structured oldRate beats the note');
   assert.equal(prior.rateEstimated, undefined);
+  const model = stamp('Seth West', 0, '2026-10-21');
+  assert.equal(model.overheadRate, 15.32, 'a model day uses the dated pool, not the $86,014 list');
+  assert.equal(model.directRate, 40.27);
+  assert.equal(model.rateEstimated, undefined);
+  ev(`delete COSTING_SETTINGS.history[0].legacyOverheadPerHour;`);
+  const missing = stamp('Seth West', 0, '2026-10-02');
+  assert.equal(missing.burdenedRate, '42.08', 'a missing stored figure falls back to 4.83, not the list');
+  assert.equal(missing.rateEstimated, true);
   ev(`CREW_HISTORY={id_cody:{events:[{type:'pay_change',date:'2026-06-01',rate:25.2,note:'Raise approved'}]}};`);
   const blank = stamp('Cody Faulkner', 3, '2026-05-01');
   assert.equal(blank.burdenedRate, '35.02', 'no amount in the note keeps today hourly');

@@ -1,5 +1,10 @@
 -- Prior wage before the first pay change, and the pre-2026-10-20 all-in.
 --
+-- A database that already applied this file does not re-run it. Apply
+-- supabase/migrations/20261024220000_legacy_overhead_stored_rate.sql there.
+-- That file is the one that switches a pre-model fill to the stored
+-- legacyOverheadPerHour inside one round (Seth 42.08, Hunter 33.58).
+--
 -- Apply on the TEST project (floorpro-crm-test) after
 --   supabase/migrations/20261024170000_stamp_missing_labor_rates.sql
 -- has already been applied. Do not run this on the live project.
@@ -30,25 +35,19 @@
 --    to cents. That is Seth 40.85 and Hunter 32.60. The itemized overhead
 --    (4.833) with those same current percents rounds to the same two numbers,
 --    so the flat constant alone does not explain the gap. The stored 42.09
---    and 33.59 are the older formula. They were not a bad stamp. Adding the
---    flat 4.83 after rounding that older burden would have stored 42.08 and
---    33.58.
---
---    Spot check, same inputs the page had on those days
---    (SS 6.20, Medicare 1.45, GL 0, weekly hours 40, annual hours 2080,
---    overhead items 7488 + 2000*12 + 190 + 1776.88 + 6756 = 40210.88,
---    four active people x 40 x 52 = 8320, overhead 40210.88/8320 = 4.8330384615,
---    FUTA 2.70, workers' comp 5.61, one round):
---      Seth 30.25, benefits 135/mo, PTO 12 days  -> burdenedRate 42.09
---      Hunter 24.00, benefits 0, PTO 10 days     -> burdenedRate 33.59
---    The flat 4.83 added after rounding the burden is 42.08 and 33.58.
---    Cody at the note wage 24.00 with the same card as Hunter is 33.59,
---    marked estimated. Cody at the recorded 25.20 on or after 2026-06-01
---    is 35.02 and is not estimated.
+--    and 33.59 are the older list (40210.88 / 8320 = 4.8330384615) inside
+--    one round. They were not a bad stamp. This fill does not recompute that
+--    list. It adds the stored legacyOverheadPerHour, 4.83, inside the same
+--    single round: unrounded burden + 4.83, then round to cents. That is
+--    Seth 42.08 and Hunter 33.58. Cody at the note wage 24.00 is 33.58,
+--    marked estimated. Cody at 25.20 on or after 2026-06-01 is 35.02 and is
+--    not estimated. If legacyOverheadPerHour is missing, the same 4.83 is
+--    used and the stamp is marked estimated. The current overhead list is
+--    not consulted.
 --    This file writes legacyFutaPct 2.70 and legacyWcPct 5.61 onto the
 --    costing history entry that already has legacyOverheadPerHour, when
---    those two keys are absent. Days on the direct-rate model are unchanged.
---    With no item list and no legacy tax keys, the flat 4.83 path remains.
+--    those two keys are absent. Days on the direct-rate model still use
+--    that model's overhead pool.
 --
 -- 3. The stamp guard.
 --    set_config(..., true) lived for the whole transaction, so a second
@@ -187,10 +186,9 @@ AS $$
   SELECT private.fp_json_num(private.fp_wage_for_stamp(history, crew_id, full_name, work_date, current_hourly) -> 'hourly');
 $$;
 
--- Overhead $/hr the website folded into burdenedRate before 2026-10-20:
--- the itemized overhead list ÷ (each active person's weekly hours × 52).
--- The owner is included. Inactive people are not. NULL when the list is empty,
--- so the caller keeps the flat legacyOverheadPerHour constant.
+-- Kept so a database that already created this function still replaces cleanly.
+-- Labor stamps do not call it. A pre-model fill uses legacyOverheadPerHour
+-- on the costing set, not this list.
 CREATE OR REPLACE FUNCTION private.fp_legacy_item_overhead(inactive jsonb, items jsonb)
 RETURNS numeric
 LANGUAGE plpgsql
@@ -268,7 +266,6 @@ DECLARE
   stat_mult numeric;
   oh numeric;
   legacy_oh numeric;
-  legacy_eff text := '';
   benefits_hr numeric;
   pto_hr numeric;
   burden numeric;
@@ -279,7 +276,6 @@ DECLARE
   est boolean := false;
   futa_use numeric;
   wc_use numeric;
-  item_oh numeric;
   all_in numeric;
 BEGIN
   IF person IS NULL OR jsonb_typeof(person) <> 'object' THEN
@@ -368,7 +364,6 @@ BEGIN
     IF hr <= 0 THEN
       RETURN person;
     END IF;
-    legacy_oh := 0;
     -- FUTA and workers' comp on the crew row were changed on the direct-rate
     -- cutover. A legacy costing entry can name the percents that were in effect
     -- before that (legacyFutaPct, legacyWcPct). Absent those, the row's percents.
@@ -381,10 +376,6 @@ BEGIN
       eff := e ->> 'effective';
       IF eff IS NULL OR eff > work_date THEN
         CONTINUE;
-      END IF;
-      IF e ? 'legacyOverheadPerHour' AND (legacy_eff = '' OR eff >= legacy_eff) THEN
-        legacy_oh := COALESCE(private.fp_json_num(e -> 'legacyOverheadPerHour'), 0);
-        legacy_eff := eff;
       END IF;
       IF (e ? 'legacyFutaPct' OR e ? 'legacyWcPct') AND (tax_eff = '' OR eff >= tax_eff) THEN
         IF e ? 'legacyFutaPct' THEN
@@ -402,15 +393,18 @@ BEGIN
     IF burden <= 0 THEN
       RETURN person;
     END IF;
-    -- The pre-2026-10-20 page added the live itemized overhead inside one round.
-    -- The flat constant is the fallback, added after the burden is rounded to
-    -- cents, which is what the page does when it has no item list.
-    item_oh := private.fp_legacy_item_overhead(inactive, items);
-    IF item_oh IS NULL THEN
-      all_in := round(round(burden, 2) + legacy_oh, 2);
+    -- Stored $/hr on the costing set in effect that day, inside one round
+    -- with the burden. The current overhead list is not used: it was replaced
+    -- on 2026-10-22 with the full pool (~$86,014), which would price an old
+    -- day near $10.34/hr instead of $4.83. Missing figure: the page seed 4.83,
+    -- and the stamp is estimated.
+    IF entry ? 'legacyOverheadPerHour' AND private.fp_json_num(entry -> 'legacyOverheadPerHour') IS NOT NULL THEN
+      legacy_oh := private.fp_json_num(entry -> 'legacyOverheadPerHour');
     ELSE
-      all_in := round(burden + item_oh, 2);
+      legacy_oh := 4.83;
+      est := true;
     END IF;
+    all_in := round(burden + legacy_oh, 2);
     person := person || jsonb_build_object('burdenedRate', all_in::text);
     IF est THEN
       person := person || jsonb_build_object('rateEstimated', true);

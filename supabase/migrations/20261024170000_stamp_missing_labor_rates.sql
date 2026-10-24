@@ -25,19 +25,20 @@
 --   the history; they come from the current crew_private row. FUTA and workers'
 --   comp on a pre-model day come from legacyFutaPct / legacyWcPct on the costing
 --   entry in effect that day, else the row. The pre-model all-in is one round of
---   burden plus the itemized overhead list divided by active weekly hours × 52
---   (owner included). With no item list, the burden is rounded and then the flat
---   legacyOverheadPerHour is added. Model days get directRate, otRate, baseRate,
+--   burden plus legacyOverheadPerHour on the costing set in effect that day
+--   (4.83 on cs_legacy). The current overhead list is not used. If that field
+--   is missing, the page seed 4.83 is used and the stamp is marked estimated.
+--   Model days get directRate, otRate, baseRate,
 --   statMult, overheadRate, rateVersion, and burdenedRate from the costing entry
 --   in effect on the work date (the latest entry when none is in effect yet).
 --   The owner's field_rate_override is the direct rate. This does not set
 --   overtimeWage. Weekend overtime stays the checkbox the office already uses.
 --
 -- A database that already applied an earlier copy of this file does not
--- re-run it. Apply
--- supabase/migrations/20261024193000_stamp_prior_wage_and_legacy_burden.sql
--- there. That file replaces the stamp functions and does not rewrite a
--- job_records row that already has a stamp.
+-- re-run it. After 20261024193000, apply
+-- supabase/migrations/20261024220000_legacy_overhead_stored_rate.sql
+-- That file replaces the stamp function and does not rewrite a job_records
+-- row that already has a stamp.
 --
 -- What it refuses to change:
 --   An entry that already has a directRate or a burdenedRate, including a legacy
@@ -239,10 +240,9 @@ AS $$
   SELECT private.fp_json_num(private.fp_wage_for_stamp(history, crew_id, full_name, work_date, current_hourly) -> 'hourly');
 $$;
 
--- Overhead $/hr the website folded into burdenedRate before 2026-10-20:
--- the itemized overhead list ÷ (each active person's weekly hours × 52).
--- The owner is included. Inactive people are not. NULL when the list is empty,
--- so the caller keeps the flat legacyOverheadPerHour constant.
+-- Kept so a database that already created this function still replaces cleanly.
+-- Labor stamps do not call it. A pre-model fill uses legacyOverheadPerHour
+-- on the costing set, not this list.
 CREATE OR REPLACE FUNCTION private.fp_legacy_item_overhead(inactive jsonb, items jsonb)
 RETURNS numeric
 LANGUAGE plpgsql
@@ -427,7 +427,6 @@ DECLARE
   stat_mult numeric;
   oh numeric;
   legacy_oh numeric;
-  legacy_eff text := '';
   benefits_hr numeric;
   pto_hr numeric;
   burden numeric;
@@ -438,7 +437,6 @@ DECLARE
   est boolean := false;
   futa_use numeric;
   wc_use numeric;
-  item_oh numeric;
   all_in numeric;
 BEGIN
   IF person IS NULL OR jsonb_typeof(person) <> 'object' THEN
@@ -527,7 +525,6 @@ BEGIN
     IF hr <= 0 THEN
       RETURN person;
     END IF;
-    legacy_oh := 0;
     -- FUTA and workers' comp on the crew row were changed on the direct-rate
     -- cutover. A legacy costing entry can name the percents that were in effect
     -- before that (legacyFutaPct, legacyWcPct). Absent those, the row's percents.
@@ -540,10 +537,6 @@ BEGIN
       eff := e ->> 'effective';
       IF eff IS NULL OR eff > work_date THEN
         CONTINUE;
-      END IF;
-      IF e ? 'legacyOverheadPerHour' AND (legacy_eff = '' OR eff >= legacy_eff) THEN
-        legacy_oh := COALESCE(private.fp_json_num(e -> 'legacyOverheadPerHour'), 0);
-        legacy_eff := eff;
       END IF;
       IF (e ? 'legacyFutaPct' OR e ? 'legacyWcPct') AND (tax_eff = '' OR eff >= tax_eff) THEN
         IF e ? 'legacyFutaPct' THEN
@@ -561,15 +554,18 @@ BEGIN
     IF burden <= 0 THEN
       RETURN person;
     END IF;
-    -- The pre-2026-10-20 page added the live itemized overhead inside one round.
-    -- The flat constant is the fallback, added after the burden is rounded to
-    -- cents, which is what the page does when it has no item list.
-    item_oh := private.fp_legacy_item_overhead(inactive, items);
-    IF item_oh IS NULL THEN
-      all_in := round(round(burden, 2) + legacy_oh, 2);
+    -- Stored $/hr on the costing set in effect that day, inside one round
+    -- with the burden. The current overhead list is not used: it was replaced
+    -- on 2026-10-22 with the full pool (~$86,014), which would price an old
+    -- day near $10.34/hr instead of $4.83. Missing figure: the page seed 4.83,
+    -- and the stamp is estimated.
+    IF entry ? 'legacyOverheadPerHour' AND private.fp_json_num(entry -> 'legacyOverheadPerHour') IS NOT NULL THEN
+      legacy_oh := private.fp_json_num(entry -> 'legacyOverheadPerHour');
     ELSE
-      all_in := round(burden + item_oh, 2);
+      legacy_oh := 4.83;
+      est := true;
     END IF;
+    all_in := round(burden + legacy_oh, 2);
     person := person || jsonb_build_object('burdenedRate', all_in::text);
     IF est THEN
       person := person || jsonb_build_object('rateEstimated', true);
