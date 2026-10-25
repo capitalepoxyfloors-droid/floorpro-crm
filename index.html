@@ -389,6 +389,27 @@
   .pin-key.accent{background:var(--accent);color:#1a1a1a;border-color:var(--accent);}
   .pin-key.accent:hover{filter:brightness(1.1);}
   .pin-key.danger{background:var(--surface2);color:var(--red);}
+  .pin-login-form{text-align:left;}
+  .pin-name{margin:14px 0 12px;}
+  .pin-field-label{display:block;font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:var(--text3);font-family:'DM Mono',monospace;margin-bottom:6px;text-align:left;}
+  .pin-text{width:100%;font-size:16px;padding:10px 12px;border-radius:var(--radius-sm);border:1px solid var(--border2);background:var(--surface2);color:var(--text);font-family:'DM Sans',sans-serif;}
+  .pin-text:focus{outline:2px solid var(--accent);border-color:var(--accent);}
+  #password.pin-text{font-family:'DM Mono',monospace;letter-spacing:3px;}
+  @keyframes onAutoFillStart{from{}to{}}
+  #username:-webkit-autofill,#password:-webkit-autofill{animation-name:onAutoFillStart;animation-duration:1ms;}
+  .pin-entry{display:flex;flex-direction:column;gap:14px;}
+  .pin-pad{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;}
+  .pin-submit{margin-top:10px;width:100%;padding:10px 12px;border-radius:var(--radius-sm);border:1px solid var(--accent);background:var(--accent);color:#1a1a1a;font-weight:700;font-size:14px;cursor:pointer;font-family:'DM Sans',sans-serif;}
+  .pin-submit:hover{filter:brightness(1.05);}
+  #pin-remember-wrap{display:none;align-items:flex-start;gap:8px;margin-top:12px;font-size:13px;color:var(--text);text-align:left;cursor:pointer;line-height:1.35;}
+  #pin-remember-wrap input{margin-top:2px;width:16px;height:16px;flex:0 0 auto;accent-color:var(--accent);}
+  .pin-remember-note{display:none;font-size:11px;color:var(--text3);margin-top:6px;line-height:1.4;text-align:left;}
+  #login-card.pin-step{max-width:560px !important;}
+  @media(min-width:521px){
+    #login-card.pin-step .pin-entry{flex-direction:row;align-items:flex-start;gap:18px;}
+    #login-card.pin-step .pin-typed{flex:1;min-width:180px;}
+    #login-card.pin-step #login-pin{width:210px;flex:0 0 210px;margin-top:22px;}
+  }
   /* Mobile — bottom-sheet modals + full-width calendar */
   @media(max-width:520px){
     .modal-overlay{padding:0;align-items:flex-end;}
@@ -407,6 +428,8 @@
     .tabs{overflow-x:auto;scrollbar-width:none;}.tabs::-webkit-scrollbar{display:none;}
     .form-row{grid-template-columns:1fr;}
     .modal-footer{flex-wrap:wrap;}
+    #login-screen{padding:12px;}
+    #login-card,#login-card.pin-step{max-width:100% !important;padding:28px 16px 20px;}
   }
 </style>
 </head>
@@ -414,37 +437,57 @@
 
 <!-- ══ PIN LOGIN SCREEN ══════════════════════════════════════════════════════ -->
 <div id="login-screen" style="display:none;position:fixed;inset:0;z-index:99999;background:var(--bg);align-items:center;justify-content:center;">
-  <div id="login-card" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:36px 26px 28px;width:100%;max-width:290px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,.5);">
+  <div id="login-card" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:36px 26px 28px;width:100%;max-width:360px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,.5);">
     <div style="font-size:11px;letter-spacing:2.5px;text-transform:uppercase;color:var(--text3);font-family:'DM Mono',monospace;margin-bottom:6px;">FloorPro</div>
     <div style="font-size:26px;font-weight:800;letter-spacing:-.5px;margin-bottom:2px;">CRM</div>
     <div id="login-env" style="display:none;font-size:11px;letter-spacing:.4px;color:#d97706;margin:6px 0 2px;font-family:'DM Mono',monospace;">Test project</div>
-    <!-- Step 1: tap your name. Step 2: your PIN. A phone remembers who used it last. -->
-    <div id="login-who" style="display:none;">
-      <div style="font-size:12px;color:var(--text3);margin-bottom:16px;">Tap your name to sign in</div>
-      <div id="login-roster" style="display:flex;flex-direction:column;gap:7px;max-height:52vh;overflow-y:auto;text-align:left;"></div>
-      <div id="login-roster-error" style="display:none;color:#ef4444;font-size:12px;margin-top:10px;"></div>
-    </div>
-    <div id="login-pin">
-    <div id="login-who-line" style="font-size:13px;color:var(--text);font-weight:600;margin-bottom:2px;"></div>
-    <div id="login-pin-hint" style="font-size:12px;color:var(--text3);margin-bottom:24px;">Enter your PIN</div>
-    <div id="pin-dots" style="display:flex;justify-content:center;gap:14px;margin-bottom:6px;"></div>
-    <div id="pin-error" style="display:none;color:#ef4444;font-size:12px;margin:8px 0 2px;">Incorrect PIN — try again.</div>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:20px;">
-      <button class="pin-key" onclick="pinKey(1)">1</button>
-      <button class="pin-key" onclick="pinKey(2)">2</button>
-      <button class="pin-key" onclick="pinKey(3)">3</button>
-      <button class="pin-key" onclick="pinKey(4)">4</button>
-      <button class="pin-key" onclick="pinKey(5)">5</button>
-      <button class="pin-key" onclick="pinKey(6)">6</button>
-      <button class="pin-key" onclick="pinKey(7)">7</button>
-      <button class="pin-key" onclick="pinKey(8)">8</button>
-      <button class="pin-key" onclick="pinKey(9)">9</button>
-      <button class="pin-key danger" onclick="pinDel()">⌫</button>
-      <button class="pin-key" onclick="pinKey(0)">0</button>
-      <button class="pin-key accent" onclick="pinSubmit()">↵</button>
-    </div>
-    <button type="button" onclick="pinShowRoster()" style="margin-top:16px;background:none;border:none;color:var(--text3);font-size:12px;cursor:pointer;text-decoration:underline;">Not you? Pick a different name</button>
-    </div>
+    <!-- Name can be typed, picked from the list, or filled by a password manager.
+         The PIN field accepts typing, paste, and autofill. The keypad still works. -->
+    <form id="pin-login-form" class="pin-login-form" method="post" action="#" autocomplete="on" novalidate>
+      <div class="pin-name">
+        <label class="pin-field-label" for="username">Name</label>
+        <input class="pin-text" id="username" name="username" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="next" placeholder="Type a name or tap one below" list="login-roster-list"/>
+        <datalist id="login-roster-list"></datalist>
+      </div>
+      <div id="login-who-line" style="display:none;font-size:13px;color:var(--text);font-weight:600;margin:0 0 8px;text-align:center;"></div>
+      <div class="pin-entry">
+        <div class="pin-typed" id="pin-typed">
+          <label class="pin-field-label" for="password">PIN</label>
+          <input class="pin-text" id="password" name="password" type="password" inputmode="numeric" autocomplete="current-password" maxlength="6" enterkeyhint="go" autocapitalize="none" autocorrect="off" spellcheck="false" aria-label="PIN"/>
+          <div id="login-pin-hint" style="font-size:12px;color:var(--text3);margin:8px 0 6px;">Enter your PIN</div>
+          <div id="pin-dots" style="display:flex;gap:10px;margin-bottom:4px;"></div>
+          <div id="pin-error" style="display:none;color:#ef4444;font-size:12px;margin:8px 0 2px;">Incorrect PIN — try again.</div>
+          <label id="pin-remember-wrap" for="pin-remember">
+            <input id="pin-remember" type="checkbox"/>
+            <span>Remember this device</span>
+          </label>
+          <div class="pin-remember-note" id="pin-remember-note">Stays signed in on this browser for weeks, until you sign out or the PIN changes. Crew sign-ins are not remembered.</div>
+          <button type="submit" class="pin-submit">Sign in</button>
+        </div>
+        <div id="login-pin">
+          <div class="pin-pad" aria-label="PIN keypad">
+            <button type="button" class="pin-key" onclick="pinKey(1)">1</button>
+            <button type="button" class="pin-key" onclick="pinKey(2)">2</button>
+            <button type="button" class="pin-key" onclick="pinKey(3)">3</button>
+            <button type="button" class="pin-key" onclick="pinKey(4)">4</button>
+            <button type="button" class="pin-key" onclick="pinKey(5)">5</button>
+            <button type="button" class="pin-key" onclick="pinKey(6)">6</button>
+            <button type="button" class="pin-key" onclick="pinKey(7)">7</button>
+            <button type="button" class="pin-key" onclick="pinKey(8)">8</button>
+            <button type="button" class="pin-key" onclick="pinKey(9)">9</button>
+            <button type="button" class="pin-key danger" onclick="pinDel()">⌫</button>
+            <button type="button" class="pin-key" onclick="pinKey(0)">0</button>
+            <button type="submit" class="pin-key accent" aria-label="Sign in">↵</button>
+          </div>
+        </div>
+      </div>
+      <button type="button" id="login-switch" onclick="pinShowRoster()" style="display:none;margin-top:14px;background:none;border:none;color:var(--text3);font-size:12px;cursor:pointer;text-decoration:underline;width:100%;">Not you? Pick a different name</button>
+      <div id="login-who" style="display:none;margin-top:14px;">
+        <div style="font-size:12px;color:var(--text3);margin-bottom:10px;text-align:center;">Or tap your name</div>
+        <div id="login-roster" style="display:flex;flex-direction:column;gap:7px;max-height:38vh;overflow-y:auto;text-align:left;"></div>
+        <div id="login-roster-error" style="display:none;color:#ef4444;font-size:12px;margin-top:10px;"></div>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -1010,7 +1053,7 @@
             <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);">Session</div>
           </div>
           <div style="padding:16px 18px;">
-            <p style="font-size:13px;color:var(--text2);margin-bottom:12px;">The app locks after 24 hours without use. Everyone signs in with their name and their own PIN; wrong-PIN lockouts and spikes show up as security alerts on the Dashboard and in the Audit Log.</p>
+            <p style="font-size:13px;color:var(--text2);margin-bottom:12px;">Crew devices lock after 24 hours without use. Office and owner can check Remember this device on the sign-in screen to stay signed in on that browser for weeks, until they sign out or that PIN changes. Wrong-PIN lockouts and spikes show up as security alerts on the Dashboard and in the Audit Log.</p>
             <button class="btn btn-ghost" onclick="pinLogout()" style="color:var(--red);border-color:var(--red);">Sign Out</button>
           </div>
         </div>
@@ -3912,7 +3955,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   // A saved Supabase session skips the keypad. Old PIN-only bookmarks are not a session.
   fpBootAuth();
   fpInstallMediaHydrator();
-  // Refresh the 24-hour window on any user interaction
+  // Slide the inactivity window on real use. The timer itself does not.
   ['click','keydown','touchstart','mousemove'].forEach(ev=>
     document.addEventListener(ev, _resetAutoLockTimer, {passive:true})
   );
@@ -9069,12 +9112,22 @@ function renderMaterialCalc(){
 }
 
 // ── PIN AUTH ─────────────────────────────────────────────────────────────────
-// The keypad still accepts a PIN and nothing else. The PIN is checked by the
-// pin-login Edge Function, which returns a real Supabase session. Hashes never
-// come back to the browser. CREW_PIN_SET / OFFICE_USERS only remember who has
-// a PIN, not the digits.
+// The keypad and the PIN field both feed the same pin-login call. The PIN is
+// checked by the pin-login Edge Function, which returns a real Supabase session.
+// Hashes never come back to the browser, and the PIN is never written to the
+// console. CREW_PIN_SET / OFFICE_USERS only remember who has a PIN, not the digits.
+//
+// Why a session used to die overnight: the refresh token is already kept in
+// localStorage (fpAuth_v2), and Supabase sessions on this project have no
+// time-box (auth.sessions.not_after is null). Access tokens last about an hour
+// and are refreshed on the next request. The drop was this page's own 24-hour
+// inactivity lock: fpBootAuth threw the saved refresh token away when the last
+// activity timestamp was older than 24 hours, and an open tab did the same
+// with a timer. Remember this device skips that lock for office and owner.
 let _pinBuf='';
 let _pinBusy=false;
+let _pinSubmitLock=false;
+let _pinFieldTimer=null;
 let CREW_PIN_SET={};   // { crewIdx: true } — whether a personal PIN is on file
 let OFFICE_USERS=[];   // [{id,name,has_pin}] — names only, for the Security page
 function _currentOfficeUser(){ try{ return localStorage.getItem('fpOfficeUser')||''; }catch(e){ return ''; } }
@@ -9089,7 +9142,9 @@ function _applySignedInUserUi(){
 let _sessionAuthed = false;
 let _autoLockTimer  = null;
 let _authGate = null;
-const AUTO_LOCK_MS  = 24 * 60 * 60 * 1000; // 24 hours since last activity
+const AUTO_LOCK_MS  = 24 * 60 * 60 * 1000; // crew, and office/owner who do not check Remember
+const REMEMBER_MS   = 56 * 24 * 60 * 60 * 1000; // 8 weeks of inactivity for a remembered office/owner device
+const _LOCK_CHECK_MS = 12 * 60 * 60 * 1000; // setTimeout cannot wait 8 weeks in one shot (max ~24.8 days)
 
 function _pinAuthKey(){ return 'fpAuth_v2'; }
 function _readAuthBlob(){
@@ -9100,6 +9155,21 @@ function _writeAuthBlob(patch){
   const next=Object.assign({}, prev, patch||{});
   try{ localStorage.setItem(_pinAuthKey(), JSON.stringify(next)); }catch(e){}
   return next;
+}
+
+function _isRememberedBlob(blob){
+  // Crew never keeps a remembered session, even if an old flag is sitting in storage.
+  return !!(blob && blob.remember && blob.kind!=='crew' && blob.role!=='crew');
+}
+function _sessionLimitMs(blob){
+  return _isRememberedBlob(blob) ? REMEMBER_MS : AUTO_LOCK_MS;
+}
+function _clearPinField(){
+  _pinBuf='';
+  const field=document.getElementById('password');
+  if(field) field.value='';
+  const box=document.getElementById('pin-remember');
+  if(box) box.checked=false;
 }
 
 function fpClearLocalAuth(){
@@ -9114,6 +9184,7 @@ function fpClearLocalAuth(){
     localStorage.removeItem('fpClockCrew');
     localStorage.removeItem('fpOfficeUser');
   }catch(e){}
+  _clearPinField();
   document.body.classList.remove('crew-mode');
 }
 
@@ -9123,19 +9194,36 @@ function _saveSession(role){
   _resetAutoLockTimer();
 }
 
-function _resetAutoLockTimer(){
-  if(!_sessionAuthed) return;
+function _lockForInactivity(){
+  fpRevokeServerSession();
+  fpClearLocalAuth();
+  showLoginScreen();
+  showToast('🔒 App locked due to inactivity.');
+}
+
+function _touchSessionTs(){
   try{
     const d=_readAuthBlob();
     if(d && Date.now()-(d.ts||0) > 60000){ d.ts=Date.now(); localStorage.setItem(_pinAuthKey(), JSON.stringify(d)); }
   }catch(e){}
+}
+function _scheduleLockCheck(){
+  if(!_sessionAuthed) return;
   clearTimeout(_autoLockTimer);
-  _autoLockTimer = setTimeout(()=>{
-    fpRevokeServerSession();
-    fpClearLocalAuth();
-    showLoginScreen();
-    showToast('🔒 App locked due to inactivity.');
-  }, AUTO_LOCK_MS);
+  const blob=_readAuthBlob();
+  const limit=_sessionLimitMs(blob);
+  const idle=blob ? (Date.now()-(blob.ts||0)) : limit;
+  if(idle>=limit){ _lockForInactivity(); return; }
+  // A remembered office/owner tab rechecks every 12 hours. A normal session
+  // waits out whatever is left of its 24-hour window (always under the
+  // setTimeout ceiling). This callback must not bump the activity timestamp.
+  const wait=_isRememberedBlob(blob) ? Math.min(_LOCK_CHECK_MS, limit-idle) : (limit-idle);
+  _autoLockTimer=setTimeout(_scheduleLockCheck, Math.max(1000, wait));
+}
+function _resetAutoLockTimer(){
+  if(!_sessionAuthed) return;
+  _touchSessionTs();
+  _scheduleLockCheck();
 }
 
 function fpAuthHeaders(userToken){
@@ -9169,7 +9257,15 @@ async function _fpEnsureSessionInner(){
       headers:{ apikey:SUPABASE_KEY, 'Content-Type':'application/json' },
       body:JSON.stringify({ refresh_token:_refreshToken })
     });
-    if(res.status===400 || res.status===401) return false;
+    if(res.status===400 || res.status===401){
+      // PIN change deletes every refresh token. Drop the local copy too,
+      // including a remembered office session.
+      if(_sessionAuthed || (_readAuthBlob()&&_readAuthBlob().refresh_token)){
+        fpClearLocalAuth();
+        showLoginScreen();
+      }
+      return false;
+    }
     if(!res.ok) return !!(_accessToken && Date.now() < _accessExp);
     const data=await res.json();
     if(!data||!data.access_token) return !!(_accessToken && Date.now() < _accessExp);
@@ -9183,10 +9279,17 @@ async function _fpEnsureSessionInner(){
   }
 }
 
+function _rememberChosen(account){
+  const kind=(account&&account.kind)||'';
+  if(kind!=='owner' && kind!=='office') return false;
+  const box=document.getElementById('pin-remember');
+  return !!(box && box.checked);
+}
 function fpRememberTokens(session, account){
   _accessToken=session.access_token||'';
   _refreshToken=session.refresh_token||'';
   _accessExp=Date.now()+((session.expires_in||3600)*1000);
+  const remember=_rememberChosen(account);
   _writeAuthBlob({
     access_token:_accessToken,
     refresh_token:_refreshToken,
@@ -9196,6 +9299,7 @@ function fpRememberTokens(session, account){
     office_id:account.office_id||null,
     display_name:account.display_name||'',
     role:account.kind==='crew'?'crew':'admin',
+    remember:remember,
     ts:Date.now()
   });
 }
@@ -9239,9 +9343,62 @@ async function _fetchRoster(){
   if(!res.ok||!data||!Array.isArray(data.accounts)) throw new Error((data&&data.error)||'Could not load names.');
   return data.accounts;
 }
+function _normLoginName(s){
+  return String(s||'').trim().toLowerCase().replace(/[\u2010-\u2015]/g,'-').replace(/\s+/g,' ');
+}
+function _matchRoster(raw, allowPrefix){
+  if(!_loginRoster) return null;
+  const q=_normLoginName(raw);
+  if(!q) return null;
+  const byId=_loginRoster.find(a=>String(a.id).toLowerCase()===q);
+  if(byId) return byId;
+  const exact=_loginRoster.filter(a=>_normLoginName(a.label)===q);
+  if(exact.length===1) return exact[0];
+  if(allowPrefix){
+    const starts=_loginRoster.filter(a=>_normLoginName(a.label).startsWith(q));
+    if(starts.length===1) return starts[0];
+  }
+  return null;
+}
+function _fillRosterList(){
+  const dl=document.getElementById('login-roster-list');
+  if(!dl||!_loginRoster) return;
+  dl.innerHTML=_loginRoster.map(a=>{
+    const label=_alEsc(a.label||'').replace(/"/g,'&quot;');
+    return `<option value="${label}"></option>`;
+  }).join('');
+}
+function _setUsernameField(label, force){
+  const el=document.getElementById('username');
+  if(!el) return;
+  if(force || !String(el.value||'').trim()) el.value=label||'';
+}
+function _syncRememberBox(){
+  const wrap=document.getElementById('pin-remember-wrap');
+  const note=document.getElementById('pin-remember-note');
+  const kind=_loginAcct&&_loginAcct.kind;
+  const show=kind==='owner'||kind==='office';
+  if(wrap) wrap.style.display=show?'flex':'none';
+  if(note) note.style.display=show?'block':'none';
+  if(!show){
+    const box=document.getElementById('pin-remember');
+    if(box) box.checked=false;
+  }
+}
 async function pinShowRoster(){
-  _loginAcct=null; _loginStage='pin'; _pinBuf=''; _pinRender();
-  document.getElementById('login-pin').style.display='none';
+  _loginAcct=null; _loginStage='pin';
+  _setPinDigits('');
+  const card=document.getElementById('login-card');
+  if(card) card.classList.remove('pin-step');
+  const pinCol=document.getElementById('login-pin');
+  if(pinCol) pinCol.style.display='none';
+  const whoLine=document.getElementById('login-who-line');
+  if(whoLine) whoLine.style.display='none';
+  const sw=document.getElementById('login-switch');
+  if(sw) sw.style.display='none';
+  const un=document.getElementById('username');
+  if(un) un.value='';
+  _syncRememberBox();
   document.getElementById('login-who').style.display='';
   const host=document.getElementById('login-roster'), err=document.getElementById('login-roster-error');
   err.style.display='none';
@@ -9250,6 +9407,7 @@ async function pinShowRoster(){
     try{ _loginRoster=await _fetchRoster(); }
     catch(e){ host.innerHTML=''; err.textContent='Could not load the sign-in list. Check your signal, then tap here to retry.'; err.style.display='block'; err.onclick=()=>{ err.onclick=null; pinShowRoster(); }; return; }
   }
+  _fillRosterList();
   const tag={ owner:'Owner', office:'Office', crew:'' };
   host.innerHTML=_loginRoster.map((a,i)=>`<button type="button" class="pin-key" onclick="pinPickAccount(${i})" style="aspect-ratio:auto;font-size:15px;padding:12px 14px;text-align:left;display:flex;justify-content:space-between;align-items:center;">
       <span>${_alEsc(a.label||'')}</span><span style="font-size:11px;color:var(--text3);font-weight:500;">${tag[a.kind]||''}</span></button>`).join('')
@@ -9258,19 +9416,35 @@ async function pinShowRoster(){
 function pinPickAccount(i){
   const a=_loginRoster&&_loginRoster[i]; if(!a) return;
   _loginAcct=a; _loginStage='pin';
+  _setUsernameField(a.label||'', true);
   _showPinStep();
 }
 function _pinLen(){ return _loginStage==='pin' ? ((_loginAcct&&_loginAcct.pin_len)||4) : 6; }
-function _showPinStep(){
+function _showPinStep(opts){
+  const keep=!!(opts&&opts.keepPin);
   document.getElementById('login-who').style.display='none';
-  document.getElementById('login-pin').style.display='';
-  document.getElementById('login-who-line').textContent=_loginAcct?_loginAcct.label:'';
+  const pinCol=document.getElementById('login-pin');
+  if(pinCol) pinCol.style.display='';
+  const card=document.getElementById('login-card');
+  if(card) card.classList.add('pin-step');
+  const whoLine=document.getElementById('login-who-line');
+  if(whoLine){ whoLine.style.display=_loginAcct?'block':'none'; whoLine.textContent=_loginAcct?_loginAcct.label:''; }
+  const sw=document.getElementById('login-switch');
+  if(sw) sw.style.display='';
   const hint={ pin:'Enter your PIN', newpin:'Choose a new 6-digit code', confirm:'Enter the new code again' }[_loginStage];
   document.getElementById('login-pin-hint').textContent=hint;
-  _pinBuf='';
   const dots=document.getElementById('pin-dots');
   dots.innerHTML=Array.from({length:_pinLen()},(_,i)=>`<div class="pin-dot" id="pd${i}"></div>`).join('');
+  const field=document.getElementById('password');
+  if(field){
+    field.maxLength=_pinLen();
+    field.setAttribute('autocomplete', _loginStage==='pin'?'current-password':'new-password');
+    if(!keep) field.value='';
+  }
+  if(keep) _pullPinFromField();
+  else _pinBuf='';
   _pinRender();
+  _syncRememberBox();
 }
 
 async function fpWhoAmI(){
@@ -9329,7 +9503,7 @@ function fpApplyAccount(account){
 
 async function fpBootAuth(){
   const blob=_readAuthBlob();
-  const fresh=!!(blob && blob.refresh_token && (Date.now()-(blob.ts||0) < AUTO_LOCK_MS));
+  const fresh=!!(blob && blob.refresh_token && (Date.now()-(blob.ts||0) < _sessionLimitMs(blob)));
   if(!fresh){
     if(blob && blob.refresh_token) fpClearLocalAuth();
     showLoginScreen();
@@ -9377,17 +9551,27 @@ function fpRevokeServerSession(){
 }
 
 async function showLoginScreen(){
-  _pinBuf=''; _pinBusy=false; _loginOldPin=''; _loginNewPin='';
+  _pinBuf=''; _pinBusy=false; _pinSubmitLock=false; _loginOldPin=''; _loginNewPin='';
   const err=document.getElementById('pin-error');
-  if(err){ err.style.display='none'; err.textContent='Incorrect PIN — try again.'; }
+  if(err){ err.style.display='none'; err.style.color=''; err.textContent='Incorrect PIN — try again.'; }
   const ls=document.getElementById('login-screen');
   if(ls) ls.style.display='flex';
+  const box=document.getElementById('pin-remember');
+  if(box) box.checked=false;
   const last=_rememberedAcct();
-  if(last&&last.id){ _loginAcct=last; _loginStage='pin'; _showPinStep(); }
-  else pinShowRoster();
+  if(last&&last.id){
+    _loginAcct=last; _loginStage='pin';
+    _setUsernameField(last.label||'', true);
+    _showPinStep();
+    if(!_loginRoster){ _fetchRoster().then(list=>{ _loginRoster=list; _fillRosterList(); }).catch(()=>{}); }
+  } else pinShowRoster();
 }
 
 function _hideLoginScreen(){
+  clearTimeout(_pinFieldTimer);
+  _pinBuf='';
+  const field=document.getElementById('password');
+  if(field) field.value='';
   document.getElementById('login-screen').style.display='none';
 }
 
@@ -9398,31 +9582,122 @@ function _pinRender(){
   }
 }
 
+function _setPinDigits(digits){
+  const len=_pinLen();
+  _pinBuf=String(digits||'').replace(/\D/g,'').slice(0,len);
+  const field=document.getElementById('password');
+  if(field && field.value!==_pinBuf) field.value=_pinBuf;
+  _pinRender();
+}
+function _pullPinFromField(){
+  const field=document.getElementById('password');
+  _setPinDigits(field?field.value:'');
+}
 function pinKey(d){
-  if(_pinBusy||!_loginAcct||_pinBuf.length>=_pinLen()) return;
-  _pinBuf+=String(d); _pinRender();
+  if(_pinBusy||_pinSubmitLock||!_loginAcct||_pinBuf.length>=_pinLen()) return;
+  _setPinDigits(_pinBuf+String(d));
   if(_pinBuf.length>=_pinLen()) setTimeout(pinSubmit,180);
 }
 
-function pinDel(){ if(_pinBusy) return; if(_pinBuf.length){_pinBuf=_pinBuf.slice(0,-1);_pinRender();} }
+function pinDel(){ if(_pinBusy||_pinSubmitLock) return; if(_pinBuf.length) _setPinDigits(_pinBuf.slice(0,-1)); }
 
-// A keyboard works the same as tapping the keypad: digits (top row or number pad),
-// Backspace, Enter. Only while the PIN step of the sign-in screen is showing.
+function _adoptTypedName(exactOnly){
+  const el=document.getElementById('username');
+  if(!el) return null;
+  const match=_matchRoster(el.value, !exactOnly);
+  if(!match) return null;
+  if(exactOnly && _normLoginName(el.value)!==_normLoginName(match.label) && _normLoginName(el.value)!==String(match.id).toLowerCase()) return null;
+  if(!_loginAcct || match.id!==_loginAcct.id){
+    _loginAcct=match;
+    if(_loginStage!=='pin' && _loginStage!=='newpin' && _loginStage!=='confirm') _loginStage='pin';
+    _showPinStep({keepPin:true});
+  } else {
+    _syncRememberBox();
+  }
+  return match;
+}
+function _typedNameAgrees(){
+  if(!_loginAcct) return false;
+  const el=document.getElementById('username');
+  const raw=_normLoginName(el&&el.value);
+  if(!raw) return true;
+  return raw===_normLoginName(_loginAcct.label) || raw===String(_loginAcct.id).toLowerCase();
+}
+function pinPasswordEdited(){
+  const ls=document.getElementById('login-screen');
+  if(!ls||ls.style.display==='none'||_pinBusy||_pinSubmitLock) return;
+  // Keep the dots in step with typing, paste, and autofill. Submit stays on
+  // Enter, the Sign in button, or the keypad — a filled field must not race
+  // ahead of the Remember checkbox or a username the manager fills next.
+  if(!_loginAcct || !_typedNameAgrees()) _adoptTypedName(true);
+  _pullPinFromField();
+}
+function pinUsernameEdited(){
+  const ls=document.getElementById('login-screen');
+  if(!ls||ls.style.display==='none'||_pinBusy||_pinSubmitLock) return;
+  if(_adoptTypedName(true)) return;
+  _syncRememberBox();
+}
+function pinFormSubmit(e){
+  if(e && e.preventDefault) e.preventDefault();
+  const el=document.getElementById('username');
+  const raw=el?el.value.trim():'';
+  const pinCol=document.getElementById('login-pin');
+  const onPin=pinCol && pinCol.style.display!=='none';
+  const needsName=!_loginAcct || (raw && !_typedNameAgrees());
+  if(!onPin || needsName){
+    if(!_loginRoster){
+      _fetchRoster().then(list=>{
+        _loginRoster=list; _fillRosterList();
+        if(_adoptTypedName(false)){ _pullPinFromField(); pinSubmit(); }
+        else _pinFail('Pick a name from the list.');
+      }).catch(()=>{ _pinFail('Could not load the sign-in list. Check your signal and try again.'); });
+      return false;
+    }
+    if(!_adoptTypedName(false)){ if(raw) _pinFail('Pick a name from the list.'); return false; }
+  }
+  _pullPinFromField();
+  pinSubmit();
+  return false;
+}
+
+// Digits, Backspace, and Enter work like the keypad when focus is not already
+// in the name or PIN field. Those fields handle their own typing, paste, and autofill.
 document.addEventListener('keydown',e=>{
   const ls=document.getElementById('login-screen');
   if(!ls||ls.style.display==='none') return;
-  const step=document.getElementById('login-pin');
-  if(!step||step.style.display==='none') return;
+  const pinCol=document.getElementById('login-pin');
+  if(!pinCol||pinCol.style.display==='none') return;
+  const t=e.target;
+  if(t && (t.tagName==='INPUT' || t.tagName==='TEXTAREA' || t.tagName==='SELECT')) return;
   if(e.ctrlKey||e.metaKey||e.altKey) return;
   if(/^[0-9]$/.test(e.key)){ e.preventDefault(); pinKey(+e.key); }
   else if(e.key==='Backspace'){ e.preventDefault(); pinDel(); }
   else if(e.key==='Enter'){ e.preventDefault(); pinSubmit(); }
 });
+(function(){
+  const form=document.getElementById('pin-login-form');
+  if(form) form.addEventListener('submit', pinFormSubmit);
+  const pw=document.getElementById('password');
+  if(pw){
+    pw.addEventListener('input', pinPasswordEdited);
+    pw.addEventListener('change', pinPasswordEdited);
+    pw.addEventListener('animationstart', e=>{ if(e.animationName==='onAutoFillStart') pinPasswordEdited(); });
+  }
+  const un=document.getElementById('username');
+  if(un){
+    un.addEventListener('change', pinUsernameEdited);
+    un.addEventListener('input', pinUsernameEdited);
+    un.addEventListener('animationstart', e=>{ if(e.animationName==='onAutoFillStart') pinUsernameEdited(); });
+  }
+})();
 
 async function pinSubmit(){
-  if(_pinBusy||!_loginAcct||_pinBuf.length!==_pinLen()) return;
+  if(_pinSubmitLock||_pinBusy||!_loginAcct||_pinBuf.length!==_pinLen()) return;
+  _pinSubmitLock=true;
   const entered=_pinBuf;
   const err=document.getElementById('pin-error');
+  try{
   // Owner/office first sign-in after cutover: pick a new 6-digit code, typed twice.
   if(_loginStage==='newpin'){ _loginNewPin=entered; _loginStage='confirm'; _showPinStep(); return; }
   if(_loginStage==='confirm'&&entered!==_loginNewPin){
@@ -9430,7 +9705,6 @@ async function pinSubmit(){
   }
   _pinBusy=true;
   if(err){ err.textContent='Checking…'; err.style.display='block'; }
-  try{
     const result=_loginStage==='confirm'
       ? await fpPinLogin(_loginAcct.id, _loginOldPin, _loginNewPin)
       : await fpPinLogin(_loginAcct.id, entered);
@@ -9455,6 +9729,7 @@ async function pinSubmit(){
     _pinFail('Could not reach the server. Check your signal and try again.');
   }finally{
     _pinBusy=false;
+    _pinSubmitLock=false;
   }
 }
 
@@ -9484,7 +9759,7 @@ function _pinSuccess(account){
 }
 
 function _pinFail(message){
-  _pinBuf=''; _pinRender();
+  _setPinDigits('');
   const err=document.getElementById('pin-error');
   if(err){ err.style.color=''; err.textContent=message||'Incorrect PIN — try again.'; err.style.display='block'; }
   const card=document.getElementById('login-card');
@@ -9492,11 +9767,19 @@ function _pinFail(message){
   setTimeout(()=>{ if(err && err.textContent!=='Checking…') err.style.display='none'; },2500);
 }
 
-function pinLogout(){
+async function pinLogout(){
   if(!confirm('Lock the app and return to the sign-in screen?')) return;
-  fpRevokeServerSession();
+  try{ await fpEnsureSession(); }catch(e){}
+  const token=_accessToken;
   fpClearLocalAuth();
   showLoginScreen();
+  if(!token) return;
+  try{
+    await fetch(`${SUPABASE_URL}/auth/v1/logout?scope=local`,{
+      method:'POST',
+      headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+token, 'Content-Type':'application/json' }
+    });
+  }catch(e){}
 }
 
 async function pinSaveSettings(){
