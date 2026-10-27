@@ -78,6 +78,8 @@ const dom = new JSDOM(html, {
       }
       if (u.includes('/functions/v1/pin-admin')) {
         if (String(auth).includes('stale-nonce')) return json({ error: 'no' }, 401);
+        if (String(auth).includes('whoami-down')) return json({ error: 'down' }, 503);
+        if (String(auth).includes('owner-token')) return json({ kind: 'owner', display_name: 'Will Bradford', office_id: null, crew_idx: null });
         return json({ kind: 'office', display_name: 'Remember Test Office', office_id: 'tb', crew_idx: null });
       }
       if (u.includes('/logout')) return json({});
@@ -135,6 +137,7 @@ for (let i = 0; i < 40 && $('login-screen').style.display !== 'none'; i++) await
 if ($('login-screen').style.display !== 'none') fail('office typed submit did not sign in');
 let b = blob();
 if (!b || b.remember !== true || b.refresh_token !== 'refresh-office' || b.kind !== 'office') fail('office remember blob ' + JSON.stringify(b));
+if ($('sb-user-name').textContent !== 'Remember Test Office' || $('sb-user-role').textContent !== 'Office') fail('sidebar did not come from the session ' + $('sb-user-name').textContent + ' / ' + $('sb-user-role').textContent);
 if (pw.value !== '') fail('PIN left in the field after sign-in');
 if (logs.some(l => l.includes('999999') || l.includes('1111'))) fail('PIN was written to the console');
 
@@ -201,6 +204,7 @@ await bootFresh({
 b = blob();
 if ($('login-screen').style.display !== 'none' || evalFn('_sessionAuthed') !== true) fail('remembered office was locked at 25h ' + JSON.stringify(b) + ' authed ' + evalFn('_sessionAuthed'));
 if (!b || b.refresh_token !== 'refresh-rotated' || b.access_token !== 'access-new' || b.remember !== true) fail('refresh did not rotate ' + JSON.stringify(b));
+if ($('sb-user-name').textContent !== 'Remember Test Office') fail('remembered boot showed ' + $('sb-user-name').textContent);
 
 // Eight weeks idle still locks a remembered device.
 b.ts = Date.now() - 57 * 24 * 3600 * 1000;
@@ -228,6 +232,86 @@ w.localStorage.setItem('fpAuth_v2', JSON.stringify({
 await evalFn('fpBootAuth()');
 await sleep(40);
 if ($('login-screen').style.display !== 'flex' || w.localStorage.getItem('fpAuth_v2')) fail('dead refresh was kept');
+
+// whoami down must not open the board on the stored name.
+let loads = 0;
+evalFn('loadAllFromSupabase = async function(){ window.__loads = (window.__loads||0)+1; }');
+await bootFresh({
+  refresh_token: 'refresh-office', access_token: 'whoami-down', expires_at: Date.now() + 3600000,
+  kind: 'owner', role: 'admin', remember: true, ts: Date.now(),
+  display_name: 'Will Bradford',
+});
+if ($('login-screen').style.display !== 'flex' || evalFn('_sessionAuthed') === true || w.__loads) fail('whoami failure stayed on the board ' + $('sb-user-name').textContent + ' loads ' + w.__loads);
+if ($('sb-user-name').textContent) fail('placeholder name left up: ' + $('sb-user-name').textContent);
+
+// A leftover office name must not override a session whoami just confirmed.
+w.localStorage.setItem('fpOfficeUser', 'PM - Salvation Army');
+await bootFresh({
+  refresh_token: 'refresh-office', access_token: 'access-office', expires_at: Date.now() + 3600000,
+  kind: 'office', role: 'admin', remember: true, ts: Date.now(),
+  display_name: 'Remember Test Office', office_id: 'tb',
+});
+if ($('login-screen').style.display !== 'none' || $('sb-user-name').textContent !== 'Remember Test Office') fail('proven session lost to a stale office name: ' + $('sb-user-name').textContent + ' screen ' + $('login-screen').style.display);
+if (w.localStorage.getItem('fpOfficeUser') !== 'Remember Test Office') fail('office name was not replaced from the session');
+
+// Cached office name with an owner token is not a session for that name.
+w.localStorage.setItem('fpOfficeUser', 'PM - Salvation Army');
+await bootFresh({
+  refresh_token: 'refresh-office', access_token: 'owner-token', expires_at: Date.now() + 3600000,
+  kind: 'office', role: 'admin', remember: true, ts: Date.now(),
+  display_name: 'PM - Salvation Army', office_id: 'pm',
+});
+if ($('login-screen').style.display !== 'flex' || evalFn('_sessionAuthed') === true || w.localStorage.getItem('fpAuth_v2')) fail('mismatched identity was shown ' + $('sb-user-name').textContent);
+
+// Access token whose own exp has passed must not be trusted just because expires_at is in the future.
+function fakeJwt(payload) {
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  return b64({ alg: 'none', typ: 'JWT' }) + '.' + b64(payload) + '.x';
+}
+await bootFresh({
+  refresh_token: 'dead', access_token: fakeJwt({ sub: 'user-1', exp: Math.floor(Date.now() / 1000) - 120 }),
+  expires_at: Date.now() + 3600000,
+  kind: 'office', role: 'admin', remember: true, ts: Date.now(),
+  display_name: 'Remember Test Office', office_id: 'tb', user_id: 'user-1',
+});
+if ($('login-screen').style.display !== 'flex' || w.localStorage.getItem('fpAuth_v2')) fail('expired jwt with a future expires_at stayed signed in');
+
+// A signed-in data call that comes back 401 returns to the PIN screen.
+await bootFresh({
+  refresh_token: 'refresh-office', access_token: 'access-office', expires_at: Date.now() + 3600000,
+  kind: 'office', role: 'admin', remember: true, ts: Date.now(),
+  display_name: 'Remember Test Office', office_id: 'tb',
+});
+if ($('login-screen').style.display !== 'none') fail('setup sign-in for 401 test failed');
+const origFetch = w.fetch;
+w.fetch = async (url, opts = {}) => {
+  const u = String(url);
+  if (u.includes('/rest/v1/')) return json({ message: 'JWT expired' }, 401);
+  return json({});
+};
+await evalFn('sb').get('jobs');
+await sleep(30);
+w.fetch = origFetch;
+if ($('login-screen').style.display !== 'flex' || evalFn('_sessionAuthed') === true) fail('401 left the board signed in');
+
+// One Sign in gesture works when the password manager commits on mousedown,
+// which used to move the button and swallow the click.
+evalFn('pinLogout = async function(){ fpClearLocalAuth(); showLoginScreen(); }');
+await evalFn('pinLogout()');
+await sleep(40);
+const btn = w.document.querySelector('#pin-login-form button.pin-submit');
+un.value = '';
+pw.value = '';
+btn.dispatchEvent(new w.MouseEvent('mousedown', { bubbles: true }));
+un.value = 'Remember Test Office';
+pw.value = '999999';
+un.dispatchEvent(new w.Event('change', { bubbles: true }));
+pw.dispatchEvent(new w.Event('change', { bubbles: true }));
+btn.dispatchEvent(new w.MouseEvent('mouseup', { bubbles: true }));
+for (let i = 0; i < 40 && $('login-screen').style.display !== 'none'; i++) await sleep(25);
+if ($('login-screen').style.display !== 'none') fail('first sign-in gesture did not submit');
+b = blob();
+if (!b || b.kind !== 'office' || b.refresh_token !== 'refresh-office') fail('gesture sign-in blob ' + JSON.stringify(b));
 
 if (errors.length) fail('console errors:\n' + errors.join('\n'));
 if (process.exitCode) {

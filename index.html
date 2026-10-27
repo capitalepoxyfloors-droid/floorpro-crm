@@ -440,7 +440,7 @@
 <body>
 
 <!-- ══ PIN LOGIN SCREEN ══════════════════════════════════════════════════════ -->
-<div id="login-screen" style="display:none;position:fixed;inset:0;z-index:99999;background:var(--bg);align-items:center;justify-content:center;">
+<div id="login-screen" style="display:flex;position:fixed;inset:0;z-index:99999;background:var(--bg);align-items:center;justify-content:center;">
   <div id="login-card" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:36px 26px 28px;width:100%;max-width:360px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,.5);">
     <div style="font-size:11px;letter-spacing:2.5px;text-transform:uppercase;color:var(--text3);font-family:'DM Mono',monospace;margin-bottom:6px;">FloorPro</div>
     <div style="font-size:26px;font-weight:800;letter-spacing:-.5px;margin-bottom:2px;">CRM</div>
@@ -608,8 +608,8 @@
     </nav>
     <div class="sidebar-bottom">
       <div class="user-row">
-        <div class="avatar" id="sb-user-avatar">WB</div>
-        <div><div class="user-name" id="sb-user-name">Will Bradford</div><div class="user-role" id="sb-user-role">Owner</div></div>
+        <div class="avatar" id="sb-user-avatar"></div>
+        <div><div class="user-name" id="sb-user-name"></div><div class="user-role" id="sb-user-role"></div></div>
       </div>
       <button type="button" class="sb-sign-out" id="sb-sign-out" onclick="pinLogout()" title="Sign out of this browser">Sign out</button>
     </div>
@@ -2114,10 +2114,25 @@ if (_fpUseTest) {
   if (_fpEnvNote) _fpEnvNote.style.display = 'block';
 }
 // Data calls send the signed-in user's access token. Until the first sign-in
-// (and in the local tests) there is no token.
+// (and in the local tests) there is no token. A 401 means that token is no
+// longer a session — go back to the PIN screen instead of painting empty lists.
+// A 403 is a permission refusal for a still-signed-in user (row security), not
+// a dead session, so it must not sign them out.
 let _accessToken = '';
 let _refreshToken = '';
 let _accessExp = 0;
+let _rejectingAuth = false;
+function _sessionRejected(){
+  if(_rejectingAuth) return;
+  _rejectingAuth=true;
+  fpClearLocalAuth();
+  showLoginScreen();
+  if(typeof showToast==='function') showToast('Sign in again to continue.');
+}
+function _sbRejectStatus(res){
+  if(res&&res.status===401){ _sessionRejected(); return true; }
+  return false;
+}
 
 // ── GEOAPIFY CONFIG (address autocomplete + geocoding) ──────────────────────────
 // Free tier, no credit card: sign up at https://myprojects.geoapify.com, create a
@@ -2135,49 +2150,69 @@ const sb = {
     };
   },
   async get(table,params=''){
+    const authed=_sessionAuthed;
     await fpEnsureSession();
+    if(authed&&!_accessToken){ _sessionRejected(); return []; }
     const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}${params?'?'+params:''}`,{headers:this.headers});
+    if(authed&&_sbRejectStatus(res)) return [];
     return res.ok?res.json():[];
   },
   // Same read as get(), but keeps HTTP/network failure distinct from a real empty table.
   // Maintenance that deletes or inserts rows must use this — get()'s [] hides a failed load.
   async getResult(table,params=''){
     try{
+      const authed=_sessionAuthed;
       await fpEnsureSession();
+      if(authed&&!_accessToken){ _sessionRejected(); return {ok:false, rows:[]}; }
       const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}${params?'?'+params:''}`,{headers:this.headers});
-      if(!res.ok) return {ok:false, rows:[]};
+      if((authed&&_sbRejectStatus(res))||!res.ok) return {ok:false, rows:[]};
       const rows=await res.json();
       return {ok:true, rows:Array.isArray(rows)?rows:[]};
     }catch(e){ return {ok:false, rows:[]}; }
   },
   async insert(table,data){
+    const authed=_sessionAuthed;
     await fpEnsureSession();
+    if(authed&&!_accessToken){ _sessionRejected(); return null; }
     const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}`,{method:'POST',headers:this.headers,body:JSON.stringify(data)});
+    if(authed&&_sbRejectStatus(res)) return null;
     return res.ok?res.json():null;
   },
   async update(table,id,data){
+    const authed=_sessionAuthed;
     await fpEnsureSession();
+    if(authed&&!_accessToken){ _sessionRejected(); return false; }
     const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`,{method:'PATCH',headers:this.headers,body:JSON.stringify(data)});
+    if(authed&&_sbRejectStatus(res)) return false;
     return res.ok;
   },
   async delete(table,id){
+    const authed=_sessionAuthed;
     await fpEnsureSession();
+    if(authed&&!_accessToken){ _sessionRejected(); return false; }
     const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`,{method:'DELETE',headers:this.headers});
+    if(authed&&_sbRejectStatus(res)) return false;
     return res.ok;
   },
   async deleteWhere(table,filters){
+    const authed=_sessionAuthed;
     await fpEnsureSession();
+    if(authed&&!_accessToken){ _sessionRejected(); return false; }
     const params=Object.entries(filters).map(([k,v])=>`${k}=eq.${encodeURIComponent(v)}`).join('&');
     const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`,{method:'DELETE',headers:this.headers});
+    if(authed&&_sbRejectStatus(res)) return false;
     return res.ok;
   },
   async upsert(table,data,onConflict='key'){
+    const authed=_sessionAuthed;
     await fpEnsureSession();
+    if(authed&&!_accessToken){ _sessionRejected(); return null; }
     const res=await fetch(`${SUPABASE_URL}/rest/v1/${table}?on_conflict=${onConflict}`,{
       method:'POST',
       headers:{...this.headers,'Prefer':'resolution=merge-duplicates,return=representation'},
       body:JSON.stringify(data)
     });
+    if(authed&&_sbRejectStatus(res)) return null;
     return res.ok?res.json():null;
   },
   async setKV(key,value){
@@ -2185,14 +2220,17 @@ const sb = {
     // erase the server row and then fail to put the new copy back. Timeout-guarded (see
     // _fetchWithTimeout) so a stalled job-site connection surfaces an error instead of hanging.
     let res;
+    const authed=_sessionAuthed;
     try{
       await fpEnsureSession();
+      if(authed&&!_accessToken){ _sessionRejected(); return null; }
       res=await _fetchWithTimeout(`${SUPABASE_URL}/rest/v1/settings?on_conflict=key`,{
         method:'POST',
         headers:{...this.headers,'Prefer':'resolution=merge-duplicates,return=representation'},
         body:JSON.stringify({key,value})
       },25000);
     }catch(e){ throw (e.name==='AbortError'?new Error('Save timed out — check your signal and try again.'):e); }
+    if(authed&&_sbRejectStatus(res)) return null;
     return res.ok?res.json():null;
   },
   async getKV(key){
@@ -2206,11 +2244,13 @@ const sb = {
     // {ok:true, value:string|null} — value null means the key has no row (safe to insert).
     // {ok:false, value:null} means timeout or HTTP error. Do not overwrite the server on ok:false.
     let res;
+    const authed=_sessionAuthed;
     try{
       await fpEnsureSession();
+      if(authed&&!_accessToken){ _sessionRejected(); return {ok:false, value:null}; }
       res=await _fetchWithTimeout(`${SUPABASE_URL}/rest/v1/settings?key=eq.${encodeURIComponent(key)}`,{headers:this.headers},25000);
     }catch(e){ return {ok:false, value:null}; }
-    if(!res.ok) return {ok:false, value:null};
+    if((authed&&_sbRejectStatus(res))||!res.ok) return {ok:false, value:null};
     let rows;
     try{ rows=await res.json(); }catch(e){ return {ok:false, value:null}; }
     return {ok:true, value:(rows&&rows.length)?rows[rows.length-1].value:null};
@@ -2218,15 +2258,17 @@ const sb = {
   // PostgREST RPC. data is the function's JSON result (often an array), or null.
   async rpc(fn, args){
     let res;
+    const authed=_sessionAuthed;
     try{
       await fpEnsureSession();
+      if(authed&&!_accessToken){ _sessionRejected(); return {ok:false, data:null}; }
       res=await _fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/${encodeURIComponent(fn)}`,{
         method:'POST',
         headers:this.headers,
         body:JSON.stringify(args||{})
       },25000);
     }catch(e){ return {ok:false, data:null}; }
-    if(!res.ok) return {ok:false, data:null};
+    if((authed&&_sbRejectStatus(res))||!res.ok) return {ok:false, data:null};
     try{
       const text=await res.text();
       return {ok:true, data:text?JSON.parse(text):null};
@@ -3955,9 +3997,9 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.getElementById('pto-start').value=today;
   document.getElementById('pto-end').value=today;
   document.getElementById('pto-slot-date').value=today;
-  // Render dashboard immediately
-  renderDashboard();
-  // A saved Supabase session skips the keypad. Old PIN-only bookmarks are not a session.
+  // The board stays behind the sign-in screen until fpBootAuth proves the saved
+  // session. Painting it first showed the placeholder owner and an empty
+  // schedule whenever that proof failed.
   fpBootAuth();
   fpInstallMediaHydrator();
   // Slide the inactivity window on real use. The timer itself does not.
@@ -9136,15 +9178,32 @@ let _pinFieldTimer=null;
 let CREW_PIN_SET={};   // { crewIdx: true } — whether a personal PIN is on file
 let OFFICE_USERS=[];   // [{id,name,has_pin}] — names only, for the Security page
 function _currentOfficeUser(){ try{ return localStorage.getItem('fpOfficeUser')||''; }catch(e){ return ''; } }
-function _applySignedInUserUi(){
-  const office=_currentOfficeUser();
+// The sidebar name is the person whoami just confirmed. It is not the HTML
+// placeholder and not a leftover fpOfficeUser from somebody else on this browser.
+let _signedInAccount=null;
+function _applySignedInUserUi(account){
+  if(account===undefined) account=_signedInAccount;
+  _signedInAccount=account||null;
   const nm=document.getElementById('sb-user-name'), rl=document.getElementById('sb-user-role'), av=document.getElementById('sb-user-avatar');
-  if(nm) nm.textContent=office||'Will Bradford';
-  if(rl) rl.textContent=office?'Office':'Owner';
-  if(av) av.textContent=office?(office.replace(/[^A-Za-z ]/g,' ').trim().split(/\s+/).map(w=>w[0]).join('').slice(0,2).toUpperCase()||'OF'):'WB';
-  const sec=document.getElementById('nav-pinsettings'); if(sec) sec.style.display=office?'none':'';
+  const sec=document.getElementById('nav-pinsettings');
+  if(!account){
+    if(nm) nm.textContent='';
+    if(rl) rl.textContent='';
+    if(av) av.textContent='';
+    if(sec) sec.style.display='';
+    return;
+  }
+  const name=account.display_name||(account.kind==='owner'?'Owner':account.kind==='office'?'Office':'Crew');
+  const role=account.kind==='office'?'Office':account.kind==='crew'?'Crew':'Owner';
+  if(nm) nm.textContent=name;
+  if(rl) rl.textContent=role;
+  const initials=name.replace(/[^A-Za-z ]/g,' ').trim().split(/\s+/).filter(Boolean).map(w=>w[0]).join('').slice(0,2).toUpperCase();
+  if(av) av.textContent=initials||'•';
+  if(sec) sec.style.display=(account.kind==='office'||account.kind==='crew')?'none':'';
 }
 let _sessionAuthed = false;
+let _authEpoch = 0;
+let _sessionUserId = '';
 let _autoLockTimer  = null;
 let _authGate = null;
 const AUTO_LOCK_MS  = 24 * 60 * 60 * 1000; // crew, and office/owner who do not check Remember
@@ -9155,11 +9214,42 @@ function _pinAuthKey(){ return 'fpAuth_v2'; }
 function _readAuthBlob(){
   try{ return JSON.parse(localStorage.getItem(_pinAuthKey())||'null'); }catch(e){ return null; }
 }
-function _writeAuthBlob(patch){
+function _writeAuthBlob(patch, opts){
+  const epoch=_authEpoch;
   const prev=_readAuthBlob()||{};
-  const next=Object.assign({}, prev, patch||{});
+  const replace=!!(opts&&opts.replace);
+  // A second person on this same browser profile must not have their token
+  // overwritten by this tab's refresh, or the other way around.
+  if(!replace && prev.user_id && patch && patch.user_id && prev.user_id!==patch.user_id){
+    return {conflict:true};
+  }
+  const next=replace ? Object.assign({}, patch||{}) : Object.assign({}, prev, patch||{});
+  if(epoch!==_authEpoch) return null;
   try{ localStorage.setItem(_pinAuthKey(), JSON.stringify(next)); }catch(e){}
   return next;
+}
+function _jwtPayload(token){
+  try{
+    const part=String(token||'').split('.')[1];
+    if(!part) return null;
+    let b64=part.replace(/-/g,'+').replace(/_/g,'/');
+    const pad=b64.length%4;
+    if(pad) b64+='='.repeat(4-pad);
+    return JSON.parse(atob(b64));
+  }catch(e){ return null; }
+}
+function _jwtSub(token){
+  const p=_jwtPayload(token);
+  return (p&&p.sub)||'';
+}
+function _accessStillFresh(){
+  if(!_accessToken) return false;
+  const now=Date.now();
+  const p=_jwtPayload(_accessToken);
+  if(p&&p.exp&&now>=(p.exp*1000)-60000) return false;
+  if(_accessExp&&now>=_accessExp-60000) return false;
+  if(!_accessExp&&!(p&&p.exp)) return false;
+  return true;
 }
 
 function _isRememberedBlob(blob){
@@ -9178,10 +9268,13 @@ function _clearPinField(){
 }
 
 function fpClearLocalAuth(){
+  _authEpoch++;
   _accessToken='';
   _refreshToken='';
   _accessExp=0;
   _sessionAuthed=false;
+  _sessionUserId='';
+  _signedInAccount=null;
   clearTimeout(_autoLockTimer);
   try{
     localStorage.removeItem(_pinAuthKey());
@@ -9191,6 +9284,23 @@ function fpClearLocalAuth(){
   }catch(e){}
   _clearPinField();
   document.body.classList.remove('crew-mode');
+  _applySignedInUserUi(null);
+}
+// This tab's memory no longer matches the session stored for this browser.
+// Leave that stored session alone (it may be the other person's) and ask for a PIN.
+function _abandonStaleTab(){
+  _authEpoch++;
+  _accessToken='';
+  _refreshToken='';
+  _accessExp=0;
+  _sessionAuthed=false;
+  _sessionUserId='';
+  _signedInAccount=null;
+  clearTimeout(_autoLockTimer);
+  _clearPinField();
+  document.body.classList.remove('crew-mode');
+  _applySignedInUserUi(null);
+  showLoginScreen();
 }
 
 function _saveSession(role){
@@ -9207,9 +9317,17 @@ function _lockForInactivity(){
 }
 
 function _touchSessionTs(){
+  if(!_sessionAuthed) return;
   try{
     const d=_readAuthBlob();
-    if(d && Date.now()-(d.ts||0) > 60000){ d.ts=Date.now(); localStorage.setItem(_pinAuthKey(), JSON.stringify(d)); }
+    if(!d) return;
+    if(d.user_id && _sessionUserId && d.user_id!==_sessionUserId){ _abandonStaleTab(); return; }
+    if(Date.now()-(d.ts||0) > 60000){
+      const epoch=_authEpoch;
+      d.ts=Date.now();
+      if(epoch!==_authEpoch) return;
+      localStorage.setItem(_pinAuthKey(), JSON.stringify(d));
+    }
   }catch(e){}
 }
 function _scheduleLockCheck(){
@@ -9246,41 +9364,60 @@ async function fpEnsureSession(){
   finally{ _authGate=null; }
 }
 async function _fpEnsureSessionInner(){
+  const epoch=_authEpoch;
   if(!_refreshToken){
     const blob=_readAuthBlob();
     if(blob&&blob.refresh_token){
+      if(blob.user_id&&_sessionUserId&&blob.user_id!==_sessionUserId){
+        _abandonStaleTab();
+        return false;
+      }
       _refreshToken=blob.refresh_token;
       _accessToken=blob.access_token||_accessToken;
       _accessExp=blob.expires_at||_accessExp;
+      if(!_sessionUserId) _sessionUserId=blob.user_id||_jwtSub(_accessToken);
     }
   }
-  if(_accessToken && Date.now() < _accessExp - 60000) return true;
-  if(!_refreshToken) return !!_accessToken;
+  if(_accessStillFresh()) return true;
+  if(!_refreshToken) return false;
   try{
     const res=await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`,{
       method:'POST',
       headers:{ apikey:SUPABASE_KEY, 'Content-Type':'application/json' },
       body:JSON.stringify({ refresh_token:_refreshToken })
     });
+    if(epoch!==_authEpoch) return false;
     if(res.status===400 || res.status===401){
       // PIN change deletes every refresh token. Drop the local copy too,
-      // including a remembered office session.
-      if(_sessionAuthed || (_readAuthBlob()&&_readAuthBlob().refresh_token)){
+      // including a remembered office session. If storage now belongs to
+      // someone else on this browser, leave their copy in place.
+      const blob=_readAuthBlob();
+      if(blob&&blob.user_id&&_sessionUserId&&blob.user_id!==_sessionUserId){
+        _abandonStaleTab();
+        return false;
+      }
+      if(_sessionAuthed || (blob&&blob.refresh_token)){
         fpClearLocalAuth();
         showLoginScreen();
       }
       return false;
     }
-    if(!res.ok) return !!(_accessToken && Date.now() < _accessExp);
+    if(!res.ok) return _accessStillFresh();
     const data=await res.json();
-    if(!data||!data.access_token) return !!(_accessToken && Date.now() < _accessExp);
+    if(epoch!==_authEpoch) return false;
+    if(!data||!data.access_token) return _accessStillFresh();
     _accessToken=data.access_token;
     _refreshToken=data.refresh_token||_refreshToken;
     _accessExp=Date.now()+((data.expires_in||3600)*1000);
-    _writeAuthBlob({ access_token:_accessToken, refresh_token:_refreshToken, expires_at:_accessExp });
+    const sub=_jwtSub(_accessToken);
+    if(sub) _sessionUserId=sub;
+    const patch={ access_token:_accessToken, refresh_token:_refreshToken, expires_at:_accessExp };
+    if(_sessionUserId) patch.user_id=_sessionUserId;
+    const wrote=_writeAuthBlob(patch);
+    if(wrote&&wrote.conflict){ _abandonStaleTab(); return false; }
     return true;
   }catch(e){
-    return !!(_accessToken && Date.now() < _accessExp);
+    return _accessStillFresh();
   }
 }
 
@@ -9294,8 +9431,9 @@ function fpRememberTokens(session, account){
   _accessToken=session.access_token||'';
   _refreshToken=session.refresh_token||'';
   _accessExp=Date.now()+((session.expires_in||3600)*1000);
+  _sessionUserId=_jwtSub(_accessToken);
   const remember=_rememberChosen(account);
-  _writeAuthBlob({
+  const blob={
     access_token:_accessToken,
     refresh_token:_refreshToken,
     expires_at:_accessExp,
@@ -9306,7 +9444,9 @@ function fpRememberTokens(session, account){
     role:account.kind==='crew'?'crew':'admin',
     remember:remember,
     ts:Date.now()
-  });
+  };
+  if(_sessionUserId) blob.user_id=_sessionUserId;
+  _writeAuthBlob(blob, {replace:true});
 }
 
 function _accountFromBlob(){
@@ -9378,7 +9518,10 @@ function _setUsernameField(label, force){
   if(!el) return;
   if(force || !String(el.value||'').trim()) el.value=label||'';
 }
-function _syncRememberBox(){
+function _syncRememberBox(force){
+  // The remember row sits above Sign in. Showing it inside the click moves the
+  // button out from under the pointer, so the click never lands.
+  if(!force && (_signInPointer||(_signInGestureAt&&Date.now()-_signInGestureAt<500))) return;
   const wrap=document.getElementById('pin-remember-wrap');
   const note=document.getElementById('pin-remember-note');
   const kind=_loginAcct&&_loginAcct.kind;
@@ -9449,7 +9592,7 @@ function _showPinStep(opts){
   if(keep) _pullPinFromField();
   else _pinBuf='';
   _pinRender();
-  _syncRememberBox();
+  _syncRememberBox(true);
 }
 
 async function fpWhoAmI(){
@@ -9460,15 +9603,38 @@ async function fpWhoAmI(){
       headers:fpAuthHeaders(true),
       body:JSON.stringify({ action:'whoami' })
     });
-    if(res.status===401||res.status===403) return null;
-    if(!res.ok) return _accountFromBlob();
+    // Anything other than a confirmed account is not a session. Falling back to
+    // the stored name is what painted Will Bradford over an empty board.
+    if(res.status===401||res.status===403||!res.ok) return null;
     const data=await res.json();
-    if(!data||!data.kind) return _accountFromBlob();
-    _writeAuthBlob({ kind:data.kind, crew_idx:data.crew_idx, office_id:data.office_id||null, display_name:data.display_name||'' });
+    if(!data||!data.kind) return null;
     return data;
   }catch(e){
-    return _accountFromBlob();
+    return null;
   }
+}
+function _cachedIdentityConflicts(who){
+  if(!who||!who.kind) return true;
+  const blob=_readAuthBlob();
+  const sub=_sessionUserId||_jwtSub(_accessToken);
+  if(blob&&blob.user_id&&sub&&blob.user_id!==sub) return true;
+  if(blob&&blob.kind&&blob.kind!==who.kind) return true;
+  if(blob&&blob.kind===who.kind&&blob.display_name&&who.display_name&&_normLoginName(blob.display_name)!==_normLoginName(who.display_name)) return true;
+  return false;
+}
+// whoami can take a moment. If another tab signed a different person in during
+// that wait, leave their saved session alone and only drop this tab.
+function _bootStorageReplaced(started){
+  const now=_readAuthBlob();
+  if(!now||!now.refresh_token||!started) return false;
+  if(started.user_id&&now.user_id&&started.user_id!==now.user_id) return true;
+  if(now.refresh_token===started.refresh_token||now.refresh_token===_refreshToken) return false;
+  if(started.access_token&&now.access_token===started.access_token) return false;
+  return true;
+}
+function _dropFailedBoot(started){
+  if(_bootStorageReplaced(started)) _abandonStaleTab();
+  else { fpClearLocalAuth(); showLoginScreen(); }
 }
 
 async function fpPinAdmin(action, extra){
@@ -9511,19 +9677,32 @@ async function fpBootAuth(){
   const fresh=!!(blob && blob.refresh_token && (Date.now()-(blob.ts||0) < _sessionLimitMs(blob)));
   if(!fresh){
     if(blob && blob.refresh_token) fpClearLocalAuth();
+    else _applySignedInUserUi(null);
     showLoginScreen();
     return;
   }
   _accessToken=blob.access_token||'';
   _refreshToken=blob.refresh_token||'';
   _accessExp=blob.expires_at||0;
+  _sessionUserId=blob.user_id||_jwtSub(_accessToken);
   const tokenOk=await fpEnsureSession();
-  if(!tokenOk){ fpClearLocalAuth(); showLoginScreen(); return; }
+  if(!tokenOk||!_accessToken){
+    _dropFailedBoot(blob);
+    return;
+  }
   const who=await fpWhoAmI();
-  if(!who){ fpClearLocalAuth(); showLoginScreen(); return; }
+  if(!who||_cachedIdentityConflicts(who)){ _dropFailedBoot(blob); return; }
+  _rejectingAuth=false;
   _sessionAuthed=true;
+  const sub=_jwtSub(_accessToken);
+  if(sub) _sessionUserId=sub;
+  const patch={ kind:who.kind, crew_idx:who.crew_idx, office_id:who.office_id||null, display_name:who.display_name||'' };
+  if(_sessionUserId) patch.user_id=_sessionUserId;
+  _writeAuthBlob(patch);
   _resetAutoLockTimer();
   fpApplyAccount(who);
+  _applySignedInUserUi(who);
+  _hideLoginScreen();
   if(who.kind==='crew'){
     document.body.classList.add('crew-mode');
     const ml=document.getElementById('cv-manager-link');
@@ -9537,12 +9716,22 @@ async function fpBootAuth(){
     document.body.classList.remove('crew-mode');
     const ml=document.getElementById('cv-manager-link');
     if(ml) ml.style.display='none';
-    _applySignedInUserUi();
     loadAllFromSupabase().then(()=>{
       try{ const last=localStorage.getItem('fpLastPage'); if(last&&document.getElementById('page-'+last)) showPage(last); }catch(e){}
     });
   }
 }
+window.addEventListener('storage', function(e){
+  if(!e||e.key!==_pinAuthKey()||!_sessionAuthed) return;
+  const next=_readAuthBlob();
+  if(!next||!next.refresh_token||(next.user_id&&_sessionUserId&&next.user_id!==_sessionUserId)){
+    _abandonStaleTab();
+    return;
+  }
+  if(next.access_token) _accessToken=next.access_token;
+  if(next.refresh_token) _refreshToken=next.refresh_token;
+  if(next.expires_at) _accessExp=next.expires_at;
+});
 
 function fpRevokeServerSession(){
   const token=_accessToken;
@@ -9557,6 +9746,7 @@ function fpRevokeServerSession(){
 
 async function showLoginScreen(){
   _pinBuf=''; _pinBusy=false; _pinSubmitLock=false; _loginOldPin=''; _loginNewPin='';
+  _applySignedInUserUi(null);
   const err=document.getElementById('pin-error');
   if(err){ err.style.display='none'; err.style.color=''; err.textContent='Incorrect PIN — try again.'; }
   const ls=document.getElementById('login-screen');
@@ -9615,11 +9805,27 @@ function _adoptTypedName(exactOnly){
   if(!_loginAcct || match.id!==_loginAcct.id){
     _loginAcct=match;
     if(_loginStage!=='pin' && _loginStage!=='newpin' && _loginStage!=='confirm') _loginStage='pin';
-    _showPinStep({keepPin:true});
+    // Showing the keypad widens the card and moves Sign in. Doing that inside
+    // the click's blur/change handler drops the click. Keep the layout still
+    // until the gesture is over; the sign-in attempt reads the fields itself.
+    if(_signInPointer||(_signInGestureAt&&Date.now()-_signInGestureAt<500)){
+      _pullPinFromField();
+    } else {
+      _schedulePinStep();
+    }
   } else {
     _syncRememberBox();
   }
   return match;
+}
+let _pinStepTimer=null;
+function _schedulePinStep(){
+  clearTimeout(_pinStepTimer);
+  _pinStepTimer=setTimeout(()=>{
+    _pinStepTimer=null;
+    if(_signInPointer||(_signInGestureAt&&Date.now()-_signInGestureAt<500)) return;
+    _showPinStep({keepPin:true});
+  }, 0);
 }
 function _typedNameAgrees(){
   if(!_loginAcct) return false;
@@ -9631,20 +9837,32 @@ function _typedNameAgrees(){
 function pinPasswordEdited(){
   const ls=document.getElementById('login-screen');
   if(!ls||ls.style.display==='none'||_pinBusy||_pinSubmitLock) return;
-  // Keep the dots in step with typing, paste, and autofill. Submit stays on
-  // Enter, the Sign in button, or the keypad — a filled field must not race
-  // ahead of the Remember checkbox or a username the manager fills next.
+  // Keep the dots in step with typing, paste, and autofill. A filled field
+  // does not submit by itself — only a Sign in gesture does, and that gesture
+  // re-reads the fields because a password manager often commits them late.
   if(!_loginAcct || !_typedNameAgrees()) _adoptTypedName(true);
   _pullPinFromField();
+  if(_signInGestureAt&&Date.now()-_signInGestureAt<500) _attemptTypedSignIn();
 }
 function pinUsernameEdited(){
   const ls=document.getElementById('login-screen');
   if(!ls||ls.style.display==='none'||_pinBusy||_pinSubmitLock) return;
-  if(_adoptTypedName(true)) return;
+  if(_adoptTypedName(true)){
+    if(_signInGestureAt&&Date.now()-_signInGestureAt<500) _attemptTypedSignIn();
+    return;
+  }
   _syncRememberBox();
+  if(_signInGestureAt&&Date.now()-_signInGestureAt<500) _attemptTypedSignIn();
 }
-function pinFormSubmit(e){
-  if(e && e.preventDefault) e.preventDefault();
+let _signInPointer=false;
+let _signInGestureAt=0;
+let _rosterWait=false;
+function _attemptTypedSignIn(){
+  if(_pinBusy||_pinSubmitLock) return;
+  if(!_signInGestureAt||Date.now()-_signInGestureAt>500) return;
+  // "Checking…" and the keypad both sit on top of Sign in. Wait until the
+  // pointer is up so that text cannot shove the button off the click.
+  if(_signInPointer) return;
   const el=document.getElementById('username');
   const raw=el?el.value.trim():'';
   const pinCol=document.getElementById('login-pin');
@@ -9652,18 +9870,55 @@ function pinFormSubmit(e){
   const needsName=!_loginAcct || (raw && !_typedNameAgrees());
   if(!onPin || needsName){
     if(!_loginRoster){
+      if(_rosterWait) return;
+      _rosterWait=true;
       _fetchRoster().then(list=>{
         _loginRoster=list; _fillRosterList();
-        if(_adoptTypedName(false)){ _pullPinFromField(); pinSubmit(); }
-        else _pinFail('Pick a name from the list.');
-      }).catch(()=>{ _pinFail('Could not load the sign-in list. Check your signal and try again.'); });
-      return false;
+        _rosterWait=false;
+        _attemptTypedSignIn();
+      }).catch(()=>{ _rosterWait=false; _pinFail('Could not load the sign-in list. Check your signal and try again.'); });
+      return;
     }
-    if(!_adoptTypedName(false)){ if(raw) _pinFail('Pick a name from the list.'); return false; }
+    if(!_adoptTypedName(false)){
+      if(raw) _pinFail('Pick a name from the list.');
+      return;
+    }
   }
   _pullPinFromField();
+  if(!_loginAcct||_pinBuf.length!==_pinLen()) return;
+  _signInGestureAt=0;
   pinSubmit();
+}
+function pinFormSubmit(e){
+  if(e && e.preventDefault) e.preventDefault();
+  if(_pinBusy||_pinSubmitLock) return false;
+  _signInGestureAt=Date.now();
+  _attemptTypedSignIn();
+  // Password managers commit autofill on the submitting click, after this
+  // handler has already read the inputs. Read again once that commit lands.
+  setTimeout(_attemptTypedSignIn, 0);
+  setTimeout(_attemptTypedSignIn, 80);
   return false;
+}
+function _armSignInGesture(e){
+  const t=e.target&&e.target.closest?e.target.closest('#pin-login-form button[type="submit"]'):null;
+  if(!t) return;
+  _signInPointer=true;
+  _signInGestureAt=Date.now();
+}
+function _releaseSignInGesture(){
+  if(!_signInPointer) return;
+  _signInPointer=false;
+  setTimeout(_attemptTypedSignIn, 0);
+  setTimeout(_attemptTypedSignIn, 80);
+  // If this gesture did not sign in, show the keypad once the click is over.
+  setTimeout(_revealSignInLayout, 120);
+}
+function _revealSignInLayout(){
+  if(_signInPointer||_pinBusy||_pinSubmitLock) return;
+  const ls=document.getElementById('login-screen');
+  if(!ls||ls.style.display==='none'||!_loginAcct) return;
+  _showPinStep({keepPin:true});
 }
 
 // Digits, Backspace, and Enter work like the keypad when focus is not already
@@ -9683,6 +9938,11 @@ document.addEventListener('keydown',e=>{
 (function(){
   const form=document.getElementById('pin-login-form');
   if(form) form.addEventListener('submit', pinFormSubmit);
+  document.addEventListener('pointerdown', _armSignInGesture, true);
+  document.addEventListener('mousedown', _armSignInGesture, true);
+  document.addEventListener('pointerup', _releaseSignInGesture, true);
+  document.addEventListener('mouseup', _releaseSignInGesture, true);
+  document.addEventListener('pointercancel', ()=>{ _signInPointer=false; }, true);
   const pw=document.getElementById('password');
   if(pw){
     pw.addEventListener('input', pinPasswordEdited);
@@ -9740,7 +10000,17 @@ async function pinSubmit(){
 
 function _pinSuccess(account){
   const role=account&&account.kind==='crew'?'crew':'admin';
+  if(role==='crew'){
+    const wrap=document.getElementById('pin-remember-wrap');
+    const note=document.getElementById('pin-remember-note');
+    const box=document.getElementById('pin-remember');
+    if(wrap) wrap.style.display='none';
+    if(note) note.style.display='none';
+    if(box) box.checked=false;
+  }
+  _rejectingAuth=false;
   _saveSession(role);
+  _applySignedInUserUi(account);
   _hideLoginScreen();
   fpApplyAccount(account);
   if(role==='crew'){
@@ -9756,7 +10026,6 @@ function _pinSuccess(account){
     document.body.classList.remove('crew-mode');
     const ml=document.getElementById('cv-manager-link');
     if(ml) ml.style.display='none';
-    _applySignedInUserUi();
     loadAllFromSupabase().then(()=>{
       try{ const last=localStorage.getItem('fpLastPage'); if(last&&last!=='dashboard'&&document.getElementById('page-'+last)) showPage(last); }catch(e){}
     });
