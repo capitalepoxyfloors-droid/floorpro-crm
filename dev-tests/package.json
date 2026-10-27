@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Local mocked tests for FloorPro CRM. Not part of the GitHub Pages site.",
   "scripts": {
-    "test": "node --test --test-timeout=120000 prelogin.test.mjs pin-logic-test.mjs crew-days.test.mjs security.test.mjs rls.migration.test.mjs role-rls.test.mjs lead-dup.test.mjs costing.test.mjs slot-job-lookup.test.mjs"
+    "test": "node --test --test-timeout=120000 prelogin.test.mjs pin-logic-test.mjs crew-days.test.mjs security.test.mjs rls.migration.test.mjs role-rls.test.mjs lead-dup.test.mjs costing.test.mjs slot-job-lookup.test.mjs job-save-merge.test.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
