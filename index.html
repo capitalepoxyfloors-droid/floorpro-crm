@@ -2268,11 +2268,16 @@ const sb = {
         body:JSON.stringify(args||{})
       },25000);
     }catch(e){ return {ok:false, data:null}; }
-    if((authed&&_sbRejectStatus(res))||!res.ok) return {ok:false, data:null};
+    if((authed&&_sbRejectStatus(res))||!res.ok){
+      let error=null;
+      try{ error=await res.json(); }catch(e){}
+      const msg=String((error&&(error.message||error.details||error.code))||'');
+      return {ok:false, data:null, status:res.status, error, missing:res.status===404||/PGRST202|could not find the function/i.test(msg), stale:/stale_job/i.test(msg)};
+    }
     try{
       const text=await res.text();
-      return {ok:true, data:text?JSON.parse(text):null};
-    }catch(e){ return {ok:false, data:null}; }
+      return {ok:true, data:text?JSON.parse(text):null, status:res.status};
+    }catch(e){ return {ok:false, data:null, status:res.status}; }
   }
 };
 
@@ -3497,11 +3502,59 @@ async function fixSlotDrift(){
   await saveSlotJobMap();
 }
 
+function _fpDecodeSlotRow(r){
+  const jtRaw=r.job_type||'';
+  const colonIdx=jtRaw.lastIndexOf(':');
+  const datePart=colonIdx>=0?jtRaw.slice(colonIdx+1):'';
+  const hasDt=/^\d{4}-\d{2}-\d{2}$/.test(datePart);
+  const dateEnc=hasDt?datePart:null;
+  let wOff=r.week_offset, dIdx=r.day_idx;
+  if(dateEnc){
+    const dt=new Date(dateEnc+'T00:00:00');
+    if(!isNaN(dt)){
+      wOff=Math.floor((dt-BASE)/(7*24*60*60*1000));
+      const dow=dt.getDay(); dIdx=dow===0?6:dow-1;
+    }
+  }
+  let slotDateStr=dateEnc;
+  if(!slotDateStr && wOff!=null && dIdx!=null && dIdx>=0 && dIdx<7){
+    const slotMon=getMonday(+wOff);
+    const slotDate=new Date(slotMon);
+    slotDate.setDate(slotMon.getDate()+(+dIdx));
+    slotDate.setHours(0,0,0,0);
+    slotDateStr=slotDate.toISOString().split('T')[0];
+  }
+  return {ci:+r.crew_idx,w:+wOff,d:+dIdx,label:r.label,id:r.id,dt:slotDateStr};
+}
+function _fpForgetSlotId(id){
+  const sid=String(id);
+  for(const ci in newSlots){
+    for(const w in (newSlots[ci]||{})){
+      for(const d in (newSlots[ci][w]||{})){
+        if(String(newSlots[ci][w][d]?.db_id)===sid) delete newSlots[ci][w][d];
+      }
+    }
+  }
+  Object.keys(multiSlots).forEach(k=>{
+    const left=(multiSlots[k]||[]).filter(ex=>String(ex.db_id)!==sid);
+    if(left.length) multiSlots[k]=left; else delete multiSlots[k];
+  });
+}
+function _fpLogSlotDelete(id, label, dateStr, reason){
+  const detail='Deleted scheduled slot '+(id??'?')+' ('+(label||'unlabeled')+(dateStr?' '+dateStr:'')+') — '+reason;
+  console.log('[slots] '+detail);
+  logAudit('schedule_removed', label||'Slot', detail);
+}
+
 async function deduplicateSlotsByJobRecord(){
   if(!_isOwnerSession()||!_jobRecordsLoadOk||!_slotsLoadOk||!_slotMapLoadOk) return;
   // Remove slots that fall outside their job's valid date range.
   // Catches duplicates whether or not they have a SLOT_JOB_MAP entry —
   // legacy slots are matched by customer name label instead.
+  //
+  // The job list and the slot rows are re-read here. Deciding from the copy already
+  // in memory deleted slots that a newer save (or a direct edit) still covers, because
+  // this page's JOB_RECORDS was from before that change.
   //
   // Also repairs SLOT_JOB_MAP entries left stale on slots we're KEEPING: the map is written once
   // when a slot is created, but loadScheduledSlots() independently re-decides which job "wins"
@@ -3511,17 +3564,25 @@ async function deduplicateSlotsByJobRecord(){
   // Confirmed effect: clicking the slot could open the wrong job's card, and the schedule bar's
   // primary-run-into-extension-day merge/fade (which keys off the resolved job, not just the raw
   // label text) fails to connect, rendering as a gap + orphaned fragment instead of one bar.
-  if(!JOB_RECORDS.length) return;
-  const toDeleteIds=[];
-  const slotsToRemove=[];
+  const read=await _jobRecordsRead();
+  if(!read.ok){ console.error('deduplicateSlotsByJobRecord: job_records re-read failed — not deleting slots'); return; }
+  let freshJobs=null;
+  try{
+    freshJobs=read.value!=null?JSON.parse(read.value):[];
+    if(!Array.isArray(freshJobs)) throw new Error('job_records is not an array');
+  }catch(e){ console.error('deduplicateSlotsByJobRecord: job_records re-read was not valid — not deleting slots', e); return; }
+  if(!freshJobs.length) return;
+  const slotsGot=await sb.getResult('scheduled_slots');
+  if(!slotsGot.ok){ console.error('deduplicateSlotsByJobRecord: scheduled_slots re-read failed — not deleting slots'); return; }
+  const toDelete=[];
   const mapFixes={};
 
   // Quick lookup: customer name → job record(s). A repeat customer can have several job records
   // sharing the same name — keep every candidate so we can prefer whichever's own date range
   // actually contains the slot's date (same approach as resolveJobForDate in the schedule
-  // renderer), instead of grabbing whichever happened to be last in JOB_RECORDS.
+  // renderer), instead of grabbing whichever happened to be last in the fresh list.
   const jobsByCustomer={};
-  JOB_RECORDS.forEach(j=>{ if(j.customer) (jobsByCustomer[j.customer]=jobsByCustomer[j.customer]||[]).push(j); });
+  freshJobs.forEach(j=>{ if(j.customer) (jobsByCustomer[j.customer]=jobsByCustomer[j.customer]||[]).push(j); });
   const resolveByLabelAndDate=(label,dateStr)=>{
     const cands=jobsByCustomer[label];
     if(!cands||!cands.length) return null;
@@ -3529,56 +3590,40 @@ async function deduplicateSlotsByJobRecord(){
     return cands.find(j=>j.startDate&&j.endDate&&dateStr>=j.startDate&&dateStr<=j.endDate)||cands[0];
   };
 
-  for(const ci in newSlots){
-    for(const w in newSlots[ci]){
-      for(const d in newSlots[ci][w]){
-        const slot=newSlots[ci][w][d];
-        if(!slot) continue;
-        const ciN=parseInt(ci),wN=parseInt(w),dN=parseInt(d);
-        const mapKey=jcSlotKey(ciN,wN,dN);
+  for(const row of slotsGot.rows){
+    const slot=_fpDecodeSlotRow(row);
+    if(!slot.label||slot.id==null) continue;
+    const mapKey=jcSlotKey(slot.ci,slot.w,slot.d);
+    const slotDateStr=slot.dt;
+    if(!slotDateStr) continue;
 
-        // Use the slot's stored absolute date. Reconstructing from the week-offset position is
-        // unreliable when the schedule's base week shifts (it can place a valid slot on the wrong
-        // date and wrongly delete it). Only fall back to reconstruction for legacy slots with no date.
-        let slotDateStr=slot.dt;
-        if(!slotDateStr){
-          const slotMon=getMonday(wN);
-          const slotDate=new Date(slotMon);
-          slotDate.setDate(slotMon.getDate()+dN);
-          slotDate.setHours(0,0,0,0);
-          slotDateStr=slotDate.toISOString().split('T')[0];
-        }
+    // Resolve the job from the fresh list: prefer SLOT_JOB_MAP, fall back to label+date.
+    // The map entry can go stale — verify the resolved job's customer matches this slot's
+    // label before trusting its date range.
+    const jobId=SLOT_JOB_MAP[mapKey];
+    const mappedJob=jobId ? freshJobs.find(j=>String(j.id)===String(jobId)) : null;
+    const job=(mappedJob&&mappedJob.customer===slot.label)?mappedJob:resolveByLabelAndDate(slot.label,slotDateStr);
+    if(!job||!job.startDate) continue;
 
-        // Resolve the job: prefer SLOT_JOB_MAP, fall back to label+date match. The map entry can go
-        // stale (e.g. a later double-book on the same crew/day overwrote it with a different
-        // job's id) — verify the resolved job's customer actually matches this slot's label
-        // before trusting its date range, or a leftover slot can hide behind an unrelated
-        // job's valid dates and never get swept.
-        const jobId=SLOT_JOB_MAP[mapKey];
-        const mappedJob=jobId ? JOB_RECORDS.find(j=>j.id===jobId) : null;
-        const job=(mappedJob&&mappedJob.customer===slot.l)?mappedJob:resolveByLabelAndDate(slot.l,slotDateStr);
-        if(!job||!job.startDate) continue;
+    const endDate=job.endDate||job.startDate;
+    const validDates=new Set([...jcAllDays(job.startDate,endDate),...(job.extraDays||[])]);
 
-        const endDate=job.endDate||job.startDate;
-        const validDates=new Set([...jcAllDays(job.startDate,endDate),...(job.extraDays||[])]);
-
-        if(!validDates.has(slotDateStr)){
-          if(slot.db_id) toDeleteIds.push(slot.db_id);
-          slotsToRemove.push({ciN,wN,dN,mapKey});
-        } else if(jobId!==job.id){
-          mapFixes[mapKey]=job.id;
-        }
-      }
+    if(!validDates.has(slotDateStr)){
+      toDelete.push({id:slot.id, ci:slot.ci, w:slot.w, d:slot.d, mapKey, label:slot.label, dt:slotDateStr, customer:job.customer, start:job.startDate, end:endDate});
+    } else if(String(jobId)!==String(job.id)){
+      mapFixes[mapKey]=job.id;
     }
   }
 
   Object.assign(SLOT_JOB_MAP,mapFixes);
-  if(!slotsToRemove.length && !Object.keys(mapFixes).length) return;
-  slotsToRemove.forEach(({ciN,wN,dN,mapKey})=>{
-    if(newSlots[ciN]?.[wN]) delete newSlots[ciN][wN][dN];
-    if(mapKey&&SLOT_JOB_MAP[mapKey]) delete SLOT_JOB_MAP[mapKey];
-  });
-  if(toDeleteIds.length) await Promise.all(toDeleteIds.map(id=>sb.delete('scheduled_slots',id)));
+  if(!toDelete.length && !Object.keys(mapFixes).length) return;
+  for(const item of toDelete){
+    _fpLogSlotDelete(item.id, item.label, item.dt, 'outside '+item.customer+' '+item.start+'–'+item.end);
+    _fpForgetSlotId(item.id);
+    if(item.mapKey&&SLOT_JOB_MAP[item.mapKey]) delete SLOT_JOB_MAP[item.mapKey];
+    if(newSlots[item.ci]?.[item.w]) delete newSlots[item.ci][item.w][item.d];
+  }
+  if(toDelete.length) await Promise.all(toDelete.map(item=>sb.delete('scheduled_slots', item.id)));
   await saveSlotJobMap();
 }
 
@@ -4307,12 +4352,17 @@ async function seRemoveSlot(ci, w, d){
   const _rmLabel=s?.l,_rmDate=s?.dt;
   if(s?.db_id){
     await sb.delete('scheduled_slots', s.db_id);
+    console.log('[slots] deleted scheduled_slots id '+s.db_id+' ('+(_rmLabel||'')+(_rmDate?' '+_rmDate:'')+')');
   } else if(s?.l){
     // No db_id cached in memory (rare) — fall back to a filtered delete, but scope it by label
     // too so a double/triple-booked cell doesn't lose an unrelated job's row at the DB level.
     await sb.deleteWhere('scheduled_slots',{crew_idx:ci,week_offset:w,day_idx:d,label:s.l});
+    console.log('[slots] deleted scheduled_slots by label '+s.l+' crew '+ci+' week '+w+' day '+d);
   } else {
-    await sb.deleteWhere('scheduled_slots',{crew_idx:ci,week_offset:w,day_idx:d});
+    // No row in memory. A delete filtered only by crew/week/day would remove every job on
+    // that cell, including one this page never loaded. Leave the database alone.
+    console.warn('[slots] seRemoveSlot skipped — no slot in memory for crew '+ci+' week '+w+' day '+d);
+    return;
   }
   if(newSlots[ci]?.[w]) delete newSlots[ci][w][d];
   if(_rmLabel) logAudit('schedule_removed',_rmLabel,(CREW[ci]?.full||'Crew '+ci)+(_rmDate?' — '+_rmDate:''));
@@ -4431,6 +4481,19 @@ let _seForceOpen = false; // bypass job-card routing for reschedule flow
 
 function _jrClone(x){ try{ return JSON.parse(JSON.stringify(x)); }catch(e){ return x; } }
 function _jrEq(a,b){ return JSON.stringify(a===undefined?null:a)===JSON.stringify(b===undefined?null:b); }
+// Key order is not a change. JSON.stringify would treat a reordered crewDays object as
+// different and then "keep ours", which is how a stale page wrote an old crew list back.
+function _jrCanon(v){
+  if(v===undefined||v===null) return null;
+  if(typeof v!=='object') return v;
+  if(Array.isArray(v)) return v.map(_jrCanon);
+  const out={};
+  Object.keys(v).sort().forEach(k=>{ if(v[k]!==undefined) out[k]=_jrCanon(v[k]); });
+  return out;
+}
+function _jrEqCanon(a,b){ return JSON.stringify(_jrCanon(a))===JSON.stringify(_jrCanon(b)); }
+function _jrStamp(v){ return v===undefined||v===null?'':String(v); }
+function _jrHas(obj,k){ return !!obj && Object.prototype.hasOwnProperty.call(obj,k); }
 
 // Crew have no SELECT on settings.job_records. The functions strip prices and wage stamps
 // on the way out and keep the stored ones on the way in.
@@ -4472,67 +4535,298 @@ async function loadJobRecords(){
   _jobRecordsLoadOk=true;
 }
 
-// Saving used to overwrite the entire shared job_records blob with THIS device's copy, so a
-// second tab or a crew phone could silently wipe edits made
-// elsewhere ("I saved it and it's gone"). Now every save 3-way MERGES: re-read the server
-// copy and apply only the changes this device actually made since it loaded (vs _jrBaseline),
-// preserving everyone else's changes. Saves are also serialized per-tab via _jrSaveChain.
-function saveJobRecords(){
-  const run=_jrSaveChain.then(()=>_saveJobRecordsNow());
+// Saving used to overwrite the entire shared job_records blob with THIS device's copy.
+// A notes save on one job then put back every other job as this page had loaded it,
+// which dropped crew days added after the page opened. A save now sends only the jobs
+// (and only the fields) this edit actually changed. onlyId limits that to one job —
+// the job-card Save button passes the open job. The database function applies the
+// patch under a row lock. Until that function is on the database, staff re-read the
+// array and write it back with the same patch applied, and refuse if a field they
+// are changing was also changed on the server.
+let _jrSaving=false;
+let _jrDataGen=0;
+function saveJobRecords(onlyId){
+  const run=_jrSaveChain.then(()=>_saveJobRecordsNow(onlyId));
   _jrSaveChain=run.catch(()=>{}); // keep the chain alive even if one save errors
   return run;
 }
-async function _saveJobRecordsNow(){
-  // Snapshot what THIS device changed since the last save — the merge below can pull in other
-  // devices' edits too, which shouldn't be attributed to this session's actor.
-  const preLocal=_jrClone(JOB_RECORDS);
-  const priorBaseline=_jrBaseline;
-  const read=await _jobRecordsRead();
-  // A failed re-read must NOT be treated as an empty server. Writing the local copy then
-  // would wipe edits made on another phone. Keep the in-memory edits and let the user retry.
-  if(!read.ok){
-    showSyncStatus('⚠ Could not re-read the server copy — nothing was saved. Your edits are still here; try again.','var(--red)');
-    return false;
+function _jrDirtyKeys(baseline, localArr){
+  const map=new Map();
+  const baseBy=new Map((baseline||[]).map(r=>[String(r.id), r]));
+  const localBy=new Map((localArr||[]).map(r=>[String(r.id), r]));
+  for(const [id,l] of localBy){
+    const b=baseBy.get(id);
+    const keys=new Set();
+    if(!b){ keys.add('*'); map.set(id, keys); continue; }
+    for(const k of new Set([...Object.keys(l), ...Object.keys(b)])){
+      if(k==='id'||k==='updated_at') continue;
+      if(!_jrEqCanon(l[k], b[k])) keys.add(k);
+    }
+    if(keys.size) map.set(id, keys);
   }
-  let serverArr=null;
-  if(read.value!=null){
-    try{
-      serverArr=JSON.parse(read.value);
-      if(!Array.isArray(serverArr)) throw new Error('job_records is not an array');
-    }catch(e){
-      console.error('job_records re-read was not valid JSON — refusing to overwrite:',e);
-      showSyncStatus('⚠ Server copy looks damaged — nothing was saved. Your edits are still here; try again.','var(--red)');
+  for(const id of baseBy.keys()){
+    if(!localBy.has(id)) map.set(id, new Set(['*delete']));
+  }
+  return map;
+}
+function _jrBuildPatches(baseline, localArr, onlyId){
+  const baseBy=new Map((baseline||[]).map(r=>[String(r.id), r]));
+  const localBy=new Map((localArr||[]).map(r=>[String(r.id), r]));
+  const ids=onlyId!=null&&onlyId!=='' ? [String(onlyId)] : [...new Set([...baseBy.keys(), ...localBy.keys()])];
+  const patches=[];
+  for(const id of ids){
+    if(!id||id==='undefined'||id==='null') continue;
+    const b=baseBy.get(id), l=localBy.get(id);
+    if(b&&!l){
+      const basis=_jrCanon(b);
+      delete basis.updated_at;
+      patches.push({id, op:'delete', expected:{updated_at:b.updated_at??null}, basis});
+      continue;
+    }
+    if(!b&&l){
+      const job=_jrCanon(l);
+      delete job.updated_at;
+      patches.push({id, op:'insert', patch:job, expected:{updated_at:null}, drop:[]});
+      continue;
+    }
+    if(!b||!l) continue;
+    const patch={}, expected={updated_at:b.updated_at??null}, drop=[];
+    let changed=false;
+    for(const k of new Set([...Object.keys(b), ...Object.keys(l)])){
+      if(k==='id'||k==='updated_at') continue;
+      if(_jrEqCanon(l[k], b[k])) continue;
+      changed=true;
+      expected[k]=_jrHas(b,k)?_jrCanon(b[k]):null;
+      if(!_jrHas(l,k)||l[k]===undefined) drop.push(k);
+      else patch[k]=_jrCanon(l[k]);
+    }
+    if(changed) patches.push({id, op:'patch', expected, patch, drop});
+  }
+  return patches;
+}
+function _jrExpectedOk(job, p){
+  const exp=p.expected||{};
+  if(_jrStamp(job&&job.updated_at)!==_jrStamp(exp.updated_at)) return false;
+  const keys=new Set([...Object.keys(p.patch||{}), ...(p.drop||[])]);
+  for(const k of keys){
+    if(k==='id'||k==='updated_at') continue;
+    const serverVal=_jrHas(job,k)?job[k]:null;
+    const expVal=_jrHas(exp,k)?exp[k]:null;
+    if(!_jrEqCanon(serverVal, expVal)) return false;
+  }
+  if(p.op==='delete'&&p.basis){
+    const server=_jrCanon(job); delete server.updated_at;
+    const basis=_jrCanon(p.basis); delete basis.updated_at;
+    if(JSON.stringify(server)!==JSON.stringify(basis)) return false;
+  }
+  return true;
+}
+function _jrApplyPatchesToServer(serverArr, patches){
+  const jobs=_jrClone(serverArr||[]);
+  const indexOf=id=>jobs.findIndex(j=>String(j.id)===String(id));
+  for(const p of patches){
+    const idx=indexOf(p.id);
+    if(p.op==='delete'){
+      if(idx<0) continue;
+      if(!_jrExpectedOk(jobs[idx], p)){ const err=new Error('stale_job'); err.stale=true; throw err; }
+      jobs.splice(idx,1);
+      continue;
+    }
+    if(idx<0){
+      if(p.op!=='insert'){ const err=new Error('stale_job'); err.stale=true; throw err; }
+      const job=_jrClone(p.patch||{});
+      job.id=p.id;
+      job.updated_at=new Date().toISOString();
+      jobs.push(job);
+      continue;
+    }
+    if(!_jrExpectedOk(jobs[idx], p)){ const err=new Error('stale_job'); err.stale=true; throw err; }
+    const job=jobs[idx];
+    Object.keys(p.patch||{}).forEach(k=>{
+      if(k==='id'||k==='updated_at') return;
+      job[k]=_jrClone(p.patch[k]);
+    });
+    (p.drop||[]).forEach(k=>{ if(k!=='id'&&k!=='updated_at') delete job[k]; });
+    job.updated_at=new Date().toISOString();
+  }
+  return jobs;
+}
+function _jrCopyOnto(target, src){
+  const s=_jrClone(src);
+  Object.keys(target).forEach(k=>{ if(!(k in s)) delete target[k]; });
+  Object.assign(target, s);
+}
+// serverJobs is the array just stored. Patched ids are this save, so they are clean
+// even though they differ from the old baseline. Every other unsaved edit stays dirty.
+function _jrInstallSavedJobs(serverJobs, patchedIds){
+  const dirty=_jrDirtyKeys(_jrBaseline, JOB_RECORDS);
+  (patchedIds||[]).forEach(id=>dirty.delete(String(id)));
+  const oldBase=new Map((_jrBaseline||[]).map(r=>[String(r.id), r]));
+  const localBy=new Map(JOB_RECORDS.map(r=>[String(r.id), r]));
+  const seen=new Set();
+  (serverJobs||[]).forEach(s=>{
+    const id=String(s.id);
+    seen.add(id);
+    const local=localBy.get(id);
+    const dkeys=dirty.get(id);
+    if(!local){
+      if(dkeys&&dkeys.has('*delete')) return;
+      JOB_RECORDS.push(_jrClone(s));
+      return;
+    }
+    if(!dkeys||(patchedIds||[]).some(pid=>String(pid)===id)){
+      _jrCopyOnto(local, s);
+      return;
+    }
+    Object.keys(s).forEach(k=>{
+      if(k==='id'||dkeys.has(k)) return;
+      local[k]=_jrClone(s[k]);
+    });
+  });
+  for(let i=JOB_RECORDS.length-1;i>=0;i--){
+    const id=String(JOB_RECORDS[i].id);
+    if(seen.has(id)) continue;
+    const dkeys=dirty.get(id);
+    if(dkeys&&(dkeys.has('*')||dkeys.has('*delete')||dkeys.size)) continue;
+    JOB_RECORDS.splice(i,1);
+  }
+  const next=[];
+  JOB_RECORDS.forEach(local=>{
+    const id=String(local.id);
+    const dkeys=dirty.get(id);
+    const old=oldBase.get(id);
+    if(dkeys&&dkeys.has('*')&&!old) return; // not saved yet — keep it looking new
+    const nb=_jrClone(local);
+    if(dkeys&&old){
+      dkeys.forEach(k=>{
+        if(k==='*'||k==='*delete') return;
+        if(_jrHas(old,k)) nb[k]=_jrClone(old[k]);
+        else delete nb[k];
+      });
+    }
+    next.push(nb);
+  });
+  dirty.forEach((keys,id)=>{
+    if(!keys.has('*delete')||next.some(j=>String(j.id)===id)) return;
+    const old=oldBase.get(id);
+    if(old) next.push(_jrClone(old));
+  });
+  _jrBaseline=next;
+}
+function _jrStaleSaveMessage(){
+  showSyncStatus('⚠ This job was changed somewhere else — nothing was saved. Reload the page, then save again. Your edits are still here.','var(--red)');
+  if(typeof showToast==='function') showToast('This job changed on another screen. Reload before saving.');
+}
+function _jrPatchResultOk(data){
+  return !!(data&&data.ok===true&&Array.isArray(data.jobs)&&_jobRecordsLookReal(data.jobs));
+}
+async function _saveJobRecordsNow(onlyId){
+  ++_jrDataGen;
+  _jrSaving=true;
+  try{
+    const preLocal=_jrClone(JOB_RECORDS);
+    const priorBaseline=_jrClone(_jrBaseline);
+    const only=onlyId!=null&&onlyId!==''?new Set([String(onlyId)]):null;
+    try{ _jcStampMissingRates(only); }catch(e){ console.error('rate stamping skipped:',e); }
+    const patches=_jrBuildPatches(priorBaseline, JOB_RECORDS, onlyId!=null&&onlyId!==''?onlyId:null);
+    if(!patches.length){
+      showSyncStatus('✓ Saved');
+      return true;
+    }
+    const rpc=await sb.rpc('fp_patch_job_records',{patches});
+    if(_jrPatchResultOk(rpc.data)){
+      _jrDataGen++;
+      _jrInstallSavedJobs(rpc.data.jobs, patches.map(p=>p.id));
+      _jrLogFieldChanges(priorBaseline, preLocal);
+      showSyncStatus('✓ Saved');
+      return true;
+    }
+    if(rpc.stale){
+      _jrStaleSaveMessage();
       return false;
     }
-  }
-  if(serverArr){
-    const beforeMerge=_jrClone(JOB_RECORDS);
-    try{ _mergeServerIntoLocal(serverArr); }
+    // A real refusal (not signed in, or the function said no) must not fall through
+    // to a blob write. A missing function, or a test double that isn't this RPC,
+    // still uses the re-read-and-patch path.
+    const unrecognized=rpc.ok&&!_jrPatchResultOk(rpc.data);
+    if(!rpc.missing&&!unrecognized){
+      showSyncStatus('⚠ Save failed — check your connection. Your edits are still here; try again.','var(--red)');
+      return false;
+    }
+    if(!_isOwnerSession()){
+      const payload=patches.map(p=>{
+        if(p.op==='insert') return p.patch;
+        if(p.op==='delete') return null;
+        const partial={id:p.id};
+        Object.keys(p.patch||{}).forEach(k=>{ partial[k]=p.patch[k]; });
+        return partial;
+      }).filter(Boolean);
+      const r=await sb.rpc('fp_crew_write_job_records',{payload});
+      if(!r.ok){
+        showSyncStatus('⚠ Save failed — check your connection. Your edits are still here; try again.','var(--red)');
+        return false;
+      }
+      _jrDataGen++;
+      _jrLogFieldChanges(priorBaseline, preLocal);
+      const patchedIds=new Set(patches.map(p=>String(p.id)));
+      const next=(_jrBaseline||[]).filter(b=>!(patchedIds.has(String(b.id))&&!JOB_RECORDS.some(j=>String(j.id)===String(b.id))));
+      patchedIds.forEach(id=>{
+        const local=JOB_RECORDS.find(j=>String(j.id)===id);
+        const idx=next.findIndex(j=>String(j.id)===id);
+        if(!local){ if(idx>=0) next.splice(idx,1); return; }
+        if(idx>=0) next[idx]=_jrClone(local); else next.push(_jrClone(local));
+      });
+      _jrBaseline=next;
+      showSyncStatus('✓ Saved');
+      return true;
+    }
+    const read=await _jobRecordsRead();
+    if(!read.ok){
+      showSyncStatus('⚠ Could not re-read the server copy — nothing was saved. Your edits are still here; try again.','var(--red)');
+      return false;
+    }
+    let serverArr=[];
+    if(read.value!=null){
+      try{
+        serverArr=JSON.parse(read.value);
+        if(!Array.isArray(serverArr)) throw new Error('job_records is not an array');
+      }catch(e){
+        console.error('job_records re-read was not valid JSON — refusing to overwrite:',e);
+        showSyncStatus('⚠ Server copy looks damaged — nothing was saved. Your edits are still here; try again.','var(--red)');
+        return false;
+      }
+    }
+    let patched;
+    try{ patched=_jrApplyPatchesToServer(serverArr, patches); }
     catch(e){
-      JOB_RECORDS.splice(0,JOB_RECORDS.length,...beforeMerge);
-      console.error('job_records merge failed — nothing was saved:',e);
+      if(e&&e.stale){ _jrStaleSaveMessage(); return false; }
+      console.error('job_records patch failed — nothing was saved:',e);
       showSyncStatus('⚠ Could not merge with the server copy — nothing was saved. Your edits are still here; try again.','var(--red)');
       return false;
     }
+    let wrote;
+    try{ wrote=await sb.setKV('job_records', JSON.stringify(patched)); }
+    catch(e){
+      showSyncStatus('⚠ '+((e&&e.message)||'Save failed')+' Your edits are still here; try again.','var(--red)');
+      return false;
+    }
+    if(!wrote){
+      showSyncStatus('⚠ Save failed — check your connection. Your edits are still here; try again.','var(--red)');
+      return false;
+    }
+    let stored=patched;
+    const row=Array.isArray(wrote)?wrote[0]:wrote;
+    if(row&&typeof row.value==='string'){
+      try{ const parsed=JSON.parse(row.value); if(Array.isArray(parsed)) stored=parsed; }catch(e){}
+    }
+    _jrDataGen++;
+    _jrInstallSavedJobs(stored, patches.map(p=>p.id));
+    _jrLogFieldChanges(priorBaseline, preLocal);
+    showSyncStatus('✓ Saved');
+    return true;
+  }finally{
+    _jrSaving=false;
   }
-  // Fill any person-day that has no stamp, at the rate in effect on that work date.
-  // A saved directRate or burdenedRate is left alone. The database trigger does this
-  // again on the way in, including a crew save, so the two have to agree.
-  try{ _jcStampMissingRates(); }catch(e){ console.error('rate stamping skipped:',e); }
-  let wrote;
-  try{ wrote=await _jobRecordsWrite(JSON.stringify(JOB_RECORDS)); }
-  catch(e){
-    showSyncStatus('⚠ '+((e&&e.message)||'Save failed')+' Your edits are still here; try again.','var(--red)');
-    return false;
-  }
-  if(!wrote){
-    showSyncStatus('⚠ Save failed — check your connection. Your edits are still here; try again.','var(--red)');
-    return false;
-  }
-  _jrLogFieldChanges(priorBaseline,preLocal);
-  _jrBaseline=_jrClone(JOB_RECORDS); // our copy is now the synced baseline
-  showSyncStatus('✓ Saved');
-  return true;
 }
 // Turn a raw field value into a short, human-readable string for the audit log — arrays of
 // crew/material objects become "Name qty unit" lists, everything else stringifies plainly.
@@ -4776,6 +5070,58 @@ async function loadSlotJobMap(){
 }
 async function saveSlotJobMap(){ SLOT_JOB_MAP = await _saveKVMerged('slot_job_map', SLOT_JOB_MAP); }
 
+// Bring in job records, the slot map, and schedule rows when the tab is focused again.
+// A page left open does not otherwise see a crew day added somewhere else, and the next
+// Save was writing from that old copy. This never writes. Unsaved edits on this page stay.
+let _fpRefreshTimer=null;
+function fpScheduleSharedRefresh(){
+  if(typeof document!=='undefined'&&document.hidden) return;
+  clearTimeout(_fpRefreshTimer);
+  _fpRefreshTimer=setTimeout(()=>{ fpRefreshSharedData(); }, 400);
+}
+async function fpRefreshSharedData(){
+  const login=document.getElementById('login-screen');
+  if(!_sessionAuthed||_jrSaving||!_jobRecordsLoadOk) return;
+  if(login&&login.style.display!=='none') return;
+  const gen=_jrDataGen;
+  const read=await _jobRecordsRead();
+  if(gen!==_jrDataGen||_jrSaving) return;
+  if(read.ok&&read.value!=null){
+    try{
+      const serverArr=JSON.parse(read.value);
+      if(Array.isArray(serverArr)) _jrInstallSavedJobs(serverArr, []);
+    }catch(e){ console.error('focus refresh: job_records was not valid JSON', e); }
+  }
+  if(gen!==_jrDataGen||_jrSaving) return;
+  const mapRead=await sb.readKV('slot_job_map');
+  if(mapRead.ok&&mapRead.value!=null&&gen===_jrDataGen&&!_jrSaving){
+    try{
+      const server=JSON.parse(mapRead.value);
+      if(server&&typeof server==='object'&&!Array.isArray(server)){
+        const before=_jrClone(SLOT_JOB_MAP);
+        const base=_kvBaselines.slot_job_map||{};
+        SLOT_JOB_MAP=merge3(base, before, server);
+        const newBase=_jrClone(SLOT_JOB_MAP);
+        new Set([...Object.keys(before||{}), ...Object.keys(base||{})]).forEach(k=>{
+          if(_jrEqCanon(before[k], base[k])) return;
+          if(_jrHas(base,k)) newBase[k]=_jrClone(base[k]);
+          else delete newBase[k];
+        });
+        _kvBaselines.slot_job_map=newBase;
+      }
+    }catch(e){ console.error('focus refresh: slot_job_map was not valid JSON', e); }
+  }
+  if(gen!==_jrDataGen||_jrSaving) return;
+  await loadScheduledSlots();
+  const card=document.getElementById('modal-jobcard');
+  const cardOpen=card&&card.classList.contains('open');
+  if(cardOpen) return;
+  if(document.getElementById('page-schedule')?.classList.contains('active')) renderSchedule();
+  if(document.getElementById('page-crewview')?.classList.contains('active')) renderCrewView();
+}
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden) fpScheduleSharedRefresh(); });
+window.addEventListener('focus', fpScheduleSharedRefresh);
+
 function getJobRecord(id){ return JOB_RECORDS.find(j=>String(j.id)===String(id))||null; }
 
 // ── EMERGENCY LOG RECOVERY ────────────────────────────────────────────────────
@@ -4987,30 +5333,51 @@ function jcBackfillSlotMap(job){
 
 // Remove this job's slots for anyone who is not assigned that day — either they
 // are off the job entirely, or they are on the job but not on this date.
+// The job argument may be this page's stale copy. Assignment is decided from a
+// fresh job_records read, and only a slot row that is still on the server is deleted.
 async function jcCleanOrphanedSlots(job){
-  if(!job||!job.startDate||!job.endDate) return;
-  const names=new Set(jcCrewNames(job));
-  const allDates=jcJobWorkDates(job);
+  if(!job||!job.id) return;
+  const read=await _jobRecordsRead();
+  if(!read.ok){ console.error('jcCleanOrphanedSlots: job_records re-read failed — not deleting slots'); return; }
+  let freshJobs=[];
+  try{ freshJobs=JSON.parse(read.value||'[]'); if(!Array.isArray(freshJobs)) throw new Error('not an array'); }
+  catch(e){ console.error('jcCleanOrphanedSlots: job_records re-read was not valid — not deleting slots', e); return; }
+  const fresh=freshJobs.find(j=>String(j.id)===String(job.id));
+  if(!fresh||!fresh.startDate||!fresh.endDate){ console.error('jcCleanOrphanedSlots: fresh job has no dates — not deleting slots'); return; }
+  const slotsGot=await sb.getResult('scheduled_slots');
+  if(!slotsGot.ok){ console.error('jcCleanOrphanedSlots: scheduled_slots re-read failed — not deleting slots'); return; }
+  const names=new Set(jcCrewNames(fresh));
+  const allDates=new Set(jcJobWorkDates(fresh));
   let changed=false;
+  for(const row of slotsGot.rows){
+    const slot=_fpDecodeSlotRow(row);
+    if(!slot.label||slot.label!==fresh.customer||!slot.dt||!allDates.has(slot.dt)) continue;
+    const person=CREW[slot.ci];
+    if(!person) continue;
+    const assigned=names.has(person.full)?new Set(jcAssignedDates(fresh, person.full)):new Set();
+    if(assigned.has(slot.dt)) continue;
+    _fpLogSlotDelete(slot.id, slot.label, slot.dt, person.full+' is not on '+fresh.customer+' that day');
+    if(slot.id!=null) await sb.delete('scheduled_slots', slot.id);
+    _fpForgetSlotId(slot.id);
+    const key=jcSlotKey(slot.ci,slot.w,slot.d);
+    if(SLOT_JOB_MAP[key]&&String(SLOT_JOB_MAP[key])===String(fresh.id)) delete SLOT_JOB_MAP[key];
+    changed=true;
+  }
+  // Double-booked extras for this job live in memory. Only drop one when the fresh
+  // assignment says this person is off that date — never from the stale job argument.
   for(let ci=0;ci<CREW.length;ci++){
-    const assigned=names.has(CREW[ci].full)?new Set(jcAssignedDates(job, CREW[ci].full)):null;
+    const person=CREW[ci];
+    if(!person) continue;
+    const assigned=names.has(person.full)?new Set(jcAssignedDates(fresh, person.full)):new Set();
     for(const ds of allDates){
-      if(assigned&&assigned.has(ds)) continue; // still assigned this day — leave the slot
+      if(assigned.has(ds)) continue;
       const pos=cvDateToSlot(new Date(ds+'T00:00:00')); if(!pos) continue;
-      const{w,d}=pos;
-      const s=newSlots[ci]?.[w]?.[d];
-      if(s&&s.l===job.customer){
-        // Primary slot for this job on a day this person is not assigned — delete it
-        await seRemoveSlot(ci,w,d);
-        const key=jcSlotKey(ci,w,d);
-        delete SLOT_JOB_MAP[key];
-        changed=true;
+      const extras=getExtraSlots(ci,pos.w,pos.d).filter(ex=>ex.l===fresh.customer);
+      for(const ex of extras){
+        _fpLogSlotDelete(ex.db_id, ex.l, ds, person.full+' is not on '+fresh.customer+' that day (double-booked)');
       }
-      // Also clean up a stray double-booked (extra) slot for this job — a crew member's
-      // booking can live ENTIRELY in the extra layer (their primary slot that day was a
-      // different job), which the primary-slot check above never sees.
-      if(getExtraSlots(ci,w,d).some(ex=>ex.l===job.customer)){
-        await seRemoveExtraSlotForLabel(ci,w,d,job.customer);
+      if(extras.length){
+        await seRemoveExtraSlotForLabel(ci,pos.w,pos.d,fresh.customer);
         changed=true;
       }
     }
@@ -6695,11 +7062,12 @@ function jcStampEntryRates(c,ds,opts){
 // A saved directRate or burdenedRate is never rewritten, including a legacy all-in
 // rate and a rate Operations stored from SQL. A day before the direct-rate model
 // gets only burdenedRate. A future day waits. Returns how many entries it filled.
-function _jcStampMissingRates(){
+function _jcStampMissingRates(onlyIds){
   if(!_isOwnerSession()) return 0;
   if(!_crewLoaded||!_costingSettingsLoadOk) return 0;
   const today=_csToday(); let n=0;
   JOB_RECORDS.forEach(job=>{
+    if(onlyIds&&!onlyIds.has(String(job.id))) return;
     Object.entries(job.dayLogs||{}).forEach(([ds,log])=>{
       if(!log||!Array.isArray(log.crewPresent)||ds>today) return;
       log.crewPresent.forEach(c=>{
@@ -7997,7 +8365,7 @@ async function saveJobCard(){
     if(_tPatches.length) await Promise.all(_tPatches);
   }
   document.getElementById('jc-name').textContent=job.customer||'Unnamed Job';
-  const _saved=await saveJobRecords();
+  const _saved=await saveJobRecords(job.id);
   if(!_saved) return;
   // ── Sync value back to the board card ────────────────────────────────────
   // Reconciles against the loaded data cache (_lastJobRows), NOT the DOM — matching by raw
@@ -8042,7 +8410,7 @@ async function deleteJobRecord(){
     }
   }
   JOB_RECORDS=JOB_RECORDS.filter(j=>j.id!==_jcId);
-  await saveJobRecords(); await saveSlotJobMap();
+  await saveJobRecords(_jcId); await saveSlotJobMap();
   logAudit('job_deleted',job?.customer||_jcId,job?.startDate?('Was scheduled '+job.startDate+' to '+(job.endDate||job.startDate)):'');
   closeModal('jobcard'); renderSchedule(); showSyncStatus('✓ Deleted');
 }
