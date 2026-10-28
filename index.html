@@ -1667,8 +1667,10 @@
           <label class="form-label">Unit of Measure</label>
           <select class="form-select" id="mat-unit">
             <option>Gallon</option>
+            <option>1.075 Gallon</option>
             <option>2 Gallon</option>
             <option>3 Gallon</option>
+            <option>3.225 Gallon</option>
             <option>5 Gallon</option>
             <option>15 Gallon</option>
             <option>Lbs</option>
@@ -6895,7 +6897,7 @@ function _jcCaptureUnitCost(m){
   const ri=jcResolveMatIdx(m);
   if(ri<0||!MATERIALS[ri]) return;
   const mat=MATERIALS[ri];
-  const pkgQty=parseFloat((mat.unit||'').match(/^(\d+\.?\d*)/)?.[1])||1;
+  const pkgQty=unitPackSize(mat.unit)||1;
   m.unitCost=(parseFloat(mat.price)||0)/pkgQty;
 }
 function jcLogSetMaterial(ds,idx,field,val){
@@ -9596,7 +9598,7 @@ function calcGetTotals(){
     // If no pkg-size button is selected, fall back to parsing the leading number
     // from the unit field (e.g. "15 Gallon" → 15) so the price is treated as
     // cost-per-container rather than cost-per-unit-of-1.
-    const unitPkgSz=parseFloat((m.unit||'').match(/^(\d+\.?\d*)/)?.[1])||0;
+    const unitPkgSz=unitPackSize(m.unit);
     const effPkgSz=pkgSz||unitPkgSz;
     // Per-unit cost (price ÷ container size), used for exact-mode pricing
     const perUnitCost=effPkgSz>0?price/effPkgSz:price;
@@ -13487,12 +13489,25 @@ const CAT_COLORS = {
   'Misc':             'var(--text3)',
 };
 
+// Kit size written at the start of a unit. "1.075 Gallon" is 1.075, "5 Gallon" is 5,
+// and "Gallon" (no number) is 0 so callers that mean one gallon use || 1.
+function unitPackSize(unit){
+  const n=parseFloat(String(unit||'').match(/^(\d+\.?\d*)/)?.[1]);
+  return (isFinite(n)&&n>0)?n:0;
+}
+const MAT_UNIT_PRESETS=['Gallon','1.075 Gallon','2 Gallon','3 Gallon','3.225 Gallon','5 Gallon','15 Gallon','Lbs','LF','Container'];
+function fillMatUnitSelect(current){
+  const sel=document.getElementById('mat-unit');
+  if(!sel) return;
+  const units=MAT_UNIT_PRESETS.slice();
+  const cur=String(current||'').trim();
+  if(cur && !units.includes(cur)) units.push(cur);
+  sel.innerHTML=units.map(u=>'<option>'+u.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</option>').join('');
+  sel.value=cur && units.includes(cur) ? cur : 'Gallon';
+}
 function costPerSqft(m){
   if(!m.price||!m.coverage||m.coverage<=0) return null;
-  let unitsPerGallon = 1;
-  // Extract gallons from unit
-  const unitMap = {'Gallon':1,'2 Gallon':2,'3 Gallon':3,'5 Gallon':5,'15 Gallon':15,'Lbs':1,'LF':1,'Container':1};
-  const gallons = unitMap[m.unit] || 1;
+  const gallons = unitPackSize(m.unit)||1;
   const pricePerGallon = m.price / gallons;
 
   if(m.coverageUnit === 'sqft/gallon' || m.coverageUnit === 'sqft/kit' || m.coverageUnit === 'sqft/bag'){
@@ -13581,8 +13596,7 @@ function updateMatCoverage(){
   const note = document.getElementById('mat-cost-sqft-note');
   if(!price||!coverage||coverage<=0){ wrap.style.display='none'; return; }
 
-  const unitMap={'Gallon':1,'2 Gallon':2,'3 Gallon':3,'5 Gallon':5,'15 Gallon':15,'Lbs':1,'LF':1,'Container':1};
-  const gallons = unitMap[unit]||1;
+  const gallons = unitPackSize(unit)||1;
   const pricePerGallon = price/gallons;
   let cpSqft;
   if(coverageUnit==='sqft/gallon'||coverageUnit==='sqft/kit'||coverageUnit==='sqft/bag'){
@@ -13609,7 +13623,7 @@ function editMaterial(idx){
   document.getElementById('mat-name').value = m.name||'';
   document.getElementById('mat-mfr').value = m.mfr||'';
   document.getElementById('mat-cat').value = m.cat||'Epoxy';
-  document.getElementById('mat-unit').value = m.unit||'Gallon';
+  fillMatUnitSelect(m.unit||'Gallon');
   document.getElementById('mat-price').value = m.price||'';
   document.getElementById('mat-date').value = m.date||'';
   document.getElementById('mat-coverage').value = m.coverage||'';
@@ -13695,7 +13709,7 @@ function openModal(id){
       const el=document.getElementById(f); if(el) el.value='';
     });
     document.getElementById('mat-cat').value='Epoxy';
-    document.getElementById('mat-unit').value='Gallon';
+    fillMatUnitSelect('Gallon');
     document.getElementById('mat-coverage-unit').value='sqft/gallon';
     document.getElementById('mat-cost-sqft').style.display='none';
   }
