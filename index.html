@@ -185,6 +185,40 @@
   .tab.active{color:var(--accent);border-bottom-color:var(--accent);}
   .tab-count{font-size:10px;font-family:'DM Mono',monospace;background:var(--surface3);color:var(--text3);padding:1px 6px;border-radius:20px;margin-left:4px;}
   .tab.active .tab-count{background:var(--accent-dim);color:var(--accent);}
+  /* Messages — same surfaces as the rest of the app, sized for a thumb. */
+  .msg-scroll{flex:1;overflow-y:auto;min-height:160px;-webkit-overflow-scrolling:touch;}
+  .msg-empty{color:var(--text3);font-size:14px;padding:28px 8px;text-align:center;line-height:1.45;}
+  .msg-row{display:flex;flex-direction:column;max-width:88%;}
+  .msg-row.mine{align-self:flex-end;align-items:flex-end;}
+  .msg-row.theirs{align-self:flex-start;align-items:flex-start;}
+  .msg-who{font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;margin:0 4px 3px;}
+  .msg-bubble{padding:10px 12px;border-radius:14px;font-size:15px;line-height:1.4;white-space:pre-wrap;word-break:break-word;}
+  .msg-row.mine .msg-bubble{background:var(--accent-dim);color:var(--text);border-bottom-right-radius:4px;}
+  .msg-row.theirs .msg-bubble{background:var(--surface2);border:1px solid var(--border);border-bottom-left-radius:4px;}
+  .msg-time{font-size:11px;color:var(--text3);margin:3px 4px 0;}
+  .msg-seen{font-size:11px;color:var(--text3);margin:2px 4px 0;}
+  .msg-ask{font-size:10px;font-weight:700;color:var(--accent);background:var(--accent-dim);border-radius:20px;padding:1px 7px;margin-left:6px;}
+  .msg-hide{background:none;border:none;color:var(--text3);font-size:11px;cursor:pointer;padding:2px 4px;font-family:'DM Sans',sans-serif;}
+  .msg-hide:hover{color:var(--red);}
+  .msg-mentions{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px 0;}
+  .msg-chip{min-height:36px;padding:6px 12px;border-radius:20px;border:1.5px solid var(--border2);background:var(--surface);color:var(--text2);font-size:13px;font-weight:600;font-family:'DM Sans',sans-serif;cursor:pointer;}
+  .msg-chip.on{border-color:var(--accent);background:var(--accent-dim);color:var(--accent);}
+  .msg-compose{display:flex;gap:8px;align-items:flex-end;padding:10px 12px 12px;border-top:1px solid var(--border);background:var(--surface);}
+  .msg-compose textarea{flex:1;min-height:44px;max-height:120px;font-size:16px;resize:none;}
+  .msg-send{min-height:44px;min-width:76px;padding:0 16px;border:none;border-radius:var(--radius-sm);background:var(--accent);color:#fff;font-weight:700;font-size:15px;font-family:'DM Sans',sans-serif;cursor:pointer;}
+  .msg-send:disabled{background:var(--surface3);color:var(--text3);cursor:default;}
+  .msg-status{font-size:12px;color:var(--text3);min-height:16px;padding:0 14px 8px;}
+  .msg-status[data-state="error"]{color:var(--red);}
+  .msg-status[data-state="sent"]{color:var(--green);}
+  #jc-pane-messages{flex-direction:column;padding:0;min-height:280px;max-height:62vh;}
+  #page-team .msg-column{max-width:680px;width:100%;margin:0 auto;display:flex;flex-direction:column;flex:1;min-height:0;}
+  #cv-msg-bar{padding:8px 12px 0;display:flex;flex-direction:column;gap:8px;}
+  #cv-team-open{width:100%;min-height:44px;border-radius:12px;border:1.5px solid var(--accent);background:var(--accent-dim);color:var(--accent);font-size:15px;font-weight:700;font-family:'DM Sans',sans-serif;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;}
+  .cv-jobmsg-chip{width:100%;min-height:44px;border-radius:12px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:14px;font-weight:600;font-family:'DM Sans',sans-serif;cursor:pointer;text-align:left;padding:8px 14px;}
+  #cv-team-panel{flex:1;min-height:0;flex-direction:column;background:var(--bg);}
+  #page-team .msg-compose,#cv-team-panel .msg-compose{position:sticky;bottom:0;}
+  #team-job-unreads,#cv-jobmsg-strip{display:flex;flex-direction:column;gap:8px;}
+  #team-job-unreads{padding:0 16px 8px;max-width:680px;margin:0 auto;width:100%;}
   .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:100;display:none;align-items:center;justify-content:center;padding:20px;}
   .modal-overlay.open{display:flex;}
   .modal{background:var(--surface);border:1px solid var(--border);border-radius:14px;width:100%;max-width:520px;max-height:92vh;overflow-y:auto;}
@@ -512,6 +546,11 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
         <span>Dashboard</span>
       </button>
+      <button class="nav-item" id="nav-team" data-page="team" onclick="showPage('team')" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+        <span>Team</span>
+        <span id="nav-team-badge" style="display:none;background:var(--accent);color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:1px 6px;line-height:1.4;font-family:'DM Mono',monospace;"></span>
+      </button>
       <button class="nav-item" onclick="showPage('pipeline')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M3 12h14M3 18h10"/></svg>
         <span>Pipeline</span>
@@ -619,6 +658,28 @@
   <div class="main">
 
     <!-- DASHBOARD -->
+    <div class="page" id="page-team">
+      <div class="topbar">
+        <div>
+          <div class="page-title">Team</div>
+          <div style="font-size:12px;color:var(--text3);margin-top:2px;">Everyone at the company can read and reply.</div>
+        </div>
+        <div class="topbar-actions">
+          <button class="btn btn-ghost" id="team-mark-read" type="button" onclick="msgMarkRead('team')">Mark read</button>
+        </div>
+      </div>
+      <div id="team-job-unreads"></div>
+      <div class="content msg-column" style="padding-top:0;">
+        <div id="team-msg-list" class="msg-scroll" data-job-id="team" data-unread-count="0"></div>
+        <div id="team-msg-mentions" class="msg-mentions"></div>
+        <div class="msg-compose">
+          <textarea id="team-msg-body" class="form-textarea" maxlength="2000" placeholder="Message the whole company"></textarea>
+          <button id="team-msg-send" class="msg-send" type="button" onclick="msgSend('team')">Send</button>
+        </div>
+        <div id="team-msg-status" class="msg-status" data-state="idle"></div>
+      </div>
+    </div>
+
     <div class="page active" id="page-dashboard">
       <div class="topbar">
         <div class="page-title">Dashboard</div>
@@ -1098,6 +1159,23 @@
           <button class="cv-today-btn" onclick="openProdDocs()" style="color:var(--accent);border-color:var(--accent);">📄 Product Docs</button>
           <button class="cv-lock-btn cv-today-btn" onclick="cvLockDevice()" style="color:var(--red);border-color:var(--red-dim);">🔒 Crew Mode</button>
         </div>
+      </div>
+      <div id="cv-msg-bar" style="display:none;">
+        <button id="cv-team-open" type="button" onclick="cvOpenTeam()">Team<span id="cv-team-badge" style="display:none;background:var(--accent);color:#fff;font-size:12px;font-weight:700;border-radius:10px;padding:1px 7px;line-height:1.4;font-family:'DM Mono',monospace;"></span></button>
+        <div id="cv-jobmsg-strip"></div>
+      </div>
+      <div id="cv-team-panel" style="display:none;">
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;">
+          <button id="cv-team-back" type="button" class="btn btn-ghost" style="min-height:44px;" onclick="cvCloseTeam()">‹ Schedule</button>
+          <div style="font-size:16px;font-weight:700;">Team</div>
+        </div>
+        <div id="cv-team-list" class="msg-scroll" data-job-id="team" data-unread-count="0"></div>
+        <div id="cv-team-mentions" class="msg-mentions"></div>
+        <div class="msg-compose">
+          <textarea id="cv-team-body" class="form-textarea" maxlength="2000" placeholder="Reply to the company"></textarea>
+          <button id="cv-team-send" class="msg-send" type="button" onclick="msgSend('cv')">Send</button>
+        </div>
+        <div id="cv-team-status" class="msg-status" data-state="idle"></div>
       </div>
       <!-- Crew selector -->
       <div class="cv-crew-row" id="cv-crew-row"></div>
@@ -2376,7 +2454,9 @@ const AUDIT_ACTION_META={
   pto_request_sent_back:{icon:'↩',label:'PTO request sent back for info',color:'var(--orange)'},
   pto_request_replied:{icon:'💬',label:'PTO request clarified & resubmitted',color:'var(--blue)'},
   job_photo_added:{icon:'📷',label:'Job photo added',color:'var(--green)'},
-  job_photo_removed:{icon:'🗑️',label:'Job photo removed',color:'var(--red)'}
+  job_photo_removed:{icon:'🗑️',label:'Job photo removed',color:'var(--red)'},
+  message_posted:{icon:'💬',label:'Message posted',color:'var(--blue)'},
+  message_hidden:{icon:'💬',label:'Message hidden',color:'var(--red)'}
 };
 // Rows for job_updated / job_photo_* store their details as JSON — {_rich:1, summary, changes:[{label,from,to}], photos:[{name,thumb,url}]}
 // — so the audit log can show a one-line summary plus an expandable full before/after (and photo thumbnails). Older/other
@@ -3661,6 +3741,7 @@ async function loadAllFromSupabase(){
     crossCheckLeadsVsJobs();   // flag any pipeline lead that's already an approved job
     initSalesNotifications();
     showSyncStatus('✓ Ready','var(--green)');
+    await msgStart();
     // Sign photo URLs after the screens are drawn. Waiting here used to leave the
     // dashboard on its empty first paint, because every note and date in the job
     // records was being sent to the storage signer.
@@ -5642,11 +5723,244 @@ async function jcToggleCrewDay(i, ds){
     : (doubled ? name+' on '+jcFmtDate(ds)+' — double-booked (also on another job).' : name+' on '+jcFmtDate(ds)+'.'));
 }
 
+// Messages. Hidden until fp_unread_job_messages exists, so live stays unchanged
+// until that migration is applied. 'team' is the company thread.
+const MSG_TEAM='team';
+const MSG_MOUNTS={
+  jc:{list:'jc-msg-list',body:'jc-msg-body',send:'jc-msg-send',status:'jc-msg-status',mark:'jc-msg-mark-read',mentions:'jc-msg-mentions',prefix:'jc-msg-',mentionPrefix:'jc-msg-mention-',hidePrefix:'jc-msg-hide-'},
+  team:{list:'team-msg-list',body:'team-msg-body',send:'team-msg-send',status:'team-msg-status',mark:'team-mark-read',mentions:'team-msg-mentions',prefix:'team-msg-',mentionPrefix:'team-mention-',hidePrefix:'team-hide-'},
+  cv:{list:'cv-team-list',body:'cv-team-body',send:'cv-team-send',status:'cv-team-status',mark:null,mentions:'cv-team-mentions',prefix:'cv-team-msg-',mentionPrefix:'cv-team-mention-',hidePrefix:'cv-team-hide-'}
+};
+let _msgOn=false,_msgUnread=[],_msgTickN=0,_msgSending={};
+const _msgPicks={jc:new Set(),team:new Set(),cv:new Set()};
+function msgEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');}
+function msgWhen(iso){const d=new Date(iso);if(isNaN(d.getTime()))return '';return d.toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});}
+function msgCount(jobId){const row=(_msgUnread||[]).find(r=>r&&r.job_id===jobId);return row?(Number(row.unread)||0):0;}
+function msgSetBadge(id,n){const el=document.getElementById(id);if(!el)return;el.style.display=n>0?'inline-block':'none';el.textContent=n>9?'9+':String(n);}
+function msgSetAvailable(on){
+  const changed=_msgOn!==!!on;
+  _msgOn=!!on;
+  const nav=document.getElementById('nav-team');
+  if(nav) nav.style.display=_msgOn?'':'none';
+  const tab=document.getElementById('jc-tab-messages');
+  if(tab) tab.style.display=_msgOn?'':'none';
+  if(!_msgOn && document.getElementById('page-team')?.classList.contains('active') && typeof showPage==='function') showPage('dashboard');
+  msgPaintBadges();
+  if(changed && _msgOn && document.getElementById('page-team')?.classList.contains('active')) msgOpenTeam();
+}
+function msgPaintBadges(){
+  msgSetBadge('nav-team-badge', _msgOn?msgCount(MSG_TEAM):0);
+  msgSetBadge('cv-team-badge', _msgOn?msgCount(MSG_TEAM):0);
+  const tabN=_msgOn&&_jcId?msgCount(_jcId):0;
+  msgSetBadge('jc-msg-tab-badge', tabN);
+  const panel=document.getElementById('cv-team-panel');
+  const panelOpen=panel&&panel.style.display==='flex';
+  const bar=document.getElementById('cv-msg-bar');
+  if(bar) bar.style.display=(_msgOn&&!panelOpen)?'flex':'none';
+  const strip=document.getElementById('cv-jobmsg-strip');
+  const office=document.getElementById('team-job-unreads');
+  const jobs=(_msgOn?_msgUnread:[]).filter(r=>r&&r.job_id!==MSG_TEAM&&r.unread>0&&/^[0-9a-f-]{36}$/i.test(r.job_id));
+  const chip=(r,idPrefix,fn)=>`<button type="button" class="cv-jobmsg-chip" id="${idPrefix}${r.job_id}" data-job-id="${r.job_id}" onclick="${fn}('${r.job_id}')">${msgEsc((typeof getJobRecord==='function'&&getJobRecord(r.job_id)&&getJobRecord(r.job_id).customer)||'Job')} · ${r.unread} new</button>`;
+  if(strip) strip.innerHTML=_msgOn?jobs.map(r=>chip(r,'cv-jobmsg-','cvOpenJobMessages')).join(''):'';
+  if(office) office.innerHTML=_msgOn&&jobs.length?('<div style="font-size:12px;color:var(--text3);margin-bottom:6px;">New on a job</div>'+jobs.map(r=>chip(r,'team-jobmsg-','msgOpenJobFromList')).join('')):'';
+}
+async function msgRefreshUnread(){
+  if(typeof _sessionAuthed!=='undefined'&&!_sessionAuthed) return;
+  const rpc=await sb.rpc('fp_unread_job_messages',{});
+  if(rpc.missing){ msgSetAvailable(false); return; }
+  if(!rpc.ok) return;
+  _msgUnread=Array.isArray(rpc.data)?rpc.data:[];
+  msgSetAvailable(true);
+}
+async function msgStart(){
+  try{ await msgRefreshUnread(); }catch(e){ console.error('messages',e); }
+  if(window._msgTimer) return;
+  window._msgTimer=setInterval(msgTick,10000);
+}
+function msgStop(){
+  clearInterval(window._msgTimer);
+  window._msgTimer=null;
+  _msgUnread=[];
+  msgSetAvailable(false);
+}
+function msgThreadOpen(){
+  if(document.getElementById('jc-pane-messages')?.style.display==='flex') return 'jc';
+  if(document.getElementById('page-team')?.classList.contains('active')) return 'team';
+  if(document.getElementById('cv-team-panel')?.style.display==='flex') return 'cv';
+  return '';
+}
+function msgTick(){
+  if(document.hidden||!_sessionAuthed) return;
+  _msgTickN++;
+  const open=msgThreadOpen();
+  if(!open && _msgTickN%4!==0) return;
+  msgRefreshUnread();
+  if(!open) return;
+  const body=document.getElementById(MSG_MOUNTS[open].body);
+  if(body&&document.activeElement===body) return;
+  const jobId=open==='jc'?_jcId:MSG_TEAM;
+  if(jobId) msgLoad(open, jobId, {quiet:true});
+}
+function msgOpenJob(){ if(_msgOn&&_jcId) msgLoad('jc', _jcId); }
+function msgOpenTeam(){ if(_msgOn) msgLoad('team', MSG_TEAM); }
+function cvOpenTeam(){
+  const panel=document.getElementById('cv-team-panel');
+  const cal=document.getElementById('cv-cal');
+  const crew=document.getElementById('cv-crew-row');
+  const bar=document.getElementById('cv-msg-bar');
+  if(panel) panel.style.display='flex';
+  if(cal) cal.style.display='none';
+  if(crew) crew.style.display='none';
+  if(bar) bar.style.display='none';
+  msgLoad('cv', MSG_TEAM);
+}
+function cvCloseTeam(){
+  const panel=document.getElementById('cv-team-panel');
+  const cal=document.getElementById('cv-cal');
+  const crew=document.getElementById('cv-crew-row');
+  if(panel) panel.style.display='none';
+  if(cal) cal.style.display='';
+  if(crew) crew.style.display='';
+  msgPaintBadges();
+}
+function cvOpenJobMessages(jobId){ msgOpenJobFromList(jobId); }
+function msgOpenJobFromList(jobId){
+  if(typeof getJobRecord!=='function'||!getJobRecord(jobId)){ showToast('That job is not on this screen.'); return; }
+  openJobCard(jobId);
+  setTimeout(()=>jcTab('messages'),40);
+}
+function msgToggleMention(which,id){
+  const set=_msgPicks[which]; if(!set) return;
+  if(set.has(id)) set.delete(id); else set.add(id);
+  const btn=document.getElementById(MSG_MOUNTS[which].mentionPrefix+id);
+  if(!btn) return;
+  const on=set.has(id);
+  btn.classList.toggle('on', on);
+  btn.dataset.selected=on?'1':'0';
+}
+function msgRender(which, data){
+  const m=MSG_MOUNTS[which];
+  const list=document.getElementById(m.list);
+  if(!list) return;
+  const compose=document.getElementById(m.body)&&document.getElementById(m.body).closest('.msg-compose');
+  if(compose) compose.style.display=data.can_post===false?'none':'flex';
+  const mark=m.mark&&document.getElementById(m.mark);
+  if(mark) mark.style.display=data.manual_read?'':'none';
+  const box=document.getElementById(m.mentions);
+  const picks=_msgPicks[which];
+  if(box){
+    const choices=(Array.isArray(data.mention_choices)?data.mention_choices:[]).filter(c=>c.account_id!==data.me);
+    box.innerHTML=choices.map(c=>{
+      const id=String(c.account_id||'');
+      const on=picks.has(id);
+      return `<button type="button" class="msg-chip${on?' on':''}" id="${m.mentionPrefix}${id}" data-selected="${on?'1':'0'}" data-mention-account="${msgEsc(id)}" onclick="msgToggleMention('${which}','${id}')">${msgEsc(c.label||'Crew')}</button>`;
+    }).join('');
+  }
+  const last=data.last_read_at?new Date(data.last_read_at).getTime():0;
+  const me=data.me||'';
+  const messages=Array.isArray(data.messages)?data.messages:[];
+  list.dataset.jobId=data.job_id||'';
+  let unreadN=0;
+  list.innerHTML=messages.length?messages.map(msg=>{
+    const mine=msg.author_account_id&&msg.author_account_id===me;
+    const t=new Date(msg.created_at).getTime();
+    const unread=!mine&&(!last||t>last);
+    if(unread) unreadN++;
+    const mentionIds=(msg.mentions||[]).map(x=>x.account_id).filter(Boolean);
+    const asked=!mine&&mentionIds.indexOf(me)!==-1;
+    const seenNames=(msg.seen_by||[]).filter(Boolean);
+    const seenN=Number(msg.seen_count)||seenNames.length;
+    const seenTxt=seenN?(seenN<=3?('Seen by '+seenNames.join(', ')):'Seen by '+seenN):'';
+    const hide=data.can_hide?`<button type="button" class="msg-hide" id="${m.hidePrefix}${msg.id}" onclick="msgHide('${which}','${msg.id}')">Hide</button>`:'';
+    return `<div class="msg-row ${mine?'mine':'theirs'}" id="${m.prefix}${msg.id}" data-message-id="${msgEsc(msg.id)}" data-author-account-id="${msgEsc(msg.author_account_id||'')}" data-author-label="${msgEsc(msg.author_label||'')}" data-author-kind="${msgEsc(msg.author_kind||'')}" data-created-at="${msgEsc(msg.created_at||'')}" data-unread="${unread?'1':'0'}" data-mentions="${msgEsc(mentionIds.join(','))}" data-seen-by="${msgEsc(seenNames.join(', '))}">
+      <div class="msg-who">${mine?'You':msgEsc(msg.author_label||'')} ${asked?'<span class="msg-ask">Asked you</span>':''}</div>
+      <div class="msg-bubble">${msgEsc(msg.body||'')}</div>
+      <div class="msg-time">${msgEsc(msgWhen(msg.created_at))} ${hide}</div>
+      ${seenTxt?`<div class="msg-seen">${msgEsc(seenTxt)}</div>`:''}
+    </div>`;
+  }).join(''):'<div class="msg-empty">'+(data.job_id===MSG_TEAM?'Nothing posted yet. Say hello to the company.':'No messages yet. Ask how the job is going.')+'</div>';
+  list.dataset.unreadCount=String(unreadN);
+  list.scrollTop=list.scrollHeight;
+}
+async function msgLoad(which, jobId, opts){
+  if(!_msgOn&&!(opts&&opts.force)) return;
+  const m=MSG_MOUNTS[which];
+  const list=document.getElementById(m.list);
+  if(!list||!jobId) return;
+  const rpc=await sb.rpc('fp_list_job_messages',{job_id:jobId});
+  if(rpc.missing){ msgSetAvailable(false); return; }
+  if(!rpc.ok){
+    list.innerHTML='<div class="msg-empty">Messages on this job are for the crew scheduled on it.</div>';
+    const compose=document.getElementById(m.body)&&document.getElementById(m.body).closest('.msg-compose');
+    if(compose) compose.style.display='none';
+    return;
+  }
+  msgRender(which, rpc.data||{});
+  if(rpc.data&&rpc.data.manual_read===false){
+    await sb.rpc('fp_mark_job_thread_read',{job_id:jobId});
+    list.querySelectorAll('[data-unread="1"]').forEach(el=>{el.dataset.unread='0';});
+    list.dataset.unreadCount='0';
+    msgRefreshUnread();
+  }
+}
+async function msgSend(which){
+  if(_msgSending[which]) return;
+  const m=MSG_MOUNTS[which];
+  const bodyEl=document.getElementById(m.body);
+  const status=document.getElementById(m.status);
+  const send=document.getElementById(m.send);
+  const text=(bodyEl&&bodyEl.value||'').trim();
+  const jobId=which==='jc'?_jcId:MSG_TEAM;
+  if(!text){ if(status){status.dataset.state='error';status.dataset.error='empty';status.textContent='Write a message first.';} return; }
+  _msgSending[which]=true;
+  if(send) send.disabled=true;
+  if(status){ status.dataset.state='sending'; status.dataset.error=''; status.textContent='Sending…'; }
+  const rpc=await sb.rpc('fp_post_job_message',{job_id:jobId, body:text, mention_ids:[..._msgPicks[which]]});
+  _msgSending[which]=false;
+  if(send) send.disabled=false;
+  if(rpc.missing){ msgSetAvailable(false); return; }
+  if(!rpc.ok){
+    if(status){ status.dataset.state='error'; status.dataset.error=(rpc.error&&(rpc.error.message||rpc.error.code))||'failed'; status.textContent='Could not send. Try again.'; }
+    return;
+  }
+  if(bodyEl) bodyEl.value='';
+  _msgPicks[which].clear();
+  if(status){ status.dataset.state='sent'; status.dataset.error=''; status.textContent='Sent'; }
+  await msgLoad(which, jobId, {quiet:true});
+  msgRefreshUnread();
+}
+async function msgMarkRead(which){
+  const jobId=which==='jc'?_jcId:MSG_TEAM;
+  const status=document.getElementById(MSG_MOUNTS[which].status);
+  const rpc=await sb.rpc('fp_mark_job_thread_read',{job_id:jobId});
+  if(!rpc.ok){
+    if(status){ status.dataset.state='error'; status.dataset.error='mark_read'; status.textContent='Could not mark read.'; }
+    return;
+  }
+  const list=document.getElementById(MSG_MOUNTS[which].list);
+  if(list){ list.dataset.unreadCount='0'; list.querySelectorAll('[data-unread]').forEach(el=>{el.dataset.unread='0';}); }
+  if(status){ status.dataset.state='sent'; status.dataset.error=''; status.textContent='Marked read'; }
+  msgRefreshUnread();
+}
+async function msgHide(which, id){
+  const btn=document.getElementById(MSG_MOUNTS[which].hidePrefix+id);
+  if(!btn) return;
+  if(btn.dataset.confirm!=='1'){ btn.dataset.confirm='1'; btn.textContent='Tap again to hide'; return; }
+  const rpc=await sb.rpc('fp_hide_job_message',{message_id:id});
+  if(!rpc.ok){ showToast('Only the owner can hide a message.'); return; }
+  msgLoad(which, which==='jc'?_jcId:MSG_TEAM, {quiet:true});
+}
+
 function jcTab(name){
-  ['info','materials','log','costing'].forEach(t=>{
-    document.getElementById('jc-pane-'+t).style.display=t===name?'':'none';
-    document.getElementById('jc-tab-'+t).classList.toggle('active',t===name);
+  ['info','materials','log','costing','messages'].forEach(t=>{
+    const pane=document.getElementById('jc-pane-'+t);
+    const tab=document.getElementById('jc-tab-'+t);
+    if(pane) pane.style.display=t===name?(t==='messages'?'flex':''):'none';
+    if(tab) tab.classList.toggle('active',t===name);
   });
+  const foot=document.getElementById('jc-footer');
+  if(foot) foot.style.display=name==='messages'?'none':'';
+  if(name==='messages') msgOpenJob();
   if(name==='costing') renderJobCosting();
   if(name==='materials') jcRenderMaterials();
   if(name==='log'){
@@ -8982,6 +9296,7 @@ function renderCrewView(){
 
   elCal.innerHTML=`<div class="cv-dow-row">${dowHdr}</div>${weeksHtml}`;
   _updateMyPtoBadge();
+  if(typeof msgPaintBadges==='function') msgPaintBadges();
 }
 
 // Tap a job event — open job card on the daily log tab, scrolled to that day
@@ -10113,6 +10428,7 @@ function fpRevokeServerSession(){
 }
 
 async function showLoginScreen(){
+  msgStop();
   _pinBuf=''; _pinBusy=false; _pinSubmitLock=false; _loginOldPin=''; _loginNewPin='';
   _applySignedInUserUi(null);
   const err=document.getElementById('pin-error');
@@ -10573,6 +10889,7 @@ function showPage(id){
   if(id==='reference') renderReference();
   if(id==='pipeline') renderPipeline();
   if(id==='crewview') renderCrewView();
+  if(id==='team') msgOpenTeam();
   if(id==='jobtypes') renderJobTypes();
   if(id==='materialcalc') renderMaterialCalc();
   if(id==='matreqs') renderMatRequestsPage();
@@ -18209,6 +18526,7 @@ async function deleteMaintEntry(id){
       <button class="tab" id="jc-tab-materials" onclick="jcTab('materials')">📦 Materials</button>
       <button class="tab" id="jc-tab-log" onclick="jcTab('log')">📅 Daily Log</button>
       <button class="tab" id="jc-tab-costing" onclick="jcTab('costing')">💰 Costing</button>
+      <button class="tab" id="jc-tab-messages" onclick="jcTab('messages')" style="display:none;">Messages <span id="jc-msg-tab-badge" class="tab-count" style="display:none;"></span></button>
     </div>
     <!-- Info Pane -->
     <div id="jc-pane-info" class="modal-body">
@@ -18311,10 +18629,23 @@ async function deleteMaintEntry(id){
     <div id="jc-pane-costing" class="modal-body" style="display:none;">
       <div id="jc-costing-content"></div>
     </div>
+    <!-- Messages Pane. Not in the lock-state list, so a locked job can still be discussed. -->
+    <div id="jc-pane-messages" class="modal-body" style="display:none;">
+      <div id="jc-msg-list" class="msg-scroll" data-job-id="" data-unread-count="0"></div>
+      <div id="jc-msg-mentions" class="msg-mentions"></div>
+      <div class="msg-compose" id="jc-msg-compose">
+        <textarea id="jc-msg-body" class="form-textarea" maxlength="2000" placeholder="Message the crew on this job"></textarea>
+        <button id="jc-msg-send" class="msg-send" type="button" onclick="msgSend('jc')">Send</button>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+        <div id="jc-msg-status" class="msg-status" data-state="idle"></div>
+        <button id="jc-msg-mark-read" class="btn btn-ghost" type="button" style="min-height:44px;margin:0 12px 8px;" onclick="msgMarkRead('jc')">Mark read</button>
+      </div>
+    </div>
     <div id="jc-lock-banner" style="display:none;margin:0 22px 0;padding:8px 14px;background:#f59e0b22;border:1px solid #f59e0b66;border-radius:8px;font-size:12px;color:#92400e;display:none;align-items:center;gap:8px;">
       🔒 <span>This job is locked. Click the padlock to make changes.</span>
     </div>
-    <div class="modal-footer" style="flex-wrap:wrap;gap:8px;">
+    <div class="modal-footer" id="jc-footer" style="flex-wrap:wrap;gap:8px;">
       <button id="jc-delete-btn" class="btn btn-ghost" style="color:var(--red);" onclick="deleteJobRecord()">🗑 Delete</button>
       <button id="jc-reschedule-btn" class="btn btn-ghost" style="color:var(--blue);" onclick="jcReschedule()">📅 Reschedule</button>
       <div style="flex:1"></div>
