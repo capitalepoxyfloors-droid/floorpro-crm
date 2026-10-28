@@ -10766,22 +10766,27 @@ function tapAgain(el, armedLabel){
   if(el && el.currentTarget) el=el.currentTarget;
   if(!el || !el.tagName) return false;
   if(el.dataset.confirm==='1'){
+    // A fast second tap is the accidental double-tap. Leave it armed.
+    if(Date.now() - Number(el.dataset.confirmAt || 0) < 400) return false;
     clearTimeout(el._tapT);
     el.dataset.confirm='';
+    el.dataset.confirmAt='';
     if(el.dataset.tapLabel!=null) el.textContent=el.dataset.tapLabel;
     return true;
   }
   el.dataset.tapLabel=el.textContent;
   el.dataset.confirm='1';
+  el.dataset.confirmAt=String(Date.now());
   el.textContent=armedLabel||'Tap again';
   if(typeof showToast==='function') showToast('Tap again to confirm.');
   clearTimeout(el._tapT);
   el._tapT=setTimeout(()=>{
     if(el.dataset.confirm==='1'){
       el.dataset.confirm='';
+      el.dataset.confirmAt='';
       el.textContent=el.dataset.tapLabel||'';
     }
-  }, 4000);
+  }, 3000);
   return false;
 }
 async function pinLogout(ev){
