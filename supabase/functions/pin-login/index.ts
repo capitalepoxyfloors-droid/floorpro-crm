@@ -31,6 +31,7 @@ import {
   rosterFrom,
   spikeCount,
 } from '../_shared/pins.mjs';
+import { assertPinFree, PIN_IN_USE } from '../_shared/pin-unique.mjs';
 import { corsHeaders, envKeys, json } from '../_shared/http.ts';
 
 type Db = ReturnType<typeof createClient>;
@@ -134,6 +135,14 @@ Deno.serve(async (req) => {
     const next = normalizePin(body.new_pin, pinLengthFor(row.kind));
     if (!next) return json({ error: `Your new code must be exactly ${pinLengthFor(row.kind)} digits.`, must_change: true }, 400);
     if (next.startsWith(pin)) return json({ error: 'Pick a new code that does not start with your old one.', must_change: true }, 400);
+    try {
+      await assertPinFree(db, next, row.id);
+    } catch (err) {
+      const message = err instanceof Error && err.message === PIN_IN_USE
+        ? PIN_IN_USE
+        : 'Could not save your new code. Try again.';
+      return json({ error: message, must_change: true }, message === PIN_IN_USE ? 409 : 503);
+    }
     const nextNonce = (row.session_nonce || 0) + 1;
     if (row.auth_user_id) await db.rpc('fp_revoke_sessions', { target_user: row.auth_user_id });
     const saved = await db.from('pin_accounts').update({

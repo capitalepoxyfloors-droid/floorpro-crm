@@ -4,12 +4,14 @@
 //   supabase functions deploy pin-admin
 //
 // whoami is how the app learns it is still allowed in. Changing a PIN writes a
-// new hash only. The old plaintext rows in settings are left untouched so a
-// rollback of the database policies still has the codes from cutover night.
+// new hash only, after checking it is not already another person's code.
+// The old plaintext rows in settings are left untouched so a rollback of the
+// database policies still has the codes from cutover night.
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import bcrypt from 'npm:bcryptjs@2.4.3';
 import { isInactiveCrew, isLocked, normalizePin } from '../_shared/pins.mjs';
+import { assertPinFree } from '../_shared/pin-unique.mjs';
 import { corsHeaders, envKeys, json } from '../_shared/http.ts';
 
 type Account = {
@@ -151,6 +153,7 @@ async function setOwnerPin(
   const { data: existing, error: readErr } = await db.from('pin_accounts')
     .select('id, auth_user_id, session_nonce').eq('kind', 'owner').maybeSingle();
   if (readErr || !existing) throw new Error('Could not save the manager code.');
+  await assertPinFree(db, pin, existing.id);
   await replacePin(db, url, service, existing, newPinPatch(pin), 'owner');
   return { ok: true };
 }
@@ -166,6 +169,7 @@ async function setCrewPin(
   const label = await crewLabel(db, crewIdx);
   const { data: existing } = await db.from('pin_accounts')
     .select('id, auth_user_id, session_nonce').eq('kind', 'crew').eq('crew_idx', crewIdx).maybeSingle();
+  await assertPinFree(db, pin, existing ? existing.id : null);
   if (existing) {
     await replacePin(db, url, service, existing, { ...newPinPatch(pin), label }, 'crew', crewIdx);
   } else {
@@ -217,6 +221,7 @@ async function addOffice(db: ReturnType<typeof createClient>, body: Record<strin
   const name = String(body.name || '').trim();
   if (!name) throw new Error('Enter a name.');
   const pin = requirePin(body.pin, 6, 6);
+  await assertPinFree(db, pin, null);
   const { data: existing } = await db.from('pin_accounts').select('id, label');
   // Names are what people tap on the sign-in screen, so they must be unique across everyone.
   if ((existing || []).some((row) => String(row.label || '').toLowerCase() === name.toLowerCase())) {
@@ -245,6 +250,7 @@ async function setOfficePin(
   const { data: existing, error: readErr } = await db.from('pin_accounts')
     .select('id, auth_user_id, session_nonce').eq('kind', 'office').eq('office_id', officeId).maybeSingle();
   if (readErr || !existing) throw new Error('Could not save that PIN.');
+  await assertPinFree(db, pin, existing.id);
   await replacePin(db, url, service, existing, newPinPatch(pin), 'office');
   return { ok: true };
 }

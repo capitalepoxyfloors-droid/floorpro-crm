@@ -442,17 +442,29 @@
   #pin-remember-wrap{display:none;align-items:flex-start;gap:8px;margin-top:12px;font-size:13px;color:var(--text);text-align:left;cursor:pointer;line-height:1.35;}
   #pin-remember-wrap input{margin-top:2px;width:16px;height:16px;flex:0 0 auto;accent-color:var(--accent);}
   .pin-remember-note{display:none;font-size:11px;color:var(--text3);margin-top:6px;line-height:1.4;text-align:left;}
-  #login-card.pin-step{max-width:560px !important;}
-  @media(min-width:521px){
-    #login-card.pin-step .pin-entry{flex-direction:row;align-items:flex-start;gap:18px;}
-    #login-card.pin-step .pin-typed{flex:1;min-width:180px;}
-    #login-card.pin-step #login-pin{width:210px;flex:0 0 210px;margin-top:22px;}
-  }
-  /* Mobile — bottom-sheet modals + full-width calendar */
+  #login-pin{display:none !important;}
+  #login-card.pin-step{max-width:360px !important;}
+  .cv-topbar{flex-wrap:wrap;align-items:flex-start;gap:8px;}
+  .cv-topbar-main{display:flex;align-items:center;gap:10px;min-width:0;flex:1 1 200px;}
+  .cv-topbar-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}
+  #cv-sign-out,#cv-back-manager{display:none;}
+  .crew-mode #cv-sign-out{display:inline-flex !important;}
+  body.crew-preview #cv-sign-out{display:none !important;}
+  body.crew-mode #sync-status{top:auto !important;bottom:14px;right:12px;}
+  body.crew-preview #cv-back-manager{display:inline-flex !important;}
+  body.crew-preview .cv-lock-btn{display:none !important;}
+  .crew-mode #jc-open-schedule,.crew-mode #jc-open-calc{display:none !important;}
+  /* Mobile — bottom-sheet modals + full-width calendar.
+     The job card is a full page on a phone so the title and tabs are not clipped. */
   @media(max-width:520px){
     .modal-overlay{padding:0;align-items:flex-end;}
     .modal{max-width:100vw!important;max-height:92vh;border-radius:16px 16px 0 0;margin:0;}
-    .cv-topbar{padding:8px 12px;}
+    #modal-jobcard.modal-overlay{align-items:stretch;padding:0;}
+    #modal-jobcard .modal{width:100%;height:100dvh;max-height:100dvh;max-width:100vw!important;border-radius:0;margin:0;}
+    #jc-pane-messages{max-height:none;}
+    #sync-status{top:auto !important;bottom:14px;right:12px;}
+    .cv-topbar{flex-direction:column;align-items:stretch;justify-content:flex-start;padding:6px 12px 8px;gap:6px;}
+    .cv-topbar-main,.cv-topbar-actions{flex:0 0 auto;width:100%;}
     .cv-month-label{font-size:15px;}
     .cv-nav-btn{width:30px;height:30px;font-size:17px;}
     .cv-today-btn{font-size:11px;padding:4px 9px;}
@@ -479,8 +491,7 @@
     <div style="font-size:11px;letter-spacing:2.5px;text-transform:uppercase;color:var(--text3);font-family:'DM Mono',monospace;margin-bottom:6px;">FloorPro</div>
     <div style="font-size:26px;font-weight:800;letter-spacing:-.5px;margin-bottom:2px;">CRM</div>
     <div id="login-env" style="display:none;font-size:11px;letter-spacing:.4px;color:#d97706;margin:6px 0 2px;font-family:'DM Mono',monospace;">Test project</div>
-    <!-- Name can be typed, picked from the list, or filled by a password manager.
-         The PIN field accepts typing, paste, and autofill. The keypad still works. -->
+    <!-- Name list plus one PIN box. A password manager can fill #username and #password. -->
     <form id="pin-login-form" class="pin-login-form" method="post" action="#" autocomplete="on" novalidate>
       <div class="pin-name">
         <label class="pin-field-label" for="username">Name</label>
@@ -650,7 +661,7 @@
         <div class="avatar" id="sb-user-avatar"></div>
         <div><div class="user-name" id="sb-user-name"></div><div class="user-role" id="sb-user-role"></div></div>
       </div>
-      <button type="button" class="sb-sign-out" id="sb-sign-out" onclick="pinLogout()" title="Sign out of this browser">Sign out</button>
+      <button type="button" class="sb-sign-out" id="sb-sign-out" onclick="pinLogout(this)" title="Sign out of this browser">Sign out</button>
     </div>
   </div>
 
@@ -684,16 +695,15 @@
       <div class="topbar">
         <div class="page-title">Dashboard</div>
         <div class="topbar-actions">
-          <button class="btn btn-ghost" id="dash-edit-btn" onclick="toggleDashEdit()">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-            Customize
+          <button class="btn btn-ghost" id="dash-edit-btn" onclick="toggleDashEdit()" title="Arrange dashboard" aria-label="Arrange dashboard" style="padding:7px 10px;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
           </button>
           <button class="btn btn-ghost" onclick="openLeadModalForStage('new')">+ Lead</button>
           <button class="btn btn-primary" onclick="openModal('schedulejob')">+ Schedule Job</button>
         </div>
       </div>
       <div class="content">
-        <div id="dash-edit-banner" style="display:none;background:var(--accent-dim);border:1px solid var(--accent2);border-radius:var(--radius-sm);padding:10px 16px;margin-bottom:16px;font-size:13px;color:var(--accent);display:none;align-items:center;gap:10px;">
+        <div id="dash-edit-banner" style="display:none;background:var(--accent-dim);border:1px solid var(--accent2);border-radius:var(--radius-sm);padding:10px 16px;margin-bottom:16px;font-size:13px;color:var(--accent);align-items:center;gap:10px;">
           <span>✏️ Drag sections to reorder. Click <strong>Done</strong> when finished.</span>
           <button class="btn btn-primary" style="margin-left:auto;padding:5px 14px;" onclick="toggleDashEdit()">Done</button>
         </div>
@@ -998,7 +1008,7 @@
         <div class="page-title">Material Calculator</div>
         <div class="topbar-actions">
           <button class="btn btn-ghost" onclick="calcPrint()">🖨 Print</button>
-          <button class="btn btn-ghost" onclick="calcClear()">🗑 Clear All</button>
+          <button class="btn btn-ghost" id="calc-clear-btn" onclick="calcClear(this)">🗑 Clear All</button>
         </div>
       </div>
       <div class="content" id="calc-content"></div>
@@ -1120,7 +1130,7 @@
           </div>
           <div style="padding:16px 18px;">
             <p style="font-size:13px;color:var(--text2);margin-bottom:12px;">Crew devices lock after 24 hours without use. Office and owner can check Remember this device on the sign-in screen to stay signed in on that browser for weeks, until they sign out or that PIN changes. Sign out is at the bottom of the sidebar, so office staff can end a remembered session without opening this page. Wrong-PIN lockouts and spikes show up as security alerts on the Dashboard and in the Audit Log.</p>
-            <button class="btn btn-ghost" onclick="pinLogout()" style="color:var(--red);border-color:var(--red);">Sign Out</button>
+            <button class="btn btn-ghost" onclick="pinLogout(this)" style="color:var(--red);border-color:var(--red);">Sign Out</button>
           </div>
         </div>
       </div>
@@ -1146,18 +1156,20 @@
     <div class="page" id="page-crewview">
       <!-- Month navigation bar -->
       <div class="cv-topbar">
-        <div style="display:flex;align-items:center;gap:10px;">
+        <div class="cv-topbar-main">
           <button class="cv-nav-btn" onclick="cvPrevWeek()">&#8249;</button>
           <button class="cv-nav-btn" onclick="cvNextWeek()">&#8250;</button>
           <div id="cv-month-label" class="cv-month-label"></div>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end;">
           <button class="cv-today-btn" onclick="cvGoToday()">Today</button>
+        </div>
+        <div class="cv-topbar-actions">
           <button class="cv-today-btn" onclick="openPtoRequestModal()" style="color:var(--accent);border-color:var(--accent);">✋ Request PTO</button>
           <button class="cv-today-btn" onclick="openMyPtoRequests()" style="position:relative;color:var(--accent);border-color:var(--accent);">📋 My PTO Requests<span id="cv-mypto-badge" style="display:none;position:absolute;top:-7px;right:-7px;background:var(--accent);color:#fff;font-size:9px;font-weight:700;border-radius:10px;padding:1px 5px;line-height:1.4;font-family:'DM Mono',monospace;"></span></button>
           <button class="cv-today-btn" onclick="openMatRequestModal()" style="color:var(--accent);border-color:var(--accent);">🛒 Request Material</button>
           <button class="cv-today-btn" onclick="openProdDocs()" style="color:var(--accent);border-color:var(--accent);">📄 Product Docs</button>
           <button class="cv-lock-btn cv-today-btn" onclick="cvLockDevice()" style="color:var(--red);border-color:var(--red-dim);">🔒 Crew Mode</button>
+          <button type="button" id="cv-back-manager" class="cv-today-btn" onclick="cvBackToManager()">‹ Manager</button>
+          <button type="button" id="cv-sign-out" class="cv-today-btn" onclick="pinLogout(this)" style="color:var(--red);border-color:var(--red-dim);">Sign out</button>
         </div>
       </div>
       <div id="cv-msg-bar" style="display:none;">
@@ -1520,6 +1532,7 @@
         </div>
         <div class="form-group" style="display:flex;align-items:flex-end;">
           <div id="sv-notif-badge" style="font-size:11px;color:var(--text3);padding-bottom:8px;"></div>
+          <div style="font-size:11px;color:var(--text3);padding-bottom:8px;">Reminders only ring while this tab stays open.</div>
         </div>
       </div>
       <div class="form-group" id="sv-address-row">
@@ -8948,20 +8961,53 @@ async function jcRescheduleApply(crewCIs,newDates,duration,job,newStart,force=fa
 function cvCheckMode(){
   if(localStorage.getItem('fpRole')!=='crew') return;
   document.body.classList.add('crew-mode');
-  const ml=document.getElementById('cv-manager-link');
-  if(ml) ml.style.display='block';
 }
 
+// Owner preview of the phone layout. Does not change the signed-in role, so
+// Back to manager returns to the office pages. A crew PIN never uses this.
 function cvLockDevice(){
-  if(!confirm('Lock this device to Crew View only?\n\nUse the Manager Access link at the bottom to unlock.')) return;
-  localStorage.setItem('fpRole','crew');
-  document.body.classList.add('crew-mode');
-  const ml=document.getElementById('cv-manager-link');
-  if(ml) ml.style.display='block';
+  if(localStorage.getItem('fpRole')==='crew') return;
+  localStorage.setItem('fpCrewPreview','1');
+  document.body.classList.add('crew-mode','crew-preview');
   showPage('crewview');
+}
+function cvBackToManager(){
+  localStorage.removeItem('fpCrewPreview');
+  document.body.classList.remove('crew-mode','crew-preview');
+  showPage('dashboard');
+}
+function jcOpenScheduleJob(){
+  const job=getJobRecord(_jcId);
+  if(typeof sjReset==='function') sjReset();
+  if(job){
+    const cust=document.getElementById('sj-cust');
+    if(cust) cust.value=job.customer||'';
+    const notes=document.getElementById('sj-notes');
+    if(notes) notes.value=[job.address, job.scope].filter(Boolean).join('\n');
+    const val=document.getElementById('sj-val');
+    if(val && localStorage.getItem('fpRole')!=='crew') val.value=job.value||'';
+    const sel=document.getElementById('sj-type');
+    if(sel && job.jobTypeLabel){
+      const opt=[...sel.options].find(o=>o.value===job.jobTypeLabel||o.textContent===job.jobTypeLabel);
+      if(opt) sel.value=opt.value;
+    }
+  }
+  closeModal('jobcard');
+  openModal('schedulejob');
+}
+function jcOpenMaterialCalc(){
+  const job=getJobRecord(_jcId);
+  if(job){
+    CALC_STATE.projectName=job.customer||'';
+    if(typeof calcSave==='function') calcSave();
+  }
+  closeModal('jobcard');
+  showPage('materialcalc');
 }
 
 function cvUnlock(){
+  localStorage.removeItem('fpCrewPreview');
+  document.body.classList.remove('crew-mode','crew-preview');
   localStorage.removeItem(_pinAuthKey());
   localStorage.removeItem('fpRole');
   localStorage.removeItem('fpClockCrew');
@@ -8986,13 +9032,10 @@ function cvSelectCrew(idx){
 
 // Convert a Date object → {w, d} slot indices (null if weekend)
 function cvDateToSlot(dateObj){
-  const dow=dateObj.getDay();
-  // Mon=0,Tue=1,...,Fri=4,Sat=5,Sun=6
-  const d=dow===0?6:dow-1;
-  const daysFromMon=dow===0?6:dow-1;
-  const mon=new Date(dateObj); mon.setDate(dateObj.getDate()-daysFromMon); mon.setHours(0,0,0,0);
-  const w=Math.round((mon-BASE)/(7*24*60*60*1000));
-  return{w,d};
+  // Same week math as seDateToPos: floor, not round. Rounding 4/7 puts Friday in the next week.
+  if(!dateObj) return null;
+  const iso=dateObj.getFullYear()+'-'+String(dateObj.getMonth()+1).padStart(2,'0')+'-'+String(dateObj.getDate()).padStart(2,'0');
+  return seDateToPos(iso);
 }
 
 // Return all visible events for a given date (filtered by cvCrewIdx)
@@ -9395,8 +9438,9 @@ let CALC_STATE = {
 
 function calcSave(){ try{ localStorage.setItem('fpCalcState',JSON.stringify(CALC_STATE)); }catch(e){} }
 
-function calcClear(){
-  if(!confirm('Clear the calculator and start over?')) return;
+function calcClear(ev){
+  const el=(ev&&ev.tagName)?ev:((ev&&ev.currentTarget)||document.getElementById('calc-clear-btn'));
+  if(!tapAgain(el, 'Tap again to clear')) return;
   CALC_STATE={projectName:'',sizeSF:'',sizeLF:'',materials:[],laborDesc:'Installation Labor',laborHours:'',laborRate:'',laborAmt:'',laborType:'flat',laborUnit:'SF',markupPct:'',markupOn:'both'};
   calcSave(); renderMaterialCalc();
 }
@@ -9700,7 +9744,7 @@ function renderMaterialCalc(){
           <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);">Project Name</div>
         </div>
         <div style="padding:14px 18px;">
-          <input class="form-input" placeholder="Enter project name..." value="${(s.projectName||'').replace(/"/g,'&quot;')}" oninput="CALC_STATE.projectName=this.value;calcSave();" style="font-size:17px;font-weight:600;"/>
+          <input class="form-input" id="calc-project-name" placeholder="Enter project name..." value="${(s.projectName||'').replace(/"/g,'&quot;')}" oninput="CALC_STATE.projectName=this.value;calcSave();" style="font-size:17px;font-weight:600;"/>
         </div>
       </div>
 
@@ -10388,17 +10432,14 @@ async function fpBootAuth(){
   _hideLoginScreen();
   if(who.kind==='crew'){
     document.body.classList.add('crew-mode');
-    const ml=document.getElementById('cv-manager-link');
-    if(ml) ml.style.display='block';
     loadAllFromSupabase().then(()=>{
       let _cid=NaN; try{ _cid=parseInt(localStorage.getItem('fpClockCrew')); }catch(e){}
       if(!isNaN(_cid) && isCrewInactive(_cid)){ fpClearLocalAuth(); showLoginScreen(); return; }
       showPage('crewview');
     });
   } else {
-    document.body.classList.remove('crew-mode');
-    const ml=document.getElementById('cv-manager-link');
-    if(ml) ml.style.display='none';
+    document.body.classList.remove('crew-mode','crew-preview');
+    localStorage.removeItem('fpCrewPreview');
     loadAllFromSupabase().then(()=>{
       try{ const last=localStorage.getItem('fpLastPage'); if(last&&document.getElementById('page-'+last)) showPage(last); }catch(e){}
     });
@@ -10549,8 +10590,7 @@ function _attemptTypedSignIn(){
   if(_signInPointer) return;
   const el=document.getElementById('username');
   const raw=el?el.value.trim():'';
-  const pinCol=document.getElementById('login-pin');
-  const onPin=pinCol && pinCol.style.display!=='none';
+  const onPin=!!(_loginAcct && _typedNameAgrees());
   const needsName=!_loginAcct || (raw && !_typedNameAgrees());
   if(!onPin || needsName){
     if(!_loginRoster){
@@ -10699,17 +10739,14 @@ function _pinSuccess(account){
   fpApplyAccount(account);
   if(role==='crew'){
     document.body.classList.add('crew-mode');
-    const ml=document.getElementById('cv-manager-link');
-    if(ml) ml.style.display='block';
     loadAllFromSupabase().then(()=>{
       let _cid=NaN; try{ _cid=parseInt(localStorage.getItem('fpClockCrew')); }catch(e){}
       if(!isNaN(_cid) && isCrewInactive(_cid)){ fpClearLocalAuth(); showLoginScreen(); return; }
       showPage('crewview');
     });
   } else {
-    document.body.classList.remove('crew-mode');
-    const ml=document.getElementById('cv-manager-link');
-    if(ml) ml.style.display='none';
+    document.body.classList.remove('crew-mode','crew-preview');
+    localStorage.removeItem('fpCrewPreview');
     loadAllFromSupabase().then(()=>{
       try{ const last=localStorage.getItem('fpLastPage'); if(last&&last!=='dashboard'&&document.getElementById('page-'+last)) showPage(last); }catch(e){}
     });
@@ -10725,8 +10762,36 @@ function _pinFail(message){
   setTimeout(()=>{ if(err && err.textContent!=='Checking…') err.style.display='none'; },2500);
 }
 
-async function pinLogout(){
-  if(!confirm('Lock the app and return to the sign-in screen?')) return;
+function tapAgain(el, armedLabel){
+  if(el && el.currentTarget) el=el.currentTarget;
+  if(!el || !el.tagName) return false;
+  if(el.dataset.confirm==='1'){
+    // A fast second tap is the accidental double-tap. Leave it armed.
+    if(Date.now() - Number(el.dataset.confirmAt || 0) < 400) return false;
+    clearTimeout(el._tapT);
+    el.dataset.confirm='';
+    el.dataset.confirmAt='';
+    if(el.dataset.tapLabel!=null) el.textContent=el.dataset.tapLabel;
+    return true;
+  }
+  el.dataset.tapLabel=el.textContent;
+  el.dataset.confirm='1';
+  el.dataset.confirmAt=String(Date.now());
+  el.textContent=armedLabel||'Tap again';
+  if(typeof showToast==='function') showToast('Tap again to confirm.');
+  clearTimeout(el._tapT);
+  el._tapT=setTimeout(()=>{
+    if(el.dataset.confirm==='1'){
+      el.dataset.confirm='';
+      el.dataset.confirmAt='';
+      el.textContent=el.dataset.tapLabel||'';
+    }
+  }, 3000);
+  return false;
+}
+async function pinLogout(ev){
+  const el=(ev&&ev.tagName)?ev:((ev&&ev.currentTarget)||document.getElementById('sb-sign-out')||document.getElementById('cv-sign-out'));
+  if(!tapAgain(el, 'Tap again to sign out')) return;
   try{ await fpEnsureSession(); }catch(e){}
   const token=_accessToken;
   fpClearLocalAuth();
@@ -10866,7 +10931,7 @@ async function removeOfficeUser(id){
 
 function showPage(id){
   // Crew mode — block all navigation except Crew View
-  if(localStorage.getItem('fpRole')==='crew'&&id!=='crewview') return;
+  if((localStorage.getItem('fpRole')==='crew'||localStorage.getItem('fpCrewPreview')==='1')&&id!=='crewview') return;
   if(id==='pinsettings'&&_currentOfficeUser()){ showToast('🔒 Security settings need the manager code.'); return; } // office staff can't change PINs
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
@@ -11211,9 +11276,10 @@ function _svSaveFired(set){
 function _updateSvNotifBadge(){
   const el=document.getElementById('sv-notif-badge'); if(!el) return;
   if(!('Notification' in window)){ el.textContent='Notifications not supported in this browser'; return; }
-  if(Notification.permission==='granted') el.innerHTML='🔔 Notifications <span style="color:var(--green)">on</span>';
-  else if(Notification.permission==='denied') el.innerHTML='🔕 Notifications <span style="color:var(--red)">blocked</span>';
-  else el.innerHTML='<span style="color:var(--text3)">Permission required to send reminders</span>';
+  const note=' <span style="color:var(--text3)">Only while this tab is open.</span>';
+  if(Notification.permission==='granted') el.innerHTML='🔔 Notifications <span style="color:var(--green)">on</span>'+note;
+  else if(Notification.permission==='denied') el.innerHTML='🔕 Notifications <span style="color:var(--red)">blocked</span>'+note;
+  else el.innerHTML='<span style="color:var(--text3)">Permission required. Reminders only ring while this tab is open.</span>';
 }
 
 // ── MATERIAL REQUESTS ──────────────────────────────────────────────────────────
@@ -17338,15 +17404,13 @@ async function jcPhotoDrop(e,ds){
   await jcUploadPhotoFiles(ds,files);
 }
 
-async function jcDeletePhoto(ds,photoId){
+async function jcDeletePhoto(ds,photoId,ev){
   const job=getJobRecord(_jcId); if(!job) return;
   const list=(JOB_PHOTOS[job.id]&&JOB_PHOTOS[job.id][ds])||[];
   const photo=list.find(p=>p.id===photoId); if(!photo) return;
   const archived=!!_photoArchiveEntry(photo);
-  // An archived photo's files are already gone from Storage, so ✕ only removes the record.
-  if(!confirm(archived
-    ?'Remove this archived photo from CrewBoard?\n\nThe full-quality copy in Google Photos is not affected.'
-    :'Delete this photo?')) return;
+  const btn=ev&&ev.currentTarget;
+  if(btn && !tapAgain(btn, 'OK')) return;
   if(!archived && (!await fpStorageRemove(photo.path) || (photo.thumbPath && !await fpStorageRemove(photo.thumbPath)))){
     showToast('Could not delete that photo. It is still in the app.');
     return;
@@ -17433,7 +17497,7 @@ function jcDayPhotosHtml(ds){
   const thumbs=photos.map((p,idx)=>{ const arch=_photoArchiveEntry(p); return `
     <div style="position:relative;width:74px;height:74px;flex-shrink:0;">
       ${arch?_archivedTileHtml(arch,74,`openLightbox(${photoUrls},${idx})`):`<img src="${fpMediaUrl(p.thumbUrl||p.url)}" loading="lazy" onclick='openLightbox(${photoUrls},${idx})' style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>`}
-      <button onclick="jcDeletePhoto('${ds}','${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
+      <button onclick="jcDeletePhoto('${ds}','${p.id}',event)" title="Remove" style="position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
     </div>`; }).join('');
   return `
     <div ondragover="jcPhotoDragOver(event)" ondragleave="jcPhotoDragLeave(event)" ondrop="jcPhotoDrop(event,'${ds}')" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:6px;margin:-6px;border-radius:10px;border:1.5px dashed transparent;transition:border-color .15s,background .15s;">
@@ -17471,7 +17535,7 @@ function renderPhotosPage(){
       <div style="position:relative;width:104px;height:104px;flex-shrink:0;">
         ${arch?_archivedTileHtml(arch,104,`openLightbox(${groupUrls},${idx})`):`<img src="${fpMediaUrl(p.thumbUrl||p.url)}" loading="lazy" onclick='openLightbox(${groupUrls},${idx})' style="width:104px;height:104px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
         <div style="position:absolute;bottom:2px;left:2px;right:2px;background:rgba(0,0,0,.55);color:#fff;font-size:9px;border-radius:4px;padding:1px 4px;text-align:center;pointer-events:none;">${jcFmtDate(p.ds)}</div>`}
-        <button onclick="phDeletePhoto('${g.jobId}','${p.ds}','${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
+        <button onclick="phDeletePhoto('${g.jobId}','${p.ds}','${p.id}',event)" title="Remove" style="position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
       </div>`; }).join('');
     return `
       <div class="jobs-block" style="margin-bottom:18px;">
@@ -17553,7 +17617,7 @@ function jcRenderScopePhotos(){
     grid.innerHTML=photos.map((p,idx)=>`
       <div style="position:relative;width:74px;height:74px;flex-shrink:0;">
         <img src="${fpMediaUrl(p.thumbUrl||p.url)}" loading="lazy" onclick='openLightbox(${scopeUrls},${idx})' style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
-        ${isCrew?'':`<button onclick="jcDeleteScopePhoto('${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>`}
+        ${isCrew?'':`<button onclick="jcDeleteScopePhoto('${p.id}',event)" title="Remove" style="position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>`}
       </div>`).join('');
     return;
   }
@@ -17671,11 +17735,12 @@ async function jcPullInScopePhotos(visitId){
   showToast('✓ Sales visit photos added to this job.');
 }
 
-async function jcDeleteScopePhoto(photoId){
+async function jcDeleteScopePhoto(photoId,ev){
   const job=getJobRecord(_jcId); if(!job) return;
   const list=job.scopePhotos||[];
   const photo=list.find(p=>p.id===photoId); if(!photo) return;
-  if(!confirm('Delete this photo?')) return;
+  const btn=ev&&ev.currentTarget;
+  if(!tapAgain(btn, 'OK')) return;
   if(!await fpStorageRemove(photo.path) || (photo.thumbPath && !await fpStorageRemove(photo.thumbPath))){
     showToast('Could not delete that photo. It is still in the app.');
     return;
@@ -17690,9 +17755,9 @@ function openPhotoJob(jobId){
   openJobCard(jobId);
   jcTab('log');
 }
-function phDeletePhoto(jobId,ds,photoId){
+function phDeletePhoto(jobId,ds,photoId,ev){
   _jcId=jobId;
-  jcDeletePhoto(ds,photoId).then(renderPhotosPage);
+  jcDeletePhoto(ds,photoId,ev).then(renderPhotosPage);
 }
 
 // ── JOB SCOPE (Sales Visit) ───────────────────────────────────────────────────
@@ -17850,12 +17915,13 @@ function svScopeDrop(e){
   svScopeUploadPhotoFiles(files);
 }
 
-async function svScopeDeletePhoto(photoId){
+async function svScopeDeletePhoto(photoId,ev){
   if(_svScopeIdx===null||!SALES_VISITS[_svScopeIdx]) return;
   const visitId=SALES_VISITS[_svScopeIdx].id;
   const list=SALES_SCOPE_PHOTOS[visitId]||[];
   const photo=list.find(p=>p.id===photoId); if(!photo) return;
-  if(!confirm('Delete this photo?')) return;
+  const btn=ev&&ev.currentTarget;
+  if(!tapAgain(btn, 'OK')) return;
   if(!await fpStorageRemove(photo.path) || (photo.thumbPath && !await fpStorageRemove(photo.thumbPath))){
     showToast('Could not delete that photo. It is still in the app.');
     return;
@@ -17877,7 +17943,7 @@ function renderSvScopePhotos(){
   const thumbs=photos.map((p,idx)=>`
     <div style="position:relative;width:84px;height:84px;flex-shrink:0;">
       <img src="${fpMediaUrl(p.thumbUrl||p.url)}" loading="lazy" onclick='openLightbox(${scopeVisitUrls},${idx})' style="width:84px;height:84px;object-fit:cover;border-radius:8px;border:1px solid var(--border2);display:block;cursor:pointer;"/>
-      <button onclick="svScopeDeletePhoto('${p.id}')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
+      <button onclick="svScopeDeletePhoto('${p.id}',event)" title="Remove" style="position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;background:var(--red);color:#fff;border:2px solid var(--surface2);font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">✕</button>
     </div>`).join('');
   el.innerHTML=`
     <div ondragover="svScopeDragOver(event)" ondragleave="svScopeDragLeave(event)" ondrop="svScopeDrop(event)" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:6px;margin:-6px;border-radius:10px;border:1.5px dashed transparent;transition:border-color .15s,background .15s;">
@@ -18646,6 +18712,8 @@ async function deleteMaintEntry(id){
       🔒 <span>This job is locked. Click the padlock to make changes.</span>
     </div>
     <div class="modal-footer" id="jc-footer" style="flex-wrap:wrap;gap:8px;">
+      <button type="button" class="btn btn-ghost" id="jc-open-schedule" onclick="jcOpenScheduleJob()">Schedule Job</button>
+      <button type="button" class="btn btn-ghost" id="jc-open-calc" onclick="jcOpenMaterialCalc()">Material Calculator</button>
       <button id="jc-delete-btn" class="btn btn-ghost" style="color:var(--red);" onclick="deleteJobRecord()">🗑 Delete</button>
       <button id="jc-reschedule-btn" class="btn btn-ghost" style="color:var(--blue);" onclick="jcReschedule()">📅 Reschedule</button>
       <div style="flex:1"></div>
