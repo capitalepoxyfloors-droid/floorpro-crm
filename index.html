@@ -4641,7 +4641,16 @@ async function loadJobRecords(){
 // are changing was also changed on the server.
 let _jrSaving=false;
 let _jrDataGen=0;
+// Daily-log typing used to sit in memory until Save Log. A short pause writes just
+// the open job. Cleared when a save of that job is already starting, so the pause
+// doesn't send a second copy of the same edit.
+let _jcDayLogSaveTimer=null;
 function saveJobRecords(onlyId){
+  const coversOpen=onlyId==null||onlyId===''||String(onlyId)===String(_jcId);
+  if(coversOpen&&_jcDayLogSaveTimer){
+    clearTimeout(_jcDayLogSaveTimer);
+    _jcDayLogSaveTimer=null;
+  }
   const run=_jrSaveChain.then(()=>_saveJobRecordsNow(onlyId));
   _jrSaveChain=run.catch(()=>{}); // keep the chain alive even if one save errors
   return run;
@@ -4752,12 +4761,29 @@ function _jrCopyOnto(target, src){
   Object.keys(target).forEach(k=>{ if(!(k in s)) delete target[k]; });
   Object.assign(target, s);
 }
-// serverJobs is the array just stored. Patched ids are this save, so they are clean
-// even though they differ from the old baseline. Every other unsaved edit stays dirty.
-function _jrInstallSavedJobs(serverJobs, patchedIds){
+// serverJobs is the array just stored. A patched job is clean where it still matches
+// the snapshot this save sent. Keystrokes that landed after that snapshot stay on the
+// open job and stay dirty, and the baseline for those fields moves forward to what
+// the server stored — so the next save is not rejected as stale. Every other unsaved
+// edit stays dirty against the old baseline.
+function _jrInstallSavedJobs(serverJobs, patchedIds, sentLocal){
   const dirty=_jrDirtyKeys(_jrBaseline, JOB_RECORDS);
-  (patchedIds||[]).forEach(id=>dirty.delete(String(id)));
+  const patched=new Set((patchedIds||[]).map(String));
+  const sentBy=new Map((sentLocal||[]).map(r=>[String(r.id), r]));
+  patched.forEach(id=>{
+    const local=JOB_RECORDS.find(j=>String(j.id)===id);
+    const sent=sentBy.get(id);
+    if(!local||!sent){ dirty.delete(id); return; }
+    const still=new Set();
+    for(const k of new Set([...Object.keys(local), ...Object.keys(sent)])){
+      if(k==='id'||k==='updated_at') continue;
+      if(!_jrEqCanon(local[k], sent[k])) still.add(k);
+    }
+    if(still.size) dirty.set(id, still);
+    else dirty.delete(id);
+  });
   const oldBase=new Map((_jrBaseline||[]).map(r=>[String(r.id), r]));
+  const serverBy=new Map((serverJobs||[]).map(r=>[String(r.id), r]));
   const localBy=new Map(JOB_RECORDS.map(r=>[String(r.id), r]));
   const seen=new Set();
   (serverJobs||[]).forEach(s=>{
@@ -4770,9 +4796,14 @@ function _jrInstallSavedJobs(serverJobs, patchedIds){
       JOB_RECORDS.push(_jrClone(s));
       return;
     }
-    if(!dkeys||(patchedIds||[]).some(pid=>String(pid)===id)){
+    if(!dkeys){
       _jrCopyOnto(local, s);
       return;
+    }
+    if(patched.has(id)){
+      Object.keys(local).forEach(k=>{
+        if(k!=='id'&&!dkeys.has(k)&&!_jrHas(s,k)) delete local[k];
+      });
     }
     Object.keys(s).forEach(k=>{
       if(k==='id'||dkeys.has(k)) return;
@@ -4791,14 +4822,19 @@ function _jrInstallSavedJobs(serverJobs, patchedIds){
     const id=String(local.id);
     const dkeys=dirty.get(id);
     const old=oldBase.get(id);
-    if(dkeys&&dkeys.has('*')&&!old) return; // not saved yet — keep it looking new
+    if(dkeys&&dkeys.has('*')&&!old&&!patched.has(id)) return; // not saved yet — keep it looking new
     const nb=_jrClone(local);
-    if(dkeys&&old){
+    const revertSrc=patched.has(id)?serverBy.get(id):old;
+    if(dkeys&&revertSrc){
       dkeys.forEach(k=>{
         if(k==='*'||k==='*delete') return;
-        if(_jrHas(old,k)) nb[k]=_jrClone(old[k]);
+        if(_jrHas(revertSrc,k)) nb[k]=_jrClone(revertSrc[k]);
         else delete nb[k];
       });
+    }
+    if(patched.has(id)){
+      const srv=serverBy.get(id);
+      if(srv&&_jrHas(srv,'updated_at')) nb.updated_at=srv.updated_at;
     }
     next.push(nb);
   });
@@ -4825,6 +4861,7 @@ async function _saveJobRecordsNow(onlyId){
     const only=onlyId!=null&&onlyId!==''?new Set([String(onlyId)]):null;
     try{ _jcStampMissingRates(only); }catch(e){ console.error('rate stamping skipped:',e); }
     const patches=_jrBuildPatches(priorBaseline, JOB_RECORDS, onlyId!=null&&onlyId!==''?onlyId:null);
+    const sentLocal=_jrClone(JOB_RECORDS);
     if(!patches.length){
       showSyncStatus('✓ Saved');
       return true;
@@ -4832,7 +4869,7 @@ async function _saveJobRecordsNow(onlyId){
     const rpc=await sb.rpc('fp_patch_job_records',{patches});
     if(_jrPatchResultOk(rpc.data)){
       _jrDataGen++;
-      _jrInstallSavedJobs(rpc.data.jobs, patches.map(p=>p.id));
+      _jrInstallSavedJobs(rpc.data.jobs, patches.map(p=>p.id), sentLocal);
       _jrLogFieldChanges(priorBaseline, preLocal);
       showSyncStatus('✓ Saved');
       return true;
@@ -4865,12 +4902,16 @@ async function _saveJobRecordsNow(onlyId){
       _jrDataGen++;
       _jrLogFieldChanges(priorBaseline, preLocal);
       const patchedIds=new Set(patches.map(p=>String(p.id)));
+      const sentBy=new Map(sentLocal.map(j=>[String(j.id), j]));
       const next=(_jrBaseline||[]).filter(b=>!(patchedIds.has(String(b.id))&&!JOB_RECORDS.some(j=>String(j.id)===String(b.id))));
       patchedIds.forEach(id=>{
         const local=JOB_RECORDS.find(j=>String(j.id)===id);
         const idx=next.findIndex(j=>String(j.id)===id);
         if(!local){ if(idx>=0) next.splice(idx,1); return; }
-        if(idx>=0) next[idx]=_jrClone(local); else next.push(_jrClone(local));
+        // What we sent, not the job as it looks now. Typing during the round trip
+        // stays on the local job and is still dirty for the next save.
+        const base=sentBy.has(id)?_jrClone(sentBy.get(id)):_jrClone(local);
+        if(idx>=0) next[idx]=base; else next.push(base);
       });
       _jrBaseline=next;
       showSyncStatus('✓ Saved');
@@ -4916,7 +4957,7 @@ async function _saveJobRecordsNow(onlyId){
       try{ const parsed=JSON.parse(row.value); if(Array.isArray(parsed)) stored=parsed; }catch(e){}
     }
     _jrDataGen++;
-    _jrInstallSavedJobs(stored, patches.map(p=>p.id));
+    _jrInstallSavedJobs(stored, patches.map(p=>p.id), sentLocal);
     _jrLogFieldChanges(priorBaseline, preLocal);
     showSyncStatus('✓ Saved');
     return true;
@@ -6333,7 +6374,7 @@ function jcRenderDayLogs(){
         </div>
         <div class="form-group" style="margin:0;">
           <label class="form-label">Task Completed</label>
-          <textarea class="form-textarea" placeholder="What was done today" oninput="jcLogSet('${ds}','task',this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'" onblur="jcLogSet('${ds}','task',this.value)" style="font-size:13px;overflow-y:auto;resize:none;min-height:60px;">${(log.task||'').replace(/</g,'&lt;')}</textarea>
+          <textarea class="form-textarea" placeholder="What was done today" oninput="jcLogSet('${ds}','task',this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'" onblur="jcLogSet('${ds}','task',this.value);flushDayLogSave()" style="font-size:13px;overflow-y:auto;resize:none;min-height:60px;">${(log.task||'').replace(/</g,'&lt;')}</textarea>
         </div>
         <div class="form-group" style="margin:0;">
           <label class="form-label">Materials Actually Used</label>
@@ -6346,7 +6387,7 @@ function jcRenderDayLogs(){
         ${log.noWork?`<div style="font-size:11.5px;color:var(--text3);">Crew/time locked while marked No Work Completed — toggle it off above to log hours for this day.</div>`:''}
         <div class="form-group" style="margin:0;">
           <label class="form-label">Notes</label>
-          <textarea class="form-textarea" placeholder="Anything worth noting — issues, decisions, next steps..." oninput="jcLogSet('${ds}','notes',this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'" onblur="jcLogSet('${ds}','notes',this.value)" style="min-height:52px;font-size:13px;overflow-y:auto;resize:none;">${log.notes||''}</textarea>
+          <textarea class="form-textarea" placeholder="Anything worth noting — issues, decisions, next steps..." oninput="jcLogSet('${ds}','notes',this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'" onblur="jcLogSet('${ds}','notes',this.value);flushDayLogSave()" style="min-height:52px;font-size:13px;overflow-y:auto;resize:none;">${log.notes||''}</textarea>
         </div>
       </div>`;
     container.appendChild(sec);
@@ -6359,7 +6400,7 @@ function jcRenderDayLogs(){
   // Inline save button — always visible on mobile without needing to scroll to the modal footer
   const saveWrap=document.createElement('div');
   saveWrap.style.cssText='padding:16px 0 4px;';
-  saveWrap.innerHTML=`<button onclick="saveJobCard()" class="btn btn-primary" style="width:100%;font-size:15px;padding:13px;border-radius:10px;letter-spacing:.3px;">💾 Save Log</button>`;
+  saveWrap.innerHTML=`<div style="font-size:12px;color:var(--text3);margin-bottom:8px;">Times, crew, materials, and notes save on their own.</div><button onclick="saveJobCard()" class="btn btn-primary" style="width:100%;font-size:15px;padding:13px;border-radius:10px;letter-spacing:.3px;">💾 Save Log</button>`;
   container.appendChild(saveWrap);
   // Scroll to today's day section if it's in the job's date range
   const _todayKey=new Date().toISOString().slice(0,10).replace(/-/g,'');
@@ -6503,7 +6544,7 @@ function fmtTimeInput(el, ds, field){
     _hadExplicitAMPM=true;
     const h=parseInt(apM[1]), min=(apM[2]||'00').padStart(2,'0'), ap=apM[3].toUpperCase();
     el.value=h+':'+min+' '+ap;
-    jcLogSet(ds,field,el.value); return;
+    jcLogSet(ds,field,el.value); flushDayLogSave(); return;
   }
 
   // "HH:MM" with colon (may be 24h from old saved data)
@@ -6544,12 +6585,33 @@ function fmtTimeInput(el, ds, field){
     }
   }
   if(el.value) jcLogSet(ds,field,el.value);
+  flushDayLogSave();
 }
+
+// Pause, then write the open job. Same 800ms as supplier invoices. Blur and leaving
+// the page write immediately so the last keystroke is not still waiting.
+function scheduleDayLogSave(){
+  clearTimeout(_jcDayLogSaveTimer);
+  _jcDayLogSaveTimer=setTimeout(()=>{ _jcDayLogSaveTimer=null; _saveOpenDayLog(); },800);
+}
+function flushDayLogSave(){
+  if(!_jcDayLogSaveTimer) return;
+  clearTimeout(_jcDayLogSaveTimer);
+  _jcDayLogSaveTimer=null;
+  _saveOpenDayLog();
+}
+function _saveOpenDayLog(){
+  if(!_jcId) return;
+  saveJobRecords(_jcId);
+}
+document.addEventListener('visibilitychange',()=>{ if(document.hidden) flushDayLogSave(); });
+window.addEventListener('pagehide',()=>{ flushDayLogSave(); });
 
 function jcLogSet(ds,field,val){
   const job=getJobRecord(_jcId); if(!job) return;
   if(!job.dayLogs) job.dayLogs={};
   if(!job.dayLogs[ds]) job.dayLogs[ds]={};
+  if(job.dayLogs[ds][field]===val) return;
   job.dayLogs[ds][field]=val;
   if(field==='startTime'||field==='endTime'){
     jcHours(ds.replace(/-/g,''),ds);
@@ -6557,6 +6619,7 @@ function jcLogSet(ds,field,val){
     // their own) shows the new time live.
     jcRenderDayCrew(ds);
   }
+  scheduleDayLogSave();
 }
 
 // ── DAILY LOG — CREW DROPDOWN ─────────────────────────────────────────────────
@@ -6613,7 +6676,7 @@ function jcDayCrewHtml(ds,log){
           <option value="custom"${c.crewIdx===-1?' selected':''}>— Custom —</option>
           ${CREW_DATA.map((cd,ci)=>(isCrewInactive(ci)&&c.crewIdx!==ci)?'':`<option value="${ci}"${c.crewIdx===ci?' selected':''}>${cd.full}</option>`).join('')}
         </select>
-        ${c.crewIdx===-1?`<input class="form-input" placeholder="Name" value="${(c.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetCrew('${ds}',${i},'name',this.value)" onblur="jcLogSetCrew('${ds}',${i},'name',this.value)" style="flex:1;font-size:12px;padding:4px 6px;"/>`:``}
+        ${c.crewIdx===-1?`<input class="form-input" placeholder="Name" value="${(c.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetCrew('${ds}',${i},'name',this.value)" onblur="jcLogSetCrew('${ds}',${i},'name',this.value);flushDayLogSave()" style="flex:1;font-size:12px;padding:4px 6px;"/>`:``}
         <button onclick="jcLogRemoveCrewMember('${ds}',${i})" style="background:none;border:none;cursor:pointer;color:var(--red);font-size:16px;line-height:1;width:32px;height:32px;display:flex;align-items:center;justify-content:center;flex-shrink:0;" title="Remove">×</button>
       </div>
       <div style="display:flex;align-items:center;gap:5px;padding:3px 8px 5px;border-top:1px solid var(--border2);background:var(--surface2);${dimTime}">
@@ -6663,6 +6726,7 @@ function jcLogAddCrewMember(ds){
   // New crew member starts with blank individual times (they inherit global site hours)
   log.crewPresent.push({crewIdx:-1,name:'',burdenedRate:'',startTime:'',endTime:''});
   jcRenderDayCrew(ds);
+  scheduleDayLogSave();
 }
 
 function jcLogRemoveCrewMember(ds,idx){
@@ -6711,7 +6775,9 @@ function jcLogSetCrew(ds,idx,field,val){
   const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
   _jcMigrateCrewPresent(job.dayLogs[ds]);
   const c=job.dayLogs[ds].crewPresent[idx]; if(!c) return;
+  if(c[field]===val) return;
   c[field]=val;
+  scheduleDayLogSave();
 }
 
 // Format a crew member's time input (same smart-parse as fmtTimeInput but saves to crewPresent)
@@ -6719,12 +6785,12 @@ function jcFmtCrewTime(el,ds,idx,field){
   const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
   _jcMigrateCrewPresent(job.dayLogs[ds]);
   const c=job.dayLogs[ds].crewPresent[idx]; if(!c) return;
-  let v=el.value.trim(); if(!v){ c[field]=''; jcUpdateCrewHrs(ds,idx); return; }
+  let v=el.value.trim(); if(!v){ c[field]=''; jcUpdateCrewHrs(ds,idx); scheduleDayLogSave(); flushDayLogSave(); return; }
   const raw=v.replace(/\s/g,'');
   const apM=raw.match(/^(\d{1,2}):?(\d{2})?(am|pm)$/i);
   if(apM){
     const h=parseInt(apM[1]),min=(apM[2]||'00').padStart(2,'0'),ap=apM[3].toUpperCase();
-    el.value=h+':'+min+' '+ap; c[field]=el.value; jcUpdateCrewHrs(ds,idx); return;
+    el.value=h+':'+min+' '+ap; c[field]=el.value; jcUpdateCrewHrs(ds,idx); scheduleDayLogSave(); flushDayLogSave(); return;
   }
   const colM=raw.match(/^(\d{1,2}):(\d{2})$/);
   if(colM){
@@ -6733,7 +6799,7 @@ function jcFmtCrewTime(el,ds,idx,field){
     else if(h<12) el.value=h+':'+min+' AM';
     else if(h===12) el.value='12:'+min+' PM';
     else el.value=(h-12)+':'+min+' PM';
-    c[field]=el.value; jcUpdateCrewHrs(ds,idx); return;
+    c[field]=el.value; jcUpdateCrewHrs(ds,idx); scheduleDayLogSave(); flushDayLogSave(); return;
   }
   const digs=raw.replace(/\D/g,'');
   if(digs.length>=1&&digs.length<=4){
@@ -6745,8 +6811,9 @@ function jcFmtCrewTime(el,ds,idx,field){
     if(h>=12){ap='PM';if(h>12)h-=12;}
     if(h===0)h=12;
     el.value=h+':'+min.padStart(2,'0')+' '+ap;
-    c[field]=el.value; jcUpdateCrewHrs(ds,idx);
+    c[field]=el.value; jcUpdateCrewHrs(ds,idx); scheduleDayLogSave();
   }
+  flushDayLogSave();
 }
 
 // Refresh the hours badge for one crew member row
@@ -6829,9 +6896,9 @@ function jcDayMatsHtml(ds,log){
         <option value="custom"${m.matIdx===-1?' selected':''}>— Custom —</option>
         ${MATERIALS.map((mat,mi)=>({mat,mi})).sort((a,b)=>a.mat.name.localeCompare(b.mat.name)).map(({mat,mi})=>`<option value="${mi}"${ri===mi?' selected':''}>${mat.name}</option>`).join('')}
       </select>
-      ${m.matIdx===-1?`<input class="form-input" placeholder="Material name" value="${(m.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetMaterial('${ds}',${i},'name',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'name',this.value)" style="flex:1;font-size:12px;padding:4px 6px;"/>`:``}
-      <input class="form-input" type="number" min="0" step="any" placeholder="Qty" value="${m.qty||''}" oninput="jcLogSetMaterial('${ds}',${i},'qty',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'qty',this.value)" style="width:65px;flex:none;font-size:12px;padding:4px 6px;" title="Amount actually used"/>
-      <input class="form-input" placeholder="Unit" value="${(m.usageUnit||'').replace(/"/g,'&quot;')}" oninput="jcLogSetMaterial('${ds}',${i},'usageUnit',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'usageUnit',this.value)" style="width:52px;flex:none;font-size:12px;padding:4px 6px;" title="e.g. Gal, Lbs, SF"/>
+      ${m.matIdx===-1?`<input class="form-input" placeholder="Material name" value="${(m.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetMaterial('${ds}',${i},'name',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'name',this.value);flushDayLogSave()" style="flex:1;font-size:12px;padding:4px 6px;"/>`:``}
+      <input class="form-input" type="number" min="0" step="any" placeholder="Qty" value="${m.qty||''}" oninput="jcLogSetMaterial('${ds}',${i},'qty',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'qty',this.value);flushDayLogSave()" style="width:65px;flex:none;font-size:12px;padding:4px 6px;" title="Amount actually used"/>
+      <input class="form-input" placeholder="Unit" value="${(m.usageUnit||'').replace(/"/g,'&quot;')}" oninput="jcLogSetMaterial('${ds}',${i},'usageUnit',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'usageUnit',this.value);flushDayLogSave()" style="width:52px;flex:none;font-size:12px;padding:4px 6px;" title="e.g. Gal, Lbs, SF"/>
       <button onclick="jcLogRemoveMat('${ds}',${i})" style="background:none;border:none;cursor:pointer;color:var(--danger,#e74c3c);font-size:16px;line-height:1;width:32px;height:32px;display:flex;align-items:center;justify-content:center;flex-shrink:0;" title="Remove">×</button>
     </div>`;
   });
@@ -6858,6 +6925,7 @@ function jcLogAddMat(ds){
   _jcMigrateMats(job.dayLogs[ds]);
   job.dayLogs[ds].materialsUsed.push({matIdx:-1,name:'',qty:'',unit:''});
   jcRenderDayMats(ds);
+  scheduleDayLogSave();
 }
 
 function jcLogRemoveMat(ds,idx){
@@ -6865,6 +6933,7 @@ function jcLogRemoveMat(ds,idx){
   _jcMigrateMats(job.dayLogs[ds]);
   job.dayLogs[ds].materialsUsed.splice(idx,1);
   jcRenderDayMats(ds);
+  scheduleDayLogSave();
 }
 
 function jcLogPickMaterial(ds,idx,sel){
@@ -6887,6 +6956,7 @@ function jcLogPickMaterial(ds,idx,sel){
     }
   }
   jcRenderDayMats(ds);
+  scheduleDayLogSave();
 }
 
 function _jcCaptureUnitCost(m){
@@ -6904,8 +6974,10 @@ function jcLogSetMaterial(ds,idx,field,val){
   const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
   _jcMigrateMats(job.dayLogs[ds]);
   const m=job.dayLogs[ds].materialsUsed[idx]; if(!m) return;
+  if(m[field]===val) return;
   m[field]=val;
   if(field==='qty') _jcCaptureUnitCost(m);
+  scheduleDayLogSave();
 }
 
 function jcCalcHrs(s,e){
