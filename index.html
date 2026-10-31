@@ -504,7 +504,7 @@
     #login-screen{padding:12px;}
     #login-card,#login-card.pin-step{max-width:100% !important;padding:28px 16px 20px;}
   }
-  /* Phone manager: three destinations, same pages as the sidebar. Desktop and crew view stay as they are.
+  /* Phone manager: Pipeline, Sales, Install, and the owner's Crew View. Desktop and a real crew login stay as they are.
      Landscape phones are short and wider than 768, so they use the same bar instead of the icon rail. */
   .mgr-mobile-nav{display:none;}
   #mgr-mobile-signout{display:none;}
@@ -555,6 +555,13 @@
     body:not(.crew-mode) #page-salesschedule .sch-header{font-size:10px;letter-spacing:0;padding:8px 1px;}
     body:not(.crew-mode) #page-salesschedule .sch-installer{padding-left:6px;font-size:12px;gap:4px;}
     body:not(.crew-mode) #page-pipeline .topbar .btn-primary{min-height:44px;padding:10px 16px;}
+    /* Owner Crew tab: same pay hide as a crew login, even if a job card is opened from that calendar. */
+    body.mgr-phone-crew #jc-value-group,
+    body.mgr-phone-crew #jc-tab-costing,
+    body.mgr-phone-crew #jc-pane-costing,
+    body.mgr-phone-crew #jc-invoice-section,
+    body.mgr-phone-crew #jc-open-calc,
+    body.mgr-phone-crew .jc-pay-fields{display:none !important;}
   }
 </style>
 </head>
@@ -615,7 +622,7 @@
   </div>
 </div>
 
-<!-- Phone manager. Same showPage() targets as the sidebar. Hidden on desktop and in crew view. -->
+<!-- Phone manager. Same showPage() targets as the sidebar. Hidden on desktop and for a crew login. -->
 <nav class="mgr-mobile-nav" id="mgr-mobile-nav" aria-label="Manager">
   <button type="button" class="mgr-tab" data-page="pipeline" onclick="showPage('pipeline')">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M3 12h14M3 18h10"/></svg>
@@ -627,7 +634,11 @@
   </button>
   <button type="button" class="mgr-tab" data-page="schedule" onclick="showPage('schedule')">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
-    <span>Schedule</span>
+    <span>Install</span>
+  </button>
+  <button type="button" class="mgr-tab" data-page="crewview" onclick="showPage('crewview')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><path d="M8 15l2 2 4-4"/></svg>
+    <span>Crew</span>
   </button>
   <button type="button" class="mgr-signout" id="mgr-mobile-signout" onclick="pinLogout(this)" aria-label="Sign out" title="Sign out"><span aria-hidden="true">⎋</span><span>Out</span></button>
 </nav>
@@ -11433,7 +11444,7 @@ async function removeOfficeUser(id){
 }
 
 // Phone manager destinations. Everything else in the sidebar stays on a wide screen.
-const MGR_PHONE_PAGES=['pipeline','salesschedule','schedule'];
+const MGR_PHONE_PAGES=['pipeline','salesschedule','schedule','crewview'];
 function mgrPhoneOn(){
   try{
     if(document.body.classList.contains('crew-mode')) return false;
@@ -11450,7 +11461,7 @@ function mgrPhoneMark(id){
   });
 }
 function mgrPhoneEnsurePage(){
-  if(!mgrPhoneOn()) return;
+  if(!mgrPhoneOn()){ document.body.classList.remove('mgr-phone-crew'); return; }
   const cur=document.querySelector('.page.active');
   const curId=cur?cur.id.replace(/^page-/,''):'';
   if(MGR_PHONE_PAGES.indexOf(curId)>=0){ mgrPhoneMark(curId); return; }
@@ -11479,6 +11490,7 @@ function showPage(id){
     const curId=cur?cur.id.replace(/^page-/,''):'';
     if(MGR_PHONE_PAGES.indexOf(curId)>=0){
       mgrPhoneMark(curId);
+      document.body.classList.toggle('mgr-phone-crew', curId==='crewview');
       if(id==='jobs'&&curId==='schedule') renderSchedule();
       return;
     }
@@ -11493,6 +11505,7 @@ function showPage(id){
     n.classList.toggle('active', pid===id);
   });
   mgrPhoneMark(id);
+  document.body.classList.toggle('mgr-phone-crew', mgrPhoneOn()&&id==='crewview');
   if(id==='dashboard') renderDashboard();
   if(id==='schedule') renderSchedule();
   if(id==='salesschedule') renderSalesSchedule();
