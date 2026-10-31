@@ -203,6 +203,13 @@
   .msg-mentions{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px 0;}
   .msg-chip{min-height:36px;padding:6px 12px;border-radius:20px;border:1.5px solid var(--border2);background:var(--surface);color:var(--text2);font-size:13px;font-weight:600;font-family:'DM Sans',sans-serif;cursor:pointer;}
   .msg-chip.on{border-color:var(--accent);background:var(--accent-dim);color:var(--accent);}
+  .msg-direct-wrap{padding:0 0 8px;}
+  .msg-direct-label{font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);margin-bottom:6px;}
+  .msg-direct-list{display:flex;flex-wrap:wrap;gap:6px;}
+  .msg-dm-count{display:inline-block;margin-left:6px;background:var(--accent);color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:1px 6px;line-height:1.4;font-family:'DM Mono',monospace;vertical-align:1px;}
+  #cv-team-panel .msg-direct-wrap{padding:0 12px 8px;}
+  .msg-all-threads{display:flex;flex-direction:column;gap:6px;}
+  .msg-all-threads .cv-jobmsg-chip.on{border-color:var(--accent);background:var(--accent-dim);color:var(--accent);}
   .msg-compose{display:flex;gap:8px;align-items:flex-end;padding:10px 12px 12px;border-top:1px solid var(--border);background:var(--surface);}
   .msg-compose textarea{flex:1;min-height:44px;max-height:120px;font-size:16px;resize:none;}
   .msg-send{min-height:44px;min-width:76px;padding:0 16px;border:none;border-radius:var(--radius-sm);background:var(--accent);color:#fff;font-weight:700;font-size:15px;font-family:'DM Sans',sans-serif;cursor:pointer;}
@@ -672,15 +679,24 @@
     <div class="page" id="page-team">
       <div class="topbar">
         <div>
-          <div class="page-title">Team</div>
-          <div style="font-size:12px;color:var(--text3);margin-top:2px;">Everyone at the company can read and reply.</div>
+          <div class="page-title" id="team-title">Team</div>
+          <div id="team-subtitle" style="font-size:12px;color:var(--text3);margin-top:2px;">Everyone at the company can read and reply.</div>
         </div>
         <div class="topbar-actions">
+          <button class="btn btn-ghost" id="team-dm-back" type="button" style="display:none;" onclick="msgOpenCompany('team')">‹ Everyone</button>
           <button class="btn btn-ghost" id="team-mark-read" type="button" onclick="msgMarkRead('team')">Mark read</button>
         </div>
       </div>
       <div id="team-job-unreads"></div>
       <div class="content msg-column" style="padding-top:0;">
+        <div id="team-direct-wrap" class="msg-direct-wrap" style="display:none;">
+          <div class="msg-direct-label">Direct</div>
+          <div id="team-direct-list" class="msg-direct-list"></div>
+        </div>
+        <div id="team-all-dm-wrap" class="msg-direct-wrap" style="display:none;">
+          <div class="msg-direct-label">All private threads</div>
+          <div id="team-all-dm-list" class="msg-all-threads"></div>
+        </div>
         <div id="team-msg-list" class="msg-scroll" data-job-id="team" data-unread-count="0"></div>
         <div id="team-msg-mentions" class="msg-mentions"></div>
         <div class="msg-compose">
@@ -1179,7 +1195,11 @@
       <div id="cv-team-panel" style="display:none;">
         <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;">
           <button id="cv-team-back" type="button" class="btn btn-ghost" style="min-height:44px;" onclick="cvCloseTeam()">‹ Schedule</button>
-          <div style="font-size:16px;font-weight:700;">Team</div>
+          <div id="cv-team-title" style="font-size:16px;font-weight:700;">Team</div>
+        </div>
+        <div id="cv-direct-wrap" class="msg-direct-wrap" style="display:none;">
+          <div class="msg-direct-label">Direct</div>
+          <div id="cv-direct-list" class="msg-direct-list"></div>
         </div>
         <div id="cv-team-list" class="msg-scroll" data-job-id="team" data-unread-count="0"></div>
         <div id="cv-team-mentions" class="msg-mentions"></div>
@@ -5747,25 +5767,37 @@ const MSG_MOUNTS={
   cv:{list:'cv-team-list',body:'cv-team-body',send:'cv-team-send',status:'cv-team-status',mark:null,mentions:'cv-team-mentions',prefix:'cv-team-msg-',mentionPrefix:'cv-team-mention-',hidePrefix:'cv-team-hide-'}
 };
 let _msgOn=false,_msgUnread=[],_msgTickN=0,_msgSending={};
+let _msgDmOn=false,_msgPeople=[];
+let _msgAllOn=false,_msgAllThreads=[];
+const _msgDmPeer={team:'',cv:''};
+const _msgWatch={team:null,cv:null};
 const _msgPicks={jc:new Set(),team:new Set(),cv:new Set()};
 function msgEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');}
+function msgUuid(id){const s=String(id||'');return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)?s.toLowerCase():'';}
+function msgPeer(which){return which==='jc'?'':(_msgDmPeer[which]||'');}
+function msgOwnerLogin(){try{return localStorage.getItem('fpRole')!=='crew'&&!localStorage.getItem('fpOfficeUser');}catch(e){return false;}}
+function msgDmTotal(){return (_msgDmOn?_msgPeople:[]).reduce((n,p)=>n+(Number(p.unread)||0),0);}
 function msgWhen(iso){const d=new Date(iso);if(isNaN(d.getTime()))return '';return d.toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});}
 function msgCount(jobId){const row=(_msgUnread||[]).find(r=>r&&r.job_id===jobId);return row?(Number(row.unread)||0):0;}
 function msgSetBadge(id,n){const el=document.getElementById(id);if(!el)return;el.style.display=n>0?'inline-block':'none';el.textContent=n>9?'9+':String(n);}
 function msgSetAvailable(on){
   const changed=_msgOn!==!!on;
   _msgOn=!!on;
+  if(!_msgOn){ _msgDmOn=false; _msgPeople=[]; _msgAllOn=false; _msgAllThreads=[]; _msgDmPeer.team=''; _msgDmPeer.cv=''; _msgWatch.team=null; _msgWatch.cv=null; }
   const nav=document.getElementById('nav-team');
   if(nav) nav.style.display=_msgOn?'':'none';
   const tab=document.getElementById('jc-tab-messages');
   if(tab) tab.style.display=_msgOn?'':'none';
   if(!_msgOn && document.getElementById('page-team')?.classList.contains('active') && typeof showPage==='function') showPage('dashboard');
+  msgPaintPeople();
   msgPaintBadges();
   if(changed && _msgOn && document.getElementById('page-team')?.classList.contains('active')) msgOpenTeam();
 }
 function msgPaintBadges(){
-  msgSetBadge('nav-team-badge', _msgOn?msgCount(MSG_TEAM):0);
-  msgSetBadge('cv-team-badge', _msgOn?msgCount(MSG_TEAM):0);
+  const teamN=_msgOn?msgCount(MSG_TEAM):0;
+  const dmN=_msgOn?msgDmTotal():0;
+  msgSetBadge('nav-team-badge', teamN+dmN);
+  msgSetBadge('cv-team-badge', teamN+dmN);
   const tabN=_msgOn&&_jcId?msgCount(_jcId):0;
   msgSetBadge('jc-msg-tab-badge', tabN);
   const panel=document.getElementById('cv-team-panel');
@@ -5776,8 +5808,35 @@ function msgPaintBadges(){
   const office=document.getElementById('team-job-unreads');
   const jobs=(_msgOn?_msgUnread:[]).filter(r=>r&&r.job_id!==MSG_TEAM&&r.unread>0&&/^[0-9a-f-]{36}$/i.test(r.job_id));
   const chip=(r,idPrefix,fn)=>`<button type="button" class="cv-jobmsg-chip" id="${idPrefix}${r.job_id}" data-job-id="${r.job_id}" onclick="${fn}('${r.job_id}')">${msgEsc((typeof getJobRecord==='function'&&getJobRecord(r.job_id)&&getJobRecord(r.job_id).customer)||'Job')} · ${r.unread} new</button>`;
-  if(strip) strip.innerHTML=_msgOn?jobs.map(r=>chip(r,'cv-jobmsg-','cvOpenJobMessages')).join(''):'';
-  if(office) office.innerHTML=_msgOn&&jobs.length?('<div style="font-size:12px;color:var(--text3);margin-bottom:6px;">New on a job</div>'+jobs.map(r=>chip(r,'team-jobmsg-','msgOpenJobFromList')).join('')):'';
+  const dmChips=(_msgDmOn?_msgPeople:[]).filter(p=>Number(p.unread)>0&&msgUuid(p.account_id)).map(p=>{
+    const id=msgUuid(p.account_id);
+    const n=Number(p.unread)||0;
+    return `<button type="button" class="cv-jobmsg-chip" id="cv-dmchip-${id}" data-dm-account="${id}" onclick="msgOpenDirect('cv','${id}')">${msgEsc(p.label||'Someone')} · ${n} new</button>`;
+  });
+  if(strip) strip.innerHTML=_msgOn?dmChips.join('')+jobs.map(r=>chip(r,'cv-jobmsg-','cvOpenJobMessages')).join(''):'';
+  if(office){
+    const hideJobs=!!msgPeer('team');
+    office.style.display=hideJobs?'none':'';
+    office.innerHTML=_msgOn&&jobs.length&&!hideJobs?('<div style="font-size:12px;color:var(--text3);margin-bottom:6px;">New on a job</div>'+jobs.map(r=>chip(r,'team-jobmsg-','msgOpenJobFromList')).join('')):'';
+  }
+}
+function msgPaintPeople(){
+  ['team','cv'].forEach(which=>{
+    const wrap=document.getElementById(which==='team'?'team-direct-wrap':'cv-direct-wrap');
+    const list=document.getElementById(which==='team'?'team-direct-list':'cv-direct-list');
+    if(wrap) wrap.style.display=_msgOn&&_msgDmOn?'':'none';
+    if(!list) return;
+    if(!_msgOn||!_msgDmOn){ list.innerHTML=''; return; }
+    const peer=msgPeer(which);
+    list.innerHTML=_msgPeople.map(p=>{
+      const id=msgUuid(p.account_id);
+      if(!id) return '';
+      const n=Number(p.unread)||0;
+      const badge=n>0?`<span class="msg-dm-count">${n>9?'9+':String(n)}</span>`:'';
+      const on=peer===id;
+      return `<button type="button" class="msg-chip${on?' on':''}" id="${which}-dm-${id}" data-dm-account="${id}" data-dm-label="${msgEsc(p.label||'')}" data-unread="${n}" onclick="msgOpenDirect('${which}','${id}')">${msgEsc(p.label||'Someone')}${badge}</button>`;
+    }).join('');
+  });
 }
 async function msgRefreshUnread(){
   if(typeof _sessionAuthed!=='undefined'&&!_sessionAuthed) return;
@@ -5786,6 +5845,38 @@ async function msgRefreshUnread(){
   if(!rpc.ok) return;
   _msgUnread=Array.isArray(rpc.data)?rpc.data:[];
   msgSetAvailable(true);
+  const people=await sb.rpc('fp_list_dm_people',{});
+  if(people.missing){ _msgDmOn=false; _msgPeople=[]; msgPaintPeople(); msgPaintBadges(); return; }
+  if(!people.ok) return;
+  _msgDmOn=true;
+  _msgPeople=Array.isArray(people.data)?people.data:[];
+  msgPaintPeople();
+  msgPaintBadges();
+  if(!msgOwnerLogin()){ _msgAllOn=false; _msgAllThreads=[]; msgPaintAllThreads(); return; }
+  const all=await sb.rpc('fp_list_all_dm_threads',{});
+  if(all.missing||!all.ok){ _msgAllOn=false; _msgAllThreads=[]; msgPaintAllThreads(); return; }
+  _msgAllOn=true;
+  _msgAllThreads=Array.isArray(all.data)?all.data:[];
+  msgPaintAllThreads();
+}
+function msgPaintAllThreads(){
+  const wrap=document.getElementById('team-all-dm-wrap');
+  const list=document.getElementById('team-all-dm-list');
+  if(!wrap||!list) return;
+  const show=_msgOn&&_msgAllOn&&msgOwnerLogin();
+  wrap.style.display=show?'':'none';
+  if(!show){ list.innerHTML=''; return; }
+  if(!_msgAllThreads.length){
+    list.innerHTML='<div class="msg-empty">No private threads yet.</div>';
+    return;
+  }
+  const watch=_msgWatch.team;
+  list.innerHTML=_msgAllThreads.map(t=>{
+    const a=msgUuid(t.account_a), b=msgUuid(t.account_b);
+    if(!a||!b) return '';
+    const on=!!(watch&&watch.a===a&&watch.b===b);
+    return `<button type="button" class="cv-jobmsg-chip${on?' on':''}" id="team-all-dm-${a}-${b}" data-account-a="${a}" data-account-b="${b}" data-label-a="${msgEsc(t.label_a||'')}" data-label-b="${msgEsc(t.label_b||'')}" onclick="msgOpenWatched('team','${a}','${b}')">${msgEsc(t.label_a||'Someone')} · ${msgEsc(t.label_b||'Someone')}</button>`;
+  }).join('');
 }
 async function msgStart(){
   try{ await msgRefreshUnread(); }catch(e){ console.error('messages',e); }
@@ -5813,12 +5904,48 @@ function msgTick(){
   if(!open) return;
   const body=document.getElementById(MSG_MOUNTS[open].body);
   if(body&&document.activeElement===body) return;
-  const jobId=open==='jc'?_jcId:MSG_TEAM;
-  if(jobId) msgLoad(open, jobId, {quiet:true});
+  if(_msgWatch[open]) msgLoad(open, MSG_TEAM, {quiet:true, watch:true});
+  else if(msgPeer(open)) msgLoad(open, MSG_TEAM, {quiet:true, direct:true});
+  else {
+    const jobId=open==='jc'?_jcId:MSG_TEAM;
+    if(jobId) msgLoad(open, jobId, {quiet:true});
+  }
 }
 function msgOpenJob(){ if(_msgOn&&_jcId) msgLoad('jc', _jcId); }
-function msgOpenTeam(){ if(_msgOn) msgLoad('team', MSG_TEAM); }
-function cvOpenTeam(){
+function msgOpenCompany(which){
+  if(which!=='team'&&which!=='cv') return;
+  _msgDmPeer[which]='';
+  _msgWatch[which]=null;
+  msgPaintPeople();
+  msgPaintAllThreads();
+  if(_msgOn) msgLoad(which, MSG_TEAM);
+}
+function msgOpenTeam(){ msgOpenCompany('team'); }
+function msgOpenDirect(which, accountId){
+  const id=msgUuid(accountId);
+  if(!_msgDmOn||!id||(which!=='team'&&which!=='cv')) return;
+  if(which==='cv') cvShowTeamPanel();
+  _msgWatch[which]=null;
+  _msgDmPeer[which]=id;
+  msgPaintPeople();
+  msgPaintAllThreads();
+  msgLoad(which, MSG_TEAM, {direct:true});
+}
+function msgOpenWatched(which, accountA, accountB){
+  const a=msgUuid(accountA), b=msgUuid(accountB);
+  if(which!=='team'||!a||!b) return;
+  const row=(_msgAllThreads||[]).find(t=>msgUuid(t.account_a)===a&&msgUuid(t.account_b)===b);
+  if(row&&row.mine&&msgUuid(row.peer_id)){
+    msgOpenDirect(which, row.peer_id);
+    return;
+  }
+  _msgDmPeer[which]='';
+  _msgWatch[which]={a:a,b:b};
+  msgPaintPeople();
+  msgPaintAllThreads();
+  msgLoad(which, MSG_TEAM, {watch:true});
+}
+function cvShowTeamPanel(){
   const panel=document.getElementById('cv-team-panel');
   const cal=document.getElementById('cv-cal');
   const crew=document.getElementById('cv-crew-row');
@@ -5827,9 +5954,15 @@ function cvOpenTeam(){
   if(cal) cal.style.display='none';
   if(crew) crew.style.display='none';
   if(bar) bar.style.display='none';
+}
+function cvOpenTeam(){
+  _msgDmPeer.cv='';
+  cvShowTeamPanel();
+  msgPaintPeople();
   msgLoad('cv', MSG_TEAM);
 }
 function cvCloseTeam(){
+  if(_msgDmPeer.cv){ msgOpenCompany('cv'); return; }
   const panel=document.getElementById('cv-team-panel');
   const cal=document.getElementById('cv-cal');
   const crew=document.getElementById('cv-crew-row');
@@ -5893,29 +6026,70 @@ function msgRender(which, data){
       <div class="msg-time">${msgEsc(msgWhen(msg.created_at))} ${hide}</div>
       ${seenTxt?`<div class="msg-seen">${msgEsc(seenTxt)}</div>`:''}
     </div>`;
-  }).join(''):'<div class="msg-empty">'+(data.job_id===MSG_TEAM?'Nothing posted yet. Say hello to the company.':'No messages yet. Ask how the job is going.')+'</div>';
+  }).join(''):'<div class="msg-empty">'+(data.private?('Nothing here yet. This stays between you and '+(data.peer_label||'them')+'.'):(data.job_id===MSG_TEAM?'Nothing posted yet. Say hello to the company.':'No messages yet. Ask how the job is going.'))+'</div>';
   list.dataset.unreadCount=String(unreadN);
   list.scrollTop=list.scrollHeight;
+  msgPaintThreadChrome(which, data);
+}
+function msgPaintThreadChrome(which, data){
+  const priv=!!(data&&data.private);
+  const name=(data&&data.peer_label)||'';
+  const ph=priv
+    ? ('Message '+name+' privately')
+    : (which==='jc'?'Message the crew on this job':which==='cv'?'Reply to the company':'Message the whole company');
+  const body=document.getElementById(MSG_MOUNTS[which].body);
+  if(body){ body.placeholder=ph; body.setAttribute('aria-label', ph); }
+  if(which==='team'){
+    const title=document.getElementById('team-title');
+    const sub=document.getElementById('team-subtitle');
+    const back=document.getElementById('team-dm-back');
+    if(title) title.textContent=priv?name:'Team';
+    if(sub) sub.textContent=data&&data.watch_only
+      ? 'You can read this. Opening it does not mark it read for them.'
+      : (priv?('Only you and '+name+' can read this.'):'Everyone at the company can read and reply.');
+    if(back) back.style.display=priv?'':'none';
+  }
+  if(which==='cv'){
+    const title=document.getElementById('cv-team-title');
+    const back=document.getElementById('cv-team-back');
+    if(title) title.textContent=priv?name:'Team';
+    if(back) back.textContent=priv?'‹ Team':'‹ Schedule';
+  }
 }
 async function msgLoad(which, jobId, opts){
   if(!_msgOn&&!(opts&&opts.force)) return;
   const m=MSG_MOUNTS[which];
   const list=document.getElementById(m.list);
-  if(!list||!jobId) return;
-  const rpc=await sb.rpc('fp_list_job_messages',{job_id:jobId});
-  if(rpc.missing){ msgSetAvailable(false); return; }
+  const watch=(opts&&opts.watch)?_msgWatch[which]:null;
+  const peer=(opts&&opts.direct&&!watch)?msgPeer(which):'';
+  if(!list||(!jobId&&!peer&&!watch)) return;
+  const rpc=watch
+    ? await sb.rpc('fp_list_dm_between',{account_a:watch.a, account_b:watch.b})
+    : peer
+      ? await sb.rpc('fp_list_direct_messages',{peer_id:peer})
+      : await sb.rpc('fp_list_job_messages',{job_id:jobId});
+  if(rpc.missing){
+    if(peer){ _msgDmOn=false; _msgDmPeer[which]=''; msgPaintPeople(); msgPaintBadges(); }
+    else msgSetAvailable(false);
+    return;
+  }
   if(!rpc.ok){
-    list.innerHTML='<div class="msg-empty">Messages on this job are for the crew scheduled on it.</div>';
+    list.innerHTML='<div class="msg-empty">'+(watch||peer?'That conversation is not available.':'Messages on this job are for the crew scheduled on it.')+'</div>';
     const compose=document.getElementById(m.body)&&document.getElementById(m.body).closest('.msg-compose');
     if(compose) compose.style.display='none';
     return;
   }
   msgRender(which, rpc.data||{});
+  if(rpc.data&&rpc.data.watch_only) return;
   if(rpc.data&&rpc.data.manual_read===false){
-    await sb.rpc('fp_mark_job_thread_read',{job_id:jobId});
-    list.querySelectorAll('[data-unread="1"]').forEach(el=>{el.dataset.unread='0';});
-    list.dataset.unreadCount='0';
-    msgRefreshUnread();
+    const mark=peer
+      ? await sb.rpc('fp_mark_direct_thread_read',{peer_id:peer})
+      : await sb.rpc('fp_mark_job_thread_read',{job_id:jobId});
+    if(mark.ok){
+      list.querySelectorAll('[data-unread="1"]').forEach(el=>{el.dataset.unread='0';});
+      list.dataset.unreadCount='0';
+      msgRefreshUnread();
+    }
   }
 }
 async function msgSend(which){
@@ -5925,15 +6099,26 @@ async function msgSend(which){
   const status=document.getElementById(m.status);
   const send=document.getElementById(m.send);
   const text=(bodyEl&&bodyEl.value||'').trim();
+  if(_msgWatch[which]){
+    if(status){ status.dataset.state='error'; status.dataset.error='watch'; status.textContent='This thread is only for the two people in it.'; }
+    return;
+  }
+  const peer=msgPeer(which);
   const jobId=which==='jc'?_jcId:MSG_TEAM;
   if(!text){ if(status){status.dataset.state='error';status.dataset.error='empty';status.textContent='Write a message first.';} return; }
   _msgSending[which]=true;
   if(send) send.disabled=true;
   if(status){ status.dataset.state='sending'; status.dataset.error=''; status.textContent='Sending…'; }
-  const rpc=await sb.rpc('fp_post_job_message',{job_id:jobId, body:text, mention_ids:[..._msgPicks[which]]});
+  const rpc=peer
+    ? await sb.rpc('fp_post_direct_message',{peer_id:peer, body:text})
+    : await sb.rpc('fp_post_job_message',{job_id:jobId, body:text, mention_ids:[..._msgPicks[which]]});
   _msgSending[which]=false;
   if(send) send.disabled=false;
-  if(rpc.missing){ msgSetAvailable(false); return; }
+  if(rpc.missing){
+    if(peer){ _msgDmOn=false; _msgDmPeer[which]=''; msgPaintPeople(); }
+    else msgSetAvailable(false);
+    return;
+  }
   if(!rpc.ok){
     if(status){ status.dataset.state='error'; status.dataset.error=(rpc.error&&(rpc.error.message||rpc.error.code))||'failed'; status.textContent='Could not send. Try again.'; }
     return;
@@ -5941,13 +6126,17 @@ async function msgSend(which){
   if(bodyEl) bodyEl.value='';
   _msgPicks[which].clear();
   if(status){ status.dataset.state='sent'; status.dataset.error=''; status.textContent='Sent'; }
-  await msgLoad(which, jobId, {quiet:true});
+  await msgLoad(which, jobId, peer?{quiet:true, direct:true}:{quiet:true});
   msgRefreshUnread();
 }
 async function msgMarkRead(which){
+  if(_msgWatch[which]) return;
+  const peer=msgPeer(which);
   const jobId=which==='jc'?_jcId:MSG_TEAM;
   const status=document.getElementById(MSG_MOUNTS[which].status);
-  const rpc=await sb.rpc('fp_mark_job_thread_read',{job_id:jobId});
+  const rpc=peer
+    ? await sb.rpc('fp_mark_direct_thread_read',{peer_id:peer})
+    : await sb.rpc('fp_mark_job_thread_read',{job_id:jobId});
   if(!rpc.ok){
     if(status){ status.dataset.state='error'; status.dataset.error='mark_read'; status.textContent='Could not mark read.'; }
     return;
@@ -5961,9 +6150,12 @@ async function msgHide(which, id){
   const btn=document.getElementById(MSG_MOUNTS[which].hidePrefix+id);
   if(!btn) return;
   if(btn.dataset.confirm!=='1'){ btn.dataset.confirm='1'; btn.textContent='Tap again to hide'; return; }
-  const rpc=await sb.rpc('fp_hide_job_message',{message_id:id});
+  const peer=msgPeer(which);
+  const rpc=peer
+    ? await sb.rpc('fp_hide_direct_message',{message_id:id})
+    : await sb.rpc('fp_hide_job_message',{message_id:id});
   if(!rpc.ok){ showToast('Only the owner can hide a message.'); return; }
-  msgLoad(which, which==='jc'?_jcId:MSG_TEAM, {quiet:true});
+  msgLoad(which, which==='jc'?_jcId:MSG_TEAM, peer?{quiet:true, direct:true}:{quiet:true});
 }
 
 function jcTab(name){
