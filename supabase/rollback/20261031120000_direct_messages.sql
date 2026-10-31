@@ -7,6 +7,8 @@
 
 BEGIN;
 
+DROP FUNCTION IF EXISTS public.fp_list_dm_between(uuid, uuid);
+DROP FUNCTION IF EXISTS public.fp_list_all_dm_threads();
 DROP FUNCTION IF EXISTS public.fp_hide_direct_message(uuid);
 DROP FUNCTION IF EXISTS public.fp_mark_direct_thread_read(uuid);
 DROP FUNCTION IF EXISTS public.fp_post_direct_message(uuid, text);

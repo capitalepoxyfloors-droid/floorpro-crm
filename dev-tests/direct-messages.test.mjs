@@ -18,7 +18,9 @@ const costing = read('supabase/migrations/20261020120000_crew_costing_columns.sq
 const phase2 = read('supabase/migrations/20261024140000_role_split_rls.sql');
 const jobMessages = read('supabase/migrations/20261028170000_job_messages.sql');
 const direct = read('supabase/migrations/20261031120000_direct_messages.sql');
+const ownerRead = read('supabase/migrations/20261031150000_owner_read_direct_messages.sql');
 const rollback = read('supabase/rollback/20261031120000_direct_messages.sql');
+const ownerRollback = read('supabase/rollback/20261031150000_owner_read_direct_messages.sql');
 const indexHtml = read('index.html');
 const db = 'floorpro_dm_test';
 
@@ -173,6 +175,21 @@ test('the direct-message files leave the old rules alone', () => {
   assert.match(indexHtml, /fp_post_direct_message/);
   assert.match(indexHtml, /Message '\+name\+' privately'/);
   assert.match(indexHtml, /const _fpUseTest = typeof location !== 'undefined' && new URLSearchParams\(location\.search \|\| ''\)\.get\('env'\) === 'test'/);
+  assert.match(ownerRead, /nndjnywtkgxwvxajwztg/);
+  assert.match(ownerRead, /Do not run this on live/);
+  assert.match(ownerRead, /cngbsmmdfxmerlqnkate/);
+  assert.match(ownerRead, /DROP POLICY IF EXISTS fp_direct_messages_select/);
+  assert.equal(/DROP POLICY(?! IF EXISTS fp_direct_messages_select)/i.test(ownerRead), false);
+  assert.equal(/ALTER TABLE[^;]*job_messages/i.test(ownerRead), false);
+  assert.equal(/DROP TABLE[^;]*job_messages/i.test(ownerRead), false);
+  assert.match(ownerRead, /\(SELECT private\.fp_role\(\)\) = 'owner'/);
+  assert.equal(/fp_is_staff\(\)/.test(ownerRead), false);
+  assert.match(ownerRead, /fp_list_all_dm_threads/);
+  assert.match(ownerRead, /fp_list_dm_between/);
+  assert.match(ownerRollback, /DROP FUNCTION IF EXISTS public\.fp_list_all_dm_threads/);
+  assert.match(rollback, /DROP FUNCTION IF EXISTS public\.fp_list_all_dm_threads/);
+  assert.match(indexHtml, /id="team-all-dm-list"/);
+  assert.match(indexHtml, /Opening it does not mark it read for them/);
 });
 
 test('only the two people can read a direct message, and crew still cannot see pay', { skip: hasPsql() ? false : 'psql is not installed' }, () => {
@@ -215,6 +232,7 @@ VALUES
   const beforeHourly = psqlTuples(db, `SELECT has_column_privilege('authenticated', 'public.crew', 'hourly', 'SELECT')`);
   assert.equal(beforeHourly, 'f');
   psql(db, ['-f', '-'], direct);
+  psql(db, ['-f', '-'], ownerRead);
   assert.equal(policySnapshot(), beforePolicies, 'existing policies changed');
   assert.equal(psqlTuples(db, `SELECT has_column_privilege('authenticated', 'public.crew', 'hourly', 'SELECT')`), 'f');
   assert.equal(psqlTuples(db, `SELECT has_column_privilege('authenticated', 'public.crew', 'phone', 'SELECT')`), 'f');
@@ -269,6 +287,25 @@ VALUES
   const brenPeople = JSON.parse(asRoleValue(brenClaims, `SELECT public.fp_list_dm_people()::text;`));
   assert.equal(brenPeople.find((p) => p.account_id === sethId).unread, 1);
 
+  const readsBefore = psqlTuples(db, `SELECT account_id::text || ' ' || peer_account_id::text || ' ' || last_read_at::text FROM public.direct_message_reads ORDER BY 1`);
+  const ownerWatch = asRoleValue(ownerClaims, `SELECT public.fp_list_dm_between('${sethId}'::uuid, '${brenId}'::uuid)::text;`);
+  assert.match(ownerWatch, /seth-brendon-note/);
+  assert.match(ownerWatch, /"watch_only": true/);
+  assert.equal(ownerWatch.includes('owner-bot-secret'), false);
+  const allThreads = JSON.parse(asRoleValue(ownerClaims, `SELECT public.fp_list_all_dm_threads()::text;`));
+  assert.equal(allThreads.some((t) => {
+    const names = [t.label_a, t.label_b].sort();
+    return names[0] === 'Brendon Bennett' && names[1] === 'Seth West' && t.mine === false;
+  }), true);
+  const readsAfter = psqlTuples(db, `SELECT account_id::text || ' ' || peer_account_id::text || ' ' || last_read_at::text FROM public.direct_message_reads ORDER BY 1`);
+  assert.equal(readsAfter, readsBefore, 'owner reading changed a read cursor');
+  const brenStill = JSON.parse(asRoleValue(brenClaims, `SELECT public.fp_list_dm_people()::text;`));
+  assert.equal(brenStill.find((p) => p.account_id === sethId).unread, 1);
+  assert.match(asRoleText(officeClaims, `SELECT public.fp_list_dm_between('${sethId}'::uuid, '${brenId}'::uuid);`), /not allowed/);
+  assert.match(asRoleText(officeClaims, `SELECT public.fp_list_all_dm_threads();`), /not allowed/);
+  assert.match(asRoleText(sethClaims, `SELECT public.fp_list_dm_between('${ownerId}'::uuid, '${botId}'::uuid);`), /not allowed/);
+  assert.match(asRoleText(sethClaims, `SELECT public.fp_list_all_dm_threads();`), /not allowed/);
+
   assert.match(asRoleText(brenClaims, `SELECT public.fp_list_job_messages('j1');`), /not allowed/);
   assert.match(asRoleValue(ownerClaims, `SELECT public.fp_list_job_messages('j1')::text;`), /Acme|j1|messages/);
   asRole(sethClaims, `SELECT public.fp_post_job_message('team', 'company hello', '[]'::jsonb);`, { commit: true });
@@ -301,6 +338,8 @@ VALUES
   const officeRows = asRoleValue(officeClaims, `SELECT coalesce(string_agg(body, '|'), '') FROM public.direct_messages;`);
   assert.equal(officeRows.includes('seth-brendon-note'), false, officeRows);
   assert.equal(officeRows.includes('owner-bot-secret'), false, officeRows);
+  const ownerRows = asRoleValue(ownerClaims, `SELECT coalesce(string_agg(body, '|'), '') FROM public.direct_messages;`);
+  assert.match(ownerRows, /seth-brendon-note/);
   psql(db, ['-c', `REVOKE SELECT ON public.direct_messages FROM authenticated;`]);
 
   psql(db, ['-c', `GRANT SELECT ON public.direct_message_reads TO authenticated;`]);
@@ -326,11 +365,23 @@ VALUES
   assert.match(asRoleText(sethClaims, `SELECT phone FROM public.crew;`), /permission denied/i);
   const crewPrivate = asRoleValue(sethClaims, `SELECT count(*) FROM public.crew_private;`);
   assert.equal(crewPrivate, '0');
+  const matPrivate = asRoleValue(sethClaims, `SELECT count(*) FROM public.materials_private;`);
+  assert.equal(matPrivate, '0');
   const officePay = asRoleValue(officeClaims, `SELECT hourly FROM public.crew_private WHERE crew_id = (SELECT id FROM public.crew WHERE full_name = 'Seth West');`);
   assert.equal(officePay, '25.00');
 
   assert.equal(psqlTuples(db, `SELECT has_function_privilege('anon', 'public.fp_post_direct_message(uuid, text)', 'EXECUTE')`), 'f');
   assert.equal(psqlTuples(db, `SELECT has_function_privilege('authenticated', 'public.fp_list_direct_messages(uuid)', 'EXECUTE')`), 't');
+
+  psql(db, ['-f', '-'], ownerRollback);
+  assert.match(asRoleText(ownerClaims, `SELECT public.fp_list_all_dm_threads();`), /does not exist|not allowed/i);
+  psql(db, ['-c', `GRANT SELECT ON public.direct_messages TO authenticated;`]);
+  const ownerAfterUndo = asRoleValue(ownerClaims, `SELECT coalesce(string_agg(body, '|'), '') FROM public.direct_messages;`);
+  assert.equal(ownerAfterUndo.includes('seth-brendon-note'), false, ownerAfterUndo);
+  const sethAfterUndo = asRoleValue(sethClaims, `SELECT coalesce(string_agg(body, '|'), '') FROM public.direct_messages;`);
+  assert.equal(sethAfterUndo, 'seth-brendon-note');
+  psql(db, ['-c', `REVOKE SELECT ON public.direct_messages FROM authenticated;`]);
+  assert.equal(policySnapshot(), beforePolicies, 'owner rollback changed an existing policy');
 
   psql(db, ['-f', '-'], rollback);
   assert.equal(policySnapshot(), beforePolicies, 'rollback changed an existing policy');
@@ -359,6 +410,31 @@ test('tapping a person opens a private thread on the test page', async () => {
     }
     calls.push({ url: u, body });
     if (u.includes('/functions/v1/pin-login')) return Promise.resolve(jsonResponse({ accounts: [] }));
+    if (u.includes('/rpc/fp_list_dm_between')) {
+      return Promise.resolve(jsonResponse({
+        account_a: body.account_a,
+        account_b: body.account_b,
+        peer_label: 'Seth West · Grok – Ops Manager',
+        private: true,
+        watch_only: true,
+        me: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+        can_post: false,
+        can_hide: false,
+        manual_read: true,
+        mention_choices: [],
+        messages: [{
+          id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+          body: 'seth-brendon-note',
+          created_at: '2026-10-31T15:04:00Z',
+          author_label: 'Seth West',
+          author_kind: 'crew',
+          author_account_id: seth,
+          mentions: [],
+          seen_by: [],
+          seen_count: 0,
+        }],
+      }));
+    }
     if (u.includes('/rpc/fp_list_direct_messages')) {
       return Promise.resolve(jsonResponse({
         peer_id: body.peer_id,
@@ -476,6 +552,26 @@ test('tapping a person opens a private thread on the test page', async () => {
     assert.equal(w.document.getElementById('team-msg-body').placeholder, 'Message the whole company');
     assert.equal(w.document.getElementById('team-title').textContent, 'Team');
     assert.equal(w.document.getElementById('team-mention-' + seth).textContent, 'Seth West');
+
+    const beforeMarks = calls.filter((c) => c.url.includes('/rpc/fp_mark_direct_thread_read')).length;
+    w.eval(`
+      _msgAllOn = true;
+      _msgAllThreads = [{
+        account_a:'${seth}', label_a:'Seth West',
+        account_b:'${bot}', label_b:'Grok – Ops Manager',
+        mine:false, peer_id:null
+      }];
+      msgPaintAllThreads();
+    `);
+    const pair = w.document.getElementById('team-all-dm-' + seth + '-' + bot);
+    assert.equal(pair.textContent, 'Seth West · Grok – Ops Manager');
+    pair.click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(w.document.getElementById('team-title').textContent, 'Seth West · Grok – Ops Manager');
+    assert.equal(w.document.getElementById('team-subtitle').textContent, 'You can read this. Opening it does not mark it read for them.');
+    assert.match(w.document.getElementById('team-msg-list').textContent, /seth-brendon-note/);
+    assert.equal(w.document.getElementById('team-msg-compose') || w.document.getElementById('team-msg-body').closest('.msg-compose').style.display, 'none');
+    assert.equal(calls.filter((c) => c.url.includes('/rpc/fp_mark_direct_thread_read')).length, beforeMarks);
   } finally {
     try {
       w.eval(`
