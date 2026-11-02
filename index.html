@@ -13700,6 +13700,21 @@ function _waveNoticeByEstimate(state, estimate){
   const id=String(estimate);
   return (state.notices||[]).find(n=>n&&(String(n.estimate)===id||String(n.id)===id))||null;
 }
+function _waveMoney(v){
+  const n=parseFloat(String(v==null?'':v).replace(/[$,\s]/g,''));
+  return isFinite(n)?n:0;
+}
+function _waveMoneyText(v){
+  const n=_waveMoney(v);
+  if(!(n>0)) return 'none';
+  const cents=Math.round(n*100)%100!==0;
+  return '$'+n.toLocaleString('en-US',{minimumFractionDigits:cents?2:0,maximumFractionDigits:2});
+}
+function _waveBoardValue(jobId){
+  const row=(_lastJobRows||[]).find(r=>r&&String(r.id)===String(jobId));
+  if(!row) return null;
+  return row.display_val||row.value||'';
+}
 function _renderWaveLinkBanner(){
   const box=document.getElementById('wave-link-banner');
   if(!box) return;
@@ -13730,7 +13745,19 @@ function _renderWaveLinkBanner(){
           label='Same schedule job as '+name;
           click="waveLinkUseSchedule('"+est+"','"+rid+"')";
         }
-        return `<button class="btn btn-ghost" style="font-size:12px;padding:6px 10px;" onclick="${click}">${_waveEsc(label)}</button>`;
+        let priceChoice='';
+        if(jid && _isOwnerSession()){
+          const current=_waveBoardValue(jid);
+          const curN=_waveMoney(current);
+          const newN=_waveMoney(n.acceptedAmount);
+          if((curN>0||newN>0) && Math.abs(curN-newN)>=0.01){
+            const curTxt=_waveEsc(_waveMoneyText(current));
+            const newTxt=_waveEsc(_waveMoneyText(n.acceptedAmount));
+            priceChoice=`<div style="font-size:12px;color:var(--text2);margin:6px 0 4px;">Current <b>${curTxt}</b> · Accepted <b>${newTxt}</b></div>
+              <button class="btn btn-ghost" style="font-size:12px;padding:6px 10px;" onclick="waveLinkReplace('${est}','${jid}',true)">Update job to ${newTxt}</button>`;
+          }
+        }
+        return `<span style="display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center;"><button class="btn btn-ghost" style="font-size:12px;padding:6px 10px;" onclick="${click}">${_waveEsc(label)}</button>${priceChoice}</span>`;
       }).join('');
       body=`<div style="font-size:13.5px;font-weight:650;color:var(--text);">Wave #${est} for ${who} was added as a new card.</div>
         <div style="font-size:12px;color:var(--text2);margin-top:4px;">No existing job was changed. If this estimate replaces an earlier one, choose that job. Otherwise leave the new card.</div>${amt}`;
@@ -13783,19 +13810,33 @@ async function waveLinkKeepNew(estimate){
     showToast('Left as a new job card.');
   }finally{ _waveLinkBusy=false; }
 }
-async function waveLinkReplace(estimate, jobId){
+async function waveLinkReplace(estimate, jobId, updateValue){
   if(_waveLinkBusy||!_isOwnerSession()||!jobId) return;
   _waveLinkBusy=true;
   try{
     const st=await _waveReadState();
     if(!st){ showToast('Could not reach the server.'); return; }
     const n=_waveNoticeByEstimate(st, estimate);
-    const rows=await sb.get('jobs','id=eq.'+encodeURIComponent(jobId)+'&select=id,notes,customer,status');
+    const rows=await sb.get('jobs','id=eq.'+encodeURIComponent(jobId)+'&select=id,notes,customer,status,value');
     const cur=rows&&rows[0];
     if(!cur){ showToast('That job is no longer on the board.'); return; }
     const note=_waveRewriteNote(cur.notes, estimate);
-    const ok=await sb.update('jobs', jobId, {notes:note});
+    const patch={notes:note};
+    const newNum=_waveMoney(n&&n.acceptedAmount);
+    if(updateValue && newNum>0){
+      patch.value=newNum.toFixed(2);
+      patch.display_val=_waveMoneyText(newNum);
+    }
+    const ok=await sb.update('jobs', jobId, patch);
     if(!ok){ showToast('Could not update the Wave number.'); return; }
+    if(updateValue && newNum>0 && typeof JOB_RECORDS!=='undefined'){
+      const cand=(n&&n.candidates||[]).find(c=>c&&String(c.jobId)===String(jobId));
+      const rec=JOB_RECORDS.find(j=>j&&(String(j.boardRowId)===String(jobId)||(cand&&cand.recordId&&String(j.id)===String(cand.recordId))));
+      if(rec && String(rec.value||'')!==patch.value){
+        rec.value=patch.value;
+        try{ await saveJobRecords(); }catch(e){}
+      }
+    }
     const newId=n&&n.newJobId;
     if(newId && String(newId)!==String(jobId)){
       const fresh=await sb.get('jobs','id=eq.'+encodeURIComponent(newId)+'&select=id,notes,status');
@@ -13807,10 +13848,10 @@ async function waveLinkReplace(estimate, jobId){
     }
     st.notices=st.notices.filter(x=>String(x.estimate)!==String(estimate)&&String(x.id)!==String(estimate));
     if(!await _waveWriteState(st)){ showToast('The Wave number was saved, but the notice could not be cleared.'); return; }
-    logAudit('board_job_updated', cur.customer||'Job', 'Wave #'+estimate+' replaces the earlier estimate. Price and schedule were not changed.');
+    logAudit('board_job_updated', cur.customer||'Job', 'Wave #'+estimate+' replaces the earlier estimate. '+(updateValue&&newNum>0?'Job value updated to the accepted amount.':'Job value kept.'));
     await loadJobs();
     if(_jobsListActive()) renderJobsListView();
-    showToast('Wave #'+estimate+' now replaces the earlier estimate on '+(cur.customer||'that job')+'. The price was not changed.');
+    showToast('Wave #'+estimate+' now replaces the earlier estimate on '+(cur.customer||'that job')+'. '+(updateValue&&newNum>0?'The job value was updated to the accepted amount.':'The current amount was kept.'));
   }finally{ _waveLinkBusy=false; }
 }
 async function waveLinkUseSchedule(estimate, recordId){
