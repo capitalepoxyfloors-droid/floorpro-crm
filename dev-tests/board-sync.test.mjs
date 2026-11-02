@@ -114,6 +114,8 @@ function reset() {
     _jrBaseline = [];
     _jobRecordsLoadOk = true;
     _jcId = null;
+    _nameLinkOffers = [];
+    renderNameLinkNotice();
   `);
 }
 
@@ -330,7 +332,19 @@ test('a name match without a saved link still completes the card', async () => {
   rememberRecords();
   await call('catchUpCompletedBoardCards');
   assert.equal(state.jobs[0].status, 'complete');
+  assert.equal(lex('JOB_RECORDS')[0].boardRowId, undefined);
+  const note = w.document.getElementById('jobs-name-link-notice').textContent;
+  assert.match(note, /ZZ Board Sync Unlinked/);
+  assert.match(note, /Link card/);
+  assert.doesNotMatch(note, /640|\$/);
+  await call('linkNameMatchedCard', 'zz-link', 'card-link');
   assert.equal(lex('JOB_RECORDS')[0].boardRowId, 'card-link');
+  assert.equal(w.document.getElementById('jobs-name-link-notice').textContent, '');
+  assert.equal(audits('board_job_updated', 'ZZ Board Sync Unlinked').length, 1);
+  const auditCount = state.audit.length;
+  await call('catchUpCompletedBoardCards');
+  assert.equal(state.audit.length, auditCount);
+  assert.equal(w.document.getElementById('jobs-name-link-notice').textContent, '');
 });
 
 test('the stale notice lists only in-progress jobs whose last log is 3 or more days after the end date', async () => {
@@ -372,6 +386,27 @@ test('the stale notice lists only in-progress jobs whose last log is 3 or more d
   assert.equal(w.document.getElementById('jobs-stale-notice').style.display, 'none');
 });
 
+test('canceling a name-only delete leaves a link button, and linking saves the board id', async () => {
+  reset();
+  w.confirm = (msg) => { state.confirms.push(String(msg)); return false; };
+  putRecord({ id: 'zz-name-del', customer: 'ZZ Board Sync Name Delete', value: '2200', status: 'in_progress', startDate: '2026-10-01', endDate: '2026-10-02', dayLogs: {} });
+  putCard({ id: 'card-name-del', customer: 'ZZ Board Sync Name Delete', value: '2200', status: 'inprogress', detail: '', notes: '', display_val: '$2,200.00' });
+  rememberRecords();
+  w.eval('_jcId = "zz-name-del"');
+  await call('deleteJobRecord');
+  assert.equal(lex('JOB_RECORDS').length, 1);
+  assert.equal(state.jobs.length, 1);
+  assert.match(state.confirms[0], /Matched by name only/);
+  assert.match(state.confirms[0], /ZZ Board Sync Name Delete/);
+  const note = w.document.getElementById('dash-name-link-notice').textContent;
+  assert.match(note, /ZZ Board Sync Name Delete/);
+  assert.match(note, /Link card/);
+  assert.doesNotMatch(note, /2200|\$/);
+  await call('linkNameMatchedCard', 'zz-name-del', 'card-name-del');
+  assert.equal(lex('JOB_RECORDS')[0].boardRowId, 'card-name-del');
+  assert.equal(w.document.getElementById('jobs-name-link-notice').textContent, '');
+});
+
 test('a saved board link is used even when another card has the same name', async () => {
   reset();
   putRecord({ id: 'zz-linked', customer: 'ZZ Board Sync Twin', value: '100', status: 'complete', startDate: '2026-10-01', endDate: '2026-10-02', boardRowId: 'card-real', dayLogs: {} });
@@ -381,6 +416,7 @@ test('a saved board link is used even when another card has the same name', asyn
   await call('catchUpCompletedBoardCards');
   assert.equal(state.jobs.find(r => r.id === 'card-real').status, 'complete');
   assert.equal(state.jobs.find(r => r.id === 'card-other-name').status, 'inprogress');
+  assert.equal(w.document.getElementById('jobs-name-link-notice').textContent, '');
 });
 
 test('a broken board link does not fall back onto a same-named card', async () => {
