@@ -20,28 +20,16 @@ function jsonResponse(data, status = 200) {
 }
 
 const notice = {
-  id: '9693',
-  kind: 'linked',
-  estimate: '9693',
+  id: '9675',
+  kind: 'choose',
+  estimate: '9675',
   at: '2026-11-02T14:00:00Z',
-  incomingCustomer: 'Matt Pembler',
-  jobId: 'job-pembler',
-  jobCustomer: 'Pembler - Main Floor',
-  jobStatus: 'inprogress',
-  previousNotes: 'Wave #9685 | 2026-10-01',
-  rewrittenNotes: 'Wave #9693 | superseded #9685 | 2026-10-01',
-  superseded: '9685',
+  incomingCustomer: 'Matt Haeffner',
+  newJobId: 'job-new',
   acceptedAmount: '$99,999.99',
-  incoming: {
-    customer: 'Matt Pembler',
-    job_label: 'Urethane',
-    value: '99999.99',
-    display_val: '$99,999.99',
-    detail: '',
-    status: 'approved',
-    crew: '',
-    notes: 'Wave #9693 | 2026-11-02',
-  },
+  candidates: [
+    { jobId: 'job-pool', customer: 'Haeffner - Pool House Garage', status: 'inprogress', waveNum: '674', notes: 'Wave #674 | 2026-10-07', kind: 'job' },
+  ],
 };
 
 let store;
@@ -109,41 +97,42 @@ test('note rewrite keeps the old estimate and the approved date', () => {
   assert.equal(call('_parseApprovedDate', 'Wave #674 | 2026-10-07'), '2026-10-07');
 });
 
-test('owner sees the link and the accepted amount; crew sees neither', () => {
+test('owner can choose replacement or a new card; crew sees neither', () => {
   w.localStorage.removeItem('fpRole');
   w.localStorage.removeItem('fpCrewPreview');
   setLex('WAVE_LINK_NOTICES', [notice]);
   call('_renderWaveLinkBanner');
   const banner = w.document.getElementById('wave-link-banner');
   assert.equal(banner.style.display, 'block');
-  assert.match(banner.textContent, /Pembler - Main Floor/);
-  assert.match(banner.textContent, /#9685/);
+  assert.match(banner.textContent, /added as a new card/);
+  assert.match(banner.textContent, /Replaces #674 on Haeffner - Pool House Garage/);
+  assert.match(banner.textContent, /New job card/);
   assert.match(banner.textContent, /\$99,999\.99/);
-  assert.match(banner.textContent, /Confirm — same job/);
-  assert.match(banner.textContent, /were left as they are/);
+  assert.match(banner.textContent, /No existing job was changed/);
 
-  call('addJobCard', 'Pembler - Main Floor', 'Urethane Sealer', '4321.00', '$4,321', 'pembler detail', 'inprogress', 'job-pembler', { notes: notice.rewrittenNotes });
-  const card = w.document.querySelector('#jobs-col-inprogress .lead-card');
+  call('addJobCard', 'Matt Haeffner', 'Epoxy', '99999.99', '$99,999.99', '', 'approved', 'job-new', { notes: 'Wave #9675 | 2026-11-02' });
+  const card = w.document.querySelector('#jobs-col-approved .lead-card');
   assert.ok(card);
-  assert.match(card.textContent, /Confirm Wave link/);
-  assert.match(card.textContent, /\$4,321/);
-  assert.doesNotMatch(card.textContent, /99,999/);
+  assert.match(card.textContent, /New estimate — replacement\?/);
+  call('addJobCard', 'Haeffner - Pool House Garage', 'Epoxy', '1500.00', '$1,500', '', 'inprogress', 'job-pool', { notes: 'Wave #674 | 2026-10-07' });
+  const existing = w.document.querySelector('#jobs-col-inprogress .lead-card');
+  assert.ok(existing);
+  assert.doesNotMatch(existing.textContent, /replacement/);
 
   w.localStorage.setItem('fpRole', 'crew');
   call('_renderWaveLinkBanner');
   assert.equal(banner.style.display, 'none');
   assert.equal(banner.textContent, '');
-  assert.equal(w.document.body.textContent.includes('99,999'), false);
+  assert.equal(banner.innerHTML.includes('99,999'), false);
 });
 
-test('confirming clears the notice and does not write the accepted amount onto a job', async () => {
+test('New job card dismisses the question and leaves the card', async () => {
   w.localStorage.removeItem('fpRole');
   setLex('WAVE_LINK_NOTICES', [notice]);
   call('_renderWaveLinkBanner');
-  await call('waveLinkConfirm', '9693');
+  await call('waveLinkKeepNew', '9675');
   const saved = JSON.parse(store.wave_link_notices);
   assert.deepEqual(saved.notices, []);
-  assert.equal(JSON.stringify(saved).includes('99999'), false);
   const banner = w.document.getElementById('wave-link-banner');
   assert.equal(banner.textContent.includes('99,999'), false);
 });

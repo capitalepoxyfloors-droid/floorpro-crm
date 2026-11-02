@@ -12,11 +12,13 @@
 --
 --   (a) The same Wave number is already in a job note, a customer name, or a schedule
 --       card: the insert is skipped. Nothing else is changed.
---   (b) The same customer already has an active job (an earlier or different estimate):
---       no new card. The existing card's note is updated to the new Wave number and the
---       old number is kept as "superseded #…". Price, status, schedule, and the
---       schedule card are left alone. A notice is stored for the owner to confirm.
---   Otherwise the insert goes through.
+--   (b) The same customer already has an active job, but this estimate number is not
+--       on any card: the new Approved card is still created. No existing note, price,
+--       or schedule is changed. A notice asks the owner to choose "Replaces #X on
+--       <job>" (then that job's note takes the new number and keeps the old one as
+--       superseded, and the new card is removed) or "New job card" (leave the card
+--       that was just created). If nobody answers, the new card stays.
+--   Otherwise the insert goes through, with no notice.
 --
 -- Running the sync again does not add another card or another "superseded" line.
 -- The notice lives in settings.wave_link_notices. Crew cannot read that key, and they
@@ -306,11 +308,7 @@ DECLARE
   board_id text;
   attached boolean;
   same_count int;
-  one jsonb;
-  old_notes text;
-  new_notes text;
   old_num text;
-  incoming jsonb;
   accepted text;
   candidates jsonb;
 BEGIN
@@ -462,122 +460,54 @@ BEGIN
     END IF;
   END LOOP;
 
+  -- No other active job for this customer. The new card is the whole story.
   IF coalesce(jsonb_array_length(matches), 0) = 0 THEN
     RETURN NEW;
   END IF;
 
-  incoming := jsonb_build_object(
-    'customer', NEW.customer,
-    'job_label', NEW.job_label,
-    'value', NEW.value,
-    'display_val', NEW.display_val,
-    'detail', NEW.detail,
-    'status', coalesce(NEW.status, 'approved'),
-    'crew', NEW.crew,
-    'notes', NEW.notes,
-    'start_date', NEW.start_date,
-    'end_date', NEW.end_date
-  );
+  -- Same customer, new estimate number. Create the card (that is the default) and
+  -- do not touch the other jobs. The owner can later say this estimate replaces one
+  -- of them. A repeat customer with several jobs, such as a GC, keeps every card.
   accepted := nullif(btrim(coalesce(NEW.display_val, '')), '');
   IF accepted IS NULL THEN
     accepted := nullif(btrim(coalesce(NEW.value, '')), '');
   END IF;
-
-  IF jsonb_array_length(matches) > 1 THEN
-    candidates := '[]'::jsonb;
-    FOR i IN 0..jsonb_array_length(matches) - 1 LOOP
-      cand := matches->i;
-      candidates := candidates || jsonb_build_array(jsonb_build_object(
-        'jobId', cand->>'jobId',
-        'customer', cand->>'customer',
-        'status', cand->>'status',
-        'notes', cand->>'notes',
-        'recordId', cand->>'recordId'
-      ));
-      EXIT WHEN i >= 7;
-    END LOOP;
-    PERFORM private.fp_wave_put_notice(jsonb_build_object(
-      'id', num,
-      'kind', 'ambiguous',
-      'estimate', num,
-      'at', to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
-      'incomingCustomer', NEW.customer,
-      'acceptedAmount', accepted,
-      'incoming', incoming,
-      'candidates', candidates
+  candidates := '[]'::jsonb;
+  FOR i IN 0..jsonb_array_length(matches) - 1 LOOP
+    cand := matches->i;
+    old_num := (regexp_match(coalesce(cand->>'notes', ''), 'Wave #([0-9]+)', 'i'))[1];
+    IF old_num IS NULL THEN
+      old_num := (regexp_match(coalesce(cand->>'customer', ''), '#([0-9]+)[[:space:]]*$'))[1];
+    END IF;
+    candidates := candidates || jsonb_build_array(jsonb_build_object(
+      'jobId', cand->>'jobId',
+      'customer', coalesce(cand->>'recordCustomer', cand->>'customer'),
+      'status', cand->>'status',
+      'notes', cand->>'notes',
+      'waveNum', old_num,
+      'recordId', cand->>'recordId',
+      'kind', cand->>'kind'
     ));
-    INSERT INTO public.audit_log (actor, action, entity, details)
-    VALUES (
-      'Wave sync',
-      'board_job_updated',
-      coalesce(NEW.customer, 'Job'),
-      'Wave #' || num || ' matches more than one active job. No card was created and nothing was changed.'
-        || CASE WHEN accepted IS NOT NULL THEN ' Accepted amount not applied: ' || accepted ELSE '' END
-    );
-    RETURN NULL;
-  END IF;
-
-  one := matches->0;
-  IF nullif(one->>'jobId', '') IS NOT NULL THEN
-    old_notes := one->>'notes';
-    new_notes := private.fp_wave_rewrite_note(old_notes, num);
-    old_num := (regexp_match(coalesce(old_notes, ''), 'Wave #([0-9]+)', 'i'))[1];
-    UPDATE public.jobs
-      SET notes = new_notes
-      WHERE id = (one->>'jobId')::uuid;
-    PERFORM private.fp_wave_put_notice(jsonb_build_object(
-      'id', num,
-      'kind', 'linked',
-      'estimate', num,
-      'at', to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
-      'incomingCustomer', NEW.customer,
-      'jobId', one->>'jobId',
-      'jobCustomer', one->>'customer',
-      'jobStatus', one->>'status',
-      'recordId', one->>'recordId',
-      'previousNotes', old_notes,
-      'rewrittenNotes', new_notes,
-      'superseded', CASE WHEN old_num IS NOT NULL AND old_num <> num THEN old_num ELSE NULL END,
-      'acceptedAmount', accepted,
-      'incoming', incoming
-    ));
-    INSERT INTO public.audit_log (actor, action, entity, details)
-    VALUES (
-      'Wave sync',
-      'board_job_updated',
-      coalesce(one->>'customer', NEW.customer, 'Job'),
-      'Wave #' || num || ' linked to existing job'
-        || CASE WHEN old_num IS NOT NULL AND old_num <> num THEN ' (was #' || old_num || ')' ELSE '' END
-        || '. Price and schedule were not changed.'
-        || CASE WHEN accepted IS NOT NULL THEN ' Accepted amount not applied: ' || accepted ELSE '' END
-    );
-    RETURN NULL;
-  END IF;
-
-  -- Schedule card only. Do not write job_records here (a save can be in flight) and
-  -- do not invent a second board card. The owner attaches one from the notice.
+    EXIT WHEN i >= 7;
+  END LOOP;
   PERFORM private.fp_wave_put_notice(jsonb_build_object(
     'id', num,
-    'kind', 'schedule',
+    'kind', 'choose',
     'estimate', num,
     'at', to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
     'incomingCustomer', NEW.customer,
-    'recordId', one->>'recordId',
-    'recordCustomer', one->>'customer',
-    'recordStatus', one->>'status',
-    'recordValue', one->>'recordValue',
+    'newJobId', NEW.id,
     'acceptedAmount', accepted,
-    'incoming', incoming
+    'candidates', candidates
   ));
   INSERT INTO public.audit_log (actor, action, entity, details)
   VALUES (
     'Wave sync',
-    'board_job_updated',
-    coalesce(one->>'customer', NEW.customer, 'Job'),
-    'Wave #' || num || ' matches schedule job "' || coalesce(one->>'customer', '') || '". No board card was created.'
-      || CASE WHEN accepted IS NOT NULL THEN ' Accepted amount not applied: ' || accepted ELSE '' END
+    'board_job_created',
+    coalesce(NEW.customer, 'Job'),
+    'Wave #' || num || ' added as a new card. Existing jobs were not changed.'
   );
-  RETURN NULL;
+  RETURN NEW;
 END;
 $$;
 
