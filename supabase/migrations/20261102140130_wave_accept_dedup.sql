@@ -26,7 +26,7 @@
 --
 -- NEEDS APPROVAL BEFORE LIVE. Applied to the test project only
 -- (nndjnywtkgxwvxajwztg). Do not run it on the live project until that approval.
--- Rollback: supabase/rollback/20261102150000_wave_accept_dedup.sql
+-- Rollback: supabase/rollback/20261102140130_wave_accept_dedup.sql
 
 BEGIN;
 
