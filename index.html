@@ -438,6 +438,7 @@
   .crew-mode #jc-value-group{display:none!important;}
   .crew-mode #jc-invoice-section{display:none!important;}
   .crew-mode #jc-delete-btn{display:none!important;}
+  body.crew-mode #dash-stale-notice,body.crew-mode #jobs-stale-notice{display:none!important;}
   .crew-mode #jc-reschedule-btn{display:none!important;}
   .crew-mode #jc-crew-picker-group{display:none!important;}
   /* PIN login */
@@ -821,6 +822,7 @@
           <button class="btn btn-primary" style="margin-left:auto;padding:5px 14px;" onclick="toggleDashEdit()">Done</button>
         </div>
         <div id="dash-security-alerts" style="display:none;"></div>
+        <div id="dash-stale-notice" style="display:none;"></div>
         <div id="dash-grid"></div>
       </div>
     </div>
@@ -910,6 +912,7 @@
       </div>
       <!-- 4 column board matching pipeline style -->
       <div class="content">
+        <div id="jobs-stale-notice" style="display:none;"></div>
         <div class="pipeline" style="grid-template-columns:repeat(4,1fr);" id="jobs-board">
           <!-- Approved -->
           <div class="pipeline-col" style="border-top:3px solid var(--accent);">
@@ -2870,6 +2873,7 @@ async function dismissSecurityAlerts(latest){
 
 function renderDashboard(){
   renderSecurityAlerts();
+  renderStaleJobNotice();
   const grid = document.getElementById('dash-grid');
   if(!grid) return;
   grid.innerHTML = dashOrder.map(id=>{
@@ -3132,7 +3136,12 @@ async function dbSaveJob(jobObj){
   showSyncStatus('✓ Synced');
   return true;
 }
-async function dbDeleteJob(db_id,customerName){if(db_id){await sb.delete('jobs',db_id);logAudit('board_job_deleted',customerName||'Job','');}}
+async function dbDeleteJob(db_id,customerName){
+  if(!db_id) return false;
+  const ok=await sb.delete('jobs',db_id);
+  if(ok) await logAudit('board_job_deleted',customerName||'Job','');
+  return !!ok;
+}
 // Most recent jobs-table rows, cached by loadJobs so autoAdvanceJobsByDate can reconcile board
 // status against the actual DATA, not the DOM (which can be transiently empty and was spawning
 // duplicate no-Wave rows — e.g. Bob Gerke appearing twice in Complete).
@@ -3164,8 +3173,8 @@ async function loadJobs(){
     if(!existing||(statusRank[r.status]||0)>(statusRank[existing.status]||0)) best[key]=r;
   });
   Object.values(best).forEach(r=>{
-    if(r.status==='invoiced'){
-      addInvoicedRow(r.customer,r.job_label,r.display_val||r.value||'—',r.detail||'',r.id);
+    if(r.status==='invoiced'||r.status==='paid'){
+      addInvoicedRow(r.customer,r.job_label,r.display_val||r.value||'—',r.detail||'',r.id,r.status);
     } else {
       // Restore address/notes from DB notes field so Schedule button can pre-fill them
       const extraData = r.notes ? {notes: r.notes} : undefined;
@@ -3239,12 +3248,18 @@ function _recordForBoardRow(dbId, customer, value){
   const loose=free.filter(j=>_looseNameMatch(j.customer,customer)&&_sameJobValue(j.value,value));
   return loose.length===1?loose[0]:null;
 }
-// rows = candidate jobs-table rows. Returns the board row for this record (may be invoiced — callers decide).
+// Invoiced and paid cards are finished money records. A linked id still returns them so
+// callers can see them and leave them alone. Name matching skips them, the same way it
+// skips a card already linked to a different job.
+function _boardCardSettled(status){ return status==='invoiced'||status==='paid'; }
+const BOARD_SCHEDULE_REMOVED='Schedule record removed';
+const STALE_IN_PROGRESS_DAYS=3;
 function _boardRowForRecord(rec, rows){
   rows=rows||_lastJobRows||[];
+  if(!rec) return null;
   if(rec.boardRowId){ const linked=rows.find(r=>r&&r.id===rec.boardRowId); if(linked) return linked; }
   const takenByOther=id=>JOB_RECORDS.some(j=>j!==rec&&j.boardRowId===id);
-  const free=rows.filter(r=>r&&r.status!=='invoiced'&&!takenByOther(r.id));
+  const free=rows.filter(r=>r&&!_boardCardSettled(r.status)&&!takenByOther(r.id));
   const key=_jobMatchKey(rec.customer);
   const exact=free.filter(r=>_jobMatchKey(r.customer||'')===key);
   if(exact.length){
@@ -3308,8 +3323,8 @@ async function autoAdvanceJobsByDate(){
     // We update the row that already exists and never create a second row for the same job.
     // Linked row first (rec.boardRowId), then name match — see _boardRowForRecord.
     const row = _boardRowForRecord(job);
-    if(row && (row.status === newBoardStatus || row.status === 'invoiced')){
-      // Already at the destination (or invoiced, which never moves backward) — nothing to do.
+    if(row && (row.status === newBoardStatus || _boardCardSettled(row.status))){
+      // Already at the destination, or invoiced/paid — never move those backward.
       if(!job.boardRowId) job.boardRowId = row.id;
     } else if(_isOwnerSession()){
       // Crew cannot write the jobs board. The job-record status above still saves.
@@ -3342,6 +3357,115 @@ async function autoAdvanceJobsByDate(){
   if(advanced.length) showToast('📅 Auto-advanced: '+advanced.join(', '));
   // Board rows were changed in the DB — re-render the board/list from the fresh data.
   if(boardChanged){ try{ await loadJobs(); if(_jobsListActive()) renderJobsListView(); }catch(e){} }
+}
+
+// The schedule record and its Jobs board card are separate rows. deleteJobRecord uses this
+// to decide whether the card can be removed. A sure match comes back as row. Anything less
+// sure is left for the confirm dialog, so a repeat customer's other card is not removed.
+function _boardDeletePlan(job){
+  if(!job) return {row:null, ambiguous:[]};
+  const row=_boardRowForRecord(job);
+  if(row) return {row, ambiguous:[]};
+  const rows=_lastJobRows||[];
+  const taken=id=>JOB_RECORDS.some(j=>j!==job&&j.boardRowId===id);
+  const key=_jobMatchKey(job.customer);
+  if(!key) return {row:null, ambiguous:[]};
+  const settled=rows.filter(r=>r&&_boardCardSettled(r.status)&&!taken(r.id)&&_jobMatchKey(r.customer||'')===key);
+  if(settled.length===1) return {row:settled[0], ambiguous:[]};
+  const open=rows.filter(r=>r&&!_boardCardSettled(r.status)&&!taken(r.id)&&_jobMatchKey(r.customer||'')===key);
+  return {row:null, ambiguous:open.concat(settled.length>1?settled:[])};
+}
+function _deleteJobConfirmMessage(plan){
+  plan=plan||{row:null,ambiguous:[]};
+  let msg='Delete this job and remove it from the schedule?';
+  const row=plan.row;
+  if(row&&!_boardCardSettled(row.status)) msg+='\n\nIts Jobs board card will be removed too.';
+  else if(row&&_boardCardSettled(row.status)){
+    const word=row.status==='paid'?'paid':'invoiced';
+    msg+='\n\nIts Jobs board card is already '+word+', so that card will stay and be flagged for review.';
+  }else if(plan.ambiguous&&plan.ambiguous.length){
+    msg+='\n\nNo Jobs board card was a sure match, so the board will be left as it is. Remove the right card from the Jobs board if it should go.';
+  }
+  return msg;
+}
+function _jobLastLogDate(job){
+  const keys=Object.keys((job&&job.dayLogs)||{}).filter(d=>/^\d{4}-\d{2}-\d{2}$/.test(d));
+  if(!keys.length) return '';
+  keys.sort();
+  return keys[keys.length-1];
+}
+function _calendarDaysAfter(startIso, endIso){
+  const a=new Date(startIso+'T00:00:00'), b=new Date(endIso+'T00:00:00');
+  if(isNaN(a.getTime())||isNaN(b.getTime())) return null;
+  return Math.round((b-a)/86400000);
+}
+// In progress, and the last day log is at least STALE_IN_PROGRESS_DAYS after the end date.
+// No prices. Owner and office only — crew never get this list.
+function staleInProgressJobs(){
+  if(!_isOwnerSession()) return [];
+  const out=[];
+  for(const job of (JOB_RECORDS||[])){
+    if(!job||job.status!=='in_progress'||!job.endDate) continue;
+    const last=_jobLastLogDate(job);
+    if(!last) continue;
+    const past=_calendarDaysAfter(job.endDate, last);
+    if(past==null||past<STALE_IN_PROGRESS_DAYS) continue;
+    out.push({job, last, past});
+  }
+  out.sort((a,b)=>b.past-a.past||String(a.job.customer||'').localeCompare(String(b.job.customer||'')));
+  return out;
+}
+function renderStaleJobNotice(){
+  const hosts=['dash-stale-notice','jobs-stale-notice'].map(id=>document.getElementById(id)).filter(Boolean);
+  const items=staleInProgressJobs();
+  hosts.forEach(host=>{
+    if(!items.length){ host.style.display='none'; host.innerHTML=''; return; }
+    host.style.display='';
+    const shown=items.slice(0,6);
+    const more=items.length-shown.length;
+    host.innerHTML=`<div style="margin-bottom:14px;padding:10px 14px;background:var(--orange-dim);border:1px solid #f6c26b;border-radius:var(--radius-sm);">
+      <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:2px;">Still in progress past the end date</div>
+      <div style="display:flex;flex-direction:column;gap:1px;">
+        ${shown.map(item=>{
+          const id=String(item.job.id||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+          const name=_alEsc(item.job.customer||'Unnamed job');
+          const when=_alEsc(typeof jcFmtDate==='function'?jcFmtDate(item.job.endDate):item.job.endDate);
+          return `<button type="button" onclick="openJobCard('${id}')" style="text-align:left;background:none;border:none;padding:3px 0;cursor:pointer;font:inherit;color:var(--text2);font-size:12.5px;"><b style="color:var(--text);">${name}</b> — last log ${item.past} days after ${when}</button>`;
+        }).join('')}
+      </div>
+      ${more?`<div style="font-size:12px;color:var(--text3);margin-top:4px;">+ ${more} more</div>`:''}
+    </div>`;
+  });
+}
+// Crew can mark the schedule record complete, and cannot write the Jobs board.
+// The next owner or office load moves each linked card to complete. A second run
+// finds the card already complete and writes nothing. Invoiced and paid stay put.
+async function catchUpCompletedBoardCards(){
+  if(!_isOwnerSession()||!_jobRecordsLoadOk) return;
+  let linked=false;
+  let boardChanged=false;
+  const moved=[];
+  for(const job of JOB_RECORDS){
+    if(!job||job.status!=='complete') continue;
+    const row=_boardRowForRecord(job);
+    if(!row) continue;
+    if(!job.boardRowId&&!_boardCardSettled(row.status)){ job.boardRowId=row.id; linked=true; }
+    if(row.status==='complete'||_boardCardSettled(row.status)) continue;
+    const from=row.status||'';
+    const ok=await sb.update('jobs', row.id, {status:'complete'});
+    if(!ok) continue;
+    row.status='complete';
+    boardChanged=true;
+    moved.push(job.customer||'Job');
+    await logAudit('board_status_changed', job.customer||'Job', (from?from+' → ':'')+'complete (schedule already complete)');
+  }
+  if(linked) await saveJobRecords();
+  if(boardChanged){ try{ await loadJobs(); if(_jobsListActive()) renderJobsListView(); }catch(e){} }
+  if(moved.length){
+    const names=moved.slice(0,4).join(', ');
+    showToast(moved.length>4?('Jobs board caught up — '+moved.length+' cards marked complete.'):('Jobs board caught up — '+names+'.'));
+  }
+  renderStaleJobNotice();
 }
 
 // Directory columns the signed-in role can still select after phase 2. Price lives in materials_private.
@@ -3899,6 +4023,8 @@ async function loadAllFromSupabase(){
     renderMaterials();
     await loadJobs();
     await autoAdvanceJobsByDate();
+    if(_isOwnerSession()) await catchUpCompletedBoardCards();
+    renderStaleJobNotice();
     setJobsView(_jobsViewMode);
     crossCheckLeadsVsJobs();   // flag any pipeline lead that's already an approved job
     initSalesNotifications();
@@ -5897,6 +6023,7 @@ function jcSetStatus(val){
   const job=getJobRecord(_jcId); if(!job) return;
   job.status=val; jcStyleStatus(val); saveJobRecords();
   syncBoardCardStatus(job, val);   // keep the Jobs board card in lockstep with the schedule
+  renderStaleJobNotice();
 }
 
 // Move this job's Jobs-board card to match a status set elsewhere (the job-card status
@@ -5916,7 +6043,7 @@ async function syncBoardCardStatus(job, recordStatus){
   const row=_boardRowForRecord(rec);           // linked row first, then name match
   if(!row) return;                             // no board row for this job — nothing to sync
   if(rec.id&&!rec.boardRowId){ rec.boardRowId=row.id; saveJobRecords(); }
-  if(row.status===want||row.status==='invoiced') return;   // already there / never pull invoiced backward
+  if(row.status===want||_boardCardSettled(row.status)) return;   // already there / never pull invoiced or paid backward
   await sb.update('jobs', row.id, {status:want});
   row.status=want;                              // keep the cache coherent
   await loadJobs();
@@ -7150,6 +7277,7 @@ async function jcMarkComplete(){
   if(ss){ss.value='complete'; jcStyleStatus('complete');}
 
   await syncBoardCardStatus(job, 'complete');
+  renderStaleJobNotice();
 
   showToast('✓ '+job.customer+' marked complete!');
 }
@@ -9379,7 +9507,7 @@ async function saveJobCard(){
   const numVal=parseFloat(job.value)||0;
   const cleanDisplay=numVal>0?'$'+numVal.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'—';
   const _jcKey=_jobMatchKey(job.customer);
-  const _jcRows=(_lastJobRows||[]).filter(r=>r && r.status!=='invoiced' && _jobMatchKey(r.customer||'')===_jcKey);
+  const _jcRows=(_lastJobRows||[]).filter(r=>r && !_boardCardSettled(r.status) && _jobMatchKey(r.customer||'')===_jcKey);
   for(const row of _jcRows){
     await dbSaveJob({customer:job.customer,jobLabel:row.job_label||'',value:numVal>0?numVal.toString():'',displayVal:cleanDisplay,detail:row.detail||'',status:row.status||'scheduled',notes:row.notes||'',db_id:row.id});
     row.value=numVal>0?numVal.toString():'';
@@ -9392,9 +9520,29 @@ async function saveJobCard(){
   renderSchedule();
 }
 
+async function _flagSettledBoardCard(row, job){
+  if(!row||!_boardCardSettled(row.status)) return;
+  const word=row.status==='paid'?'paid':'invoiced';
+  const line=BOARD_SCHEDULE_REMOVED+' — review this '+word+' card';
+  const already=(row.detail||'').includes(BOARD_SCHEDULE_REMOVED)||(row.notes||'').includes(BOARD_SCHEDULE_REMOVED);
+  if(!already){
+    const detail=row.detail?row.detail+' · '+line:line;
+    const notes=row.notes?row.notes+'\n'+line:line;
+    const ok=await sb.update('jobs', row.id, {detail, notes});
+    if(!ok){
+      showToast('The job was removed from the schedule, but the '+word+' card could not be flagged.');
+      return;
+    }
+    row.detail=detail;
+    row.notes=notes;
+    await logAudit('board_job_updated', job?.customer||row.customer||'Job', 'Schedule record deleted; '+word+' card kept and flagged');
+  }
+  showToast((job?.customer||'That job')+' was removed from the schedule. The '+word+' card stays on the Jobs board and is flagged.');
+}
 async function deleteJobRecord(){
-  if(!confirm('Delete this job and remove it from the schedule?')) return;
   const job=getJobRecord(_jcId);
+  const plan=_isOwnerSession()?_boardDeletePlan(job):{row:null,ambiguous:[]};
+  if(!confirm(_deleteJobConfirmMessage(plan))) return;
   const delKeys=Object.entries(SLOT_JOB_MAP).filter(([,jid])=>jid===_jcId).map(([k])=>k);
   for(const key of delKeys){
     const[ci,w,d]=key.split('_').map(Number);
@@ -9413,7 +9561,18 @@ async function deleteJobRecord(){
   }
   JOB_RECORDS=JOB_RECORDS.filter(j=>j.id!==_jcId);
   await saveJobRecords(_jcId); await saveSlotJobMap();
-  logAudit('job_deleted',job?.customer||_jcId,job?.startDate?('Was scheduled '+job.startDate+' to '+(job.endDate||job.startDate)):'');
+  await logAudit('job_deleted',job?.customer||_jcId,job?.startDate?('Was scheduled '+job.startDate+' to '+(job.endDate||job.startDate)):'');
+  if(_isOwnerSession()&&plan.row){
+    const row=plan.row;
+    if(!_boardCardSettled(row.status)){
+      const ok=await dbDeleteJob(row.id, job?.customer||'Job');
+      if(!ok) showToast('The job was removed from the schedule, but its Jobs board card is still there.');
+    }else{
+      await _flagSettledBoardCard(row, job);
+    }
+    try{ await loadJobs(); if(_jobsListActive()) renderJobsListView(); }catch(e){}
+  }
+  renderStaleJobNotice();
   closeModal('jobcard'); renderSchedule(); showSyncStatus('✓ Deleted');
 }
 
@@ -11695,6 +11854,7 @@ function showPage(id){
   mgrPhoneMark(id);
   document.body.classList.toggle('mgr-phone-crew', mgrPhoneOn()&&id==='crewview');
   if(id==='dashboard') renderDashboard();
+  if(id==='jobs') renderStaleJobNotice();
   if(id==='schedule') renderSchedule();
   if(id==='salesschedule') renderSalesSchedule();
   if(id==='jobcosting') renderJobCostingPage();
@@ -13735,6 +13895,7 @@ function addJobCard(customer, jobLabel, value, displayVal, detail, status, exist
   const safeCustomer=customer.replace(/'/g,"\\'");
   const safeLabel=jobLabel.replace(/'/g,"\\'");
   const safeVal=(value||'').toString();
+  const _schedRemoved=(detail||'').includes(BOARD_SCHEDULE_REMOVED)||!!(extraData&&String(extraData.notes||'').includes(BOARD_SCHEDULE_REMOVED));
   const statusColors={approved:{bg:'var(--accent-dim)',color:'var(--accent)'},scheduled:{bg:'var(--blue-dim)',color:'var(--blue)'},inprogress:{bg:'var(--green-dim)',color:'var(--green)'},complete:{bg:'var(--surface3)',color:'var(--text3)'}};
   const sc=statusColors[status]||statusColors.approved;
   const statusLabels={approved:'Approved',scheduled:'Scheduled',inprogress:'In Progress',complete:'Completed'};
@@ -13776,6 +13937,7 @@ function addJobCard(customer, jobLabel, value, displayVal, detail, status, exist
     <div class="lead-value">${displayVal}</div>
     <div style="display:flex;gap:5px;margin-top:10px;flex-wrap:wrap;align-items:center;">
       <span class="status-pill" style="background:${sc.bg};color:${sc.color};border:1px solid ${sc.color}44;">${statusLabels[status]}</span>
+      ${_schedRemoved?`<span class="status-pill" style="background:var(--orange-dim);color:var(--orange);border:1px solid var(--orange);">Schedule removed</span>`:''}
       ${status==='approved'?`<button class="btn btn-primary" style="font-size:11px;padding:4px 10px;margin-left:auto;" onclick="event.stopPropagation();scheduleApprovedJob('${safeCustomer}','${safeLabel}','${safeVal}',this)">📅 Schedule</button>`:''}
       ${nextStages[status]?`<button class="btn btn-ghost" style="font-size:10px;padding:3px 8px;${status!=='approved'?'margin-left:auto;':''}" onclick="event.stopPropagation();advanceJobCard(this,'${nextStages[status]}')">${nextLabels[status]}</button>`:''}
       ${status==='complete'?`<button class="btn btn-ghost" style="font-size:10px;padding:3px 8px;margin-left:auto;color:var(--blue);border-color:var(--blue-dim);" onclick="event.stopPropagation();markJobInvoiced(this)">📄 Invoice Sent</button>`:''}
@@ -13796,7 +13958,7 @@ async function advanceJobCard(btn, nextStatus){
   const card=btn.closest('.lead-card');
   const customer=card.dataset.customer||card.querySelector('.lead-name').textContent.trim();
   const key=_jobMatchKey(customer);
-  const rows=(_lastJobRows||[]).filter(r=>r && r.status!=='invoiced' && _jobMatchKey(r.customer||'')===key);
+  const rows=(_lastJobRows||[]).filter(r=>r && !_boardCardSettled(r.status) && _jobMatchKey(r.customer||'')===key);
   // The clicked card's own row first — matching by name alone moved the WRONG row when two
   // board rows share a name (e.g. two "Thomas Construction" jobs).
   const row=rows.find(r=>r.id===card.dataset.dbId)||rows.find(r=>r.status!==nextStatus)||rows[0];
@@ -13908,7 +14070,7 @@ async function markJobInvoiced(btn){
   const card=btn.closest('.lead-card');
   const customer=card.dataset.customer||card.querySelector('.lead-name').textContent.trim();
   const key=_jobMatchKey(customer);
-  const rows=(_lastJobRows||[]).filter(r=>r && r.status!=='invoiced' && _jobMatchKey(r.customer||'')===key);
+  const rows=(_lastJobRows||[]).filter(r=>r && !_boardCardSettled(r.status) && _jobMatchKey(r.customer||'')===key);
   const row=rows[0];
   if(!row){ showToast('Could not find that job to invoice — try refreshing the page.'); return; }
 
@@ -13923,9 +14085,11 @@ async function markJobInvoiced(btn){
   showToast('✓ '+customer+' marked as invoiced!');
 }
 
-function addInvoicedRow(customer,jobLabel,displayVal,detail,dbId){
+function addInvoicedRow(customer,jobLabel,displayVal,detail,dbId,status){
   const col=document.getElementById('jobs-col-invoiced');
   if(!col) return;
+  const paid=status==='paid';
+  const flagged=String(detail||'').includes(BOARD_SCHEDULE_REMOVED);
 
   const row=document.createElement('div');
   row.className='inv-row';
@@ -13934,6 +14098,7 @@ function addInvoicedRow(customer,jobLabel,displayVal,detail,dbId){
   row.dataset.displayVal=displayVal;
   row.dataset.detail=detail;
   row.dataset.dbId=dbId||'';
+  row.dataset.status=paid?'paid':'invoiced';
   row.style.cssText='display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);flex-wrap:wrap;';
   row.innerHTML=`
     <div style="flex:1;min-width:0;">
@@ -13941,8 +14106,9 @@ function addInvoicedRow(customer,jobLabel,displayVal,detail,dbId){
       <div style="font-size:12px;color:var(--text2);margin-top:1px;">${jobLabel}${displayVal&&displayVal!=='—'?' &nbsp;·&nbsp; <span style="color:var(--accent);font-weight:700;font-family:\'DM Mono\',monospace;">'+displayVal+'</span>':''}</div>
       ${detail?`<div style="font-size:11px;color:var(--text3);margin-top:3px;">${detail}</div>`:''}
     </div>
-    <span style="font-size:10px;font-family:'DM Mono',monospace;padding:3px 9px;border-radius:20px;background:var(--blue-dim);color:var(--blue);white-space:nowrap;border:1px solid var(--blue)33;">📄 Invoiced</span>
-    <button class="btn btn-ghost" onclick="undoInvoiced(this)" style="font-size:11px;padding:4px 10px;white-space:nowrap;color:var(--text3);">Undo</button>
+    ${flagged?`<span style="font-size:10px;font-family:'DM Mono',monospace;padding:3px 9px;border-radius:20px;background:var(--orange-dim);color:var(--orange);white-space:nowrap;border:1px solid var(--orange);">Schedule removed</span>`:''}
+    <span style="font-size:10px;font-family:'DM Mono',monospace;padding:3px 9px;border-radius:20px;background:var(--blue-dim);color:var(--blue);white-space:nowrap;border:1px solid var(--blue)33;">${paid?'Paid':'📄 Invoiced'}</span>
+    ${paid?'':`<button class="btn btn-ghost" onclick="undoInvoiced(this)" style="font-size:11px;padding:4px 10px;white-space:nowrap;color:var(--text3);">Undo</button>`}
   `;
   col.appendChild(row);
   updateInvoicedBtn();
@@ -13964,11 +14130,13 @@ function undoInvoiced(btn){
 }
 
 function updateInvoicedBtn(){
-  const count=document.getElementById('jobs-col-invoiced')?.querySelectorAll('.inv-row').length||0;
+  const rows=document.getElementById('jobs-col-invoiced')?.querySelectorAll('.inv-row')||[];
+  const count=rows.length;
+  const paid=[...rows].some(r=>r.dataset.status==='paid');
   const btn=document.getElementById('jobs-invoiced-btn');
   if(!btn) return;
   btn.style.display=count>0?'':'none';
-  btn.textContent='📄 Invoiced ('+count+')';
+  btn.textContent=(paid?'📄 Invoiced & paid':'📄 Invoiced')+' ('+count+')';
   // If no more invoiced, hide section
   if(count===0){
     const sec=document.getElementById('jobs-invoiced-section');
