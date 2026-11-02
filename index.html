@@ -438,7 +438,7 @@
   .crew-mode #jc-value-group{display:none!important;}
   .crew-mode #jc-invoice-section{display:none!important;}
   .crew-mode #jc-delete-btn{display:none!important;}
-  body.crew-mode #dash-stale-notice,body.crew-mode #jobs-stale-notice{display:none!important;}
+  body.crew-mode #dash-stale-notice,body.crew-mode #jobs-stale-notice,body.crew-mode #dash-name-link-notice,body.crew-mode #jobs-name-link-notice{display:none!important;}
   .crew-mode #jc-reschedule-btn{display:none!important;}
   .crew-mode #jc-crew-picker-group{display:none!important;}
   /* PIN login */
@@ -823,6 +823,7 @@
         </div>
         <div id="dash-security-alerts" style="display:none;"></div>
         <div id="dash-stale-notice" style="display:none;"></div>
+        <div id="dash-name-link-notice" style="display:none;"></div>
         <div id="dash-grid"></div>
       </div>
     </div>
@@ -913,6 +914,7 @@
       <!-- 4 column board matching pipeline style -->
       <div class="content">
         <div id="jobs-stale-notice" style="display:none;"></div>
+        <div id="jobs-name-link-notice" style="display:none;"></div>
         <div class="pipeline" style="grid-template-columns:repeat(4,1fr);" id="jobs-board">
           <!-- Approved -->
           <div class="pipeline-col" style="border-top:3px solid var(--accent);">
@@ -2874,6 +2876,7 @@ async function dismissSecurityAlerts(latest){
 function renderDashboard(){
   renderSecurityAlerts();
   renderStaleJobNotice();
+  renderNameLinkNotice();
   const grid = document.getElementById('dash-grid');
   if(!grid) return;
   grid.innerHTML = dashOrder.map(id=>{
@@ -3257,7 +3260,7 @@ const STALE_IN_PROGRESS_DAYS=3;
 function _boardRowForRecord(rec, rows){
   rows=rows||_lastJobRows||[];
   if(!rec) return null;
-  if(rec.boardRowId){ const linked=rows.find(r=>r&&r.id===rec.boardRowId); if(linked) return linked; }
+  if(rec.boardRowId){ const linked=rows.find(r=>r&&String(r.id)===String(rec.boardRowId)); if(linked) return linked; }
   const takenByOther=id=>JOB_RECORDS.some(j=>j!==rec&&j.boardRowId===id);
   const free=rows.filter(r=>r&&!_boardCardSettled(r.status)&&!takenByOther(r.id));
   const key=_jobMatchKey(rec.customer);
@@ -3270,6 +3273,27 @@ function _boardRowForRecord(rec, rows){
   }
   const loose=free.filter(r=>_looseNameMatch(r.customer||'',rec.customer)&&_sameJobValue(r.value,rec.value));
   return loose.length===1?loose[0]:null;
+}
+// Delete and completion sync. An id link wins: the card whose id is this schedule job's id,
+// or the card stored on the record as boardRowId. If either link exists, a different card
+// with the same name is not used. Name matching runs only when neither link exists.
+function _boardIdLink(rec, rows){
+  rows=rows||_lastJobRows||[];
+  if(!rec) return {linked:false, row:null};
+  if(rec.boardRowId){
+    return {linked:true, row:rows.find(r=>r&&String(r.id)===String(rec.boardRowId))||null};
+  }
+  if(rec.id){
+    const same=rows.find(r=>r&&String(r.id)===String(rec.id));
+    if(same) return {linked:true, row:same};
+  }
+  return {linked:false, row:null};
+}
+function _boardRowForDeleteOrComplete(rec, rows){
+  const hit=_boardIdLink(rec, rows);
+  if(hit.linked) return hit.row;
+  const nameRec=rec&&rec.boardRowId?Object.assign({}, rec, {boardRowId:''}):rec;
+  return _boardRowForRecord(nameRec, rows);
 }
 
 async function autoAdvanceJobsByDate(){
@@ -3364,6 +3388,8 @@ async function autoAdvanceJobsByDate(){
 // sure is left for the confirm dialog, so a repeat customer's other card is not removed.
 function _boardDeletePlan(job){
   if(!job) return {row:null, ambiguous:[]};
+  const hit=_boardIdLink(job);
+  if(hit.linked) return {row:hit.row, ambiguous:[]};
   const row=_boardRowForRecord(job);
   if(row) return {row, ambiguous:[]};
   const rows=_lastJobRows||[];
@@ -3430,12 +3456,65 @@ function renderStaleJobNotice(){
           const id=String(item.job.id||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
           const name=_alEsc(item.job.customer||'Unnamed job');
           const when=_alEsc(typeof jcFmtDate==='function'?jcFmtDate(item.job.endDate):item.job.endDate);
-          return `<button type="button" onclick="openJobCard('${id}')" style="text-align:left;background:none;border:none;padding:3px 0;cursor:pointer;font:inherit;color:var(--text2);font-size:12.5px;"><b style="color:var(--text);">${name}</b> — last log ${item.past} days after ${when}</button>`;
+          const crew=(typeof jcCrewNames==='function'?jcCrewNames(item.job):[]).map(_alEsc).join(', ');
+          const who=crew?crew+' — ':'';
+          return `<button type="button" onclick="openJobCard('${id}')" style="text-align:left;background:none;border:none;padding:3px 0;cursor:pointer;font:inherit;color:var(--text2);font-size:12.5px;"><b style="color:var(--text);">${name}</b> — ${who}last log ${item.past} days after ${when}</button>`;
         }).join('')}
       </div>
       ${more?`<div style="font-size:12px;color:var(--text3);margin-top:4px;">+ ${more} more</div>`:''}
     </div>`;
   });
+}
+// Name-only matches from a delete or a completion catch-up. Owner and office can
+// save the board link. No prices. The list is for this session; a later load
+// offers again until the link is saved.
+let _nameLinkOffers=[];
+function _dropNameLinkOffer(jobId){
+  _nameLinkOffers=_nameLinkOffers.filter(o=>String(o.jobId)!==String(jobId));
+}
+function _offerNameLink(job, row){
+  if(!_isOwnerSession()||!job||!row||!job.id||!row.id||job.boardRowId) return;
+  if(_nameLinkOffers.some(o=>String(o.jobId)===String(job.id)&&String(o.cardId)===String(row.id))) return;
+  _nameLinkOffers.push({jobId:job.id, cardId:row.id, jobName:job.customer||'Unnamed job', cardName:row.customer||'Unnamed card', cardStatus:row.status||''});
+}
+function _boardStatusWord(status){
+  return {approved:'Approved',scheduled:'Scheduled',inprogress:'In Progress',complete:'Completed',invoiced:'Invoiced',paid:'Paid'}[status]||'';
+}
+function renderNameLinkNotice(){
+  const hosts=['dash-name-link-notice','jobs-name-link-notice'].map(id=>document.getElementById(id)).filter(Boolean);
+  const show=_isOwnerSession()?_nameLinkOffers:[];
+  const items=show.slice(0,6);
+  const more=show.length-items.length;
+  hosts.forEach(host=>{
+    if(!items.length){ host.style.display='none'; host.innerHTML=''; return; }
+    host.style.display='';
+    host.innerHTML=`<div style="margin-bottom:14px;padding:10px 14px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);">
+      <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:2px;">Matched by name only</div>
+      ${items.map(o=>{
+        const jid=String(o.jobId).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+        const cid=String(o.cardId).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+        const word=_boardStatusWord(o.cardStatus);
+        return `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:3px 0;font-size:12.5px;color:var(--text2);">
+          <span style="flex:1;min-width:180px;">Schedule job <b style="color:var(--text);">${_alEsc(o.jobName)}</b> and board card <b style="color:var(--text);">${_alEsc(o.cardName)}</b>${word?' ('+_alEsc(word)+')':''}</span>
+          <button type="button" class="btn btn-ghost" style="font-size:12px;padding:4px 10px;" onclick="linkNameMatchedCard('${jid}','${cid}')">Link card</button>
+        </div>`;
+      }).join('')}
+      ${more?`<div style="font-size:12px;color:var(--text3);margin-top:4px;">+ ${more} more</div>`:''}
+    </div>`;
+  });
+}
+async function linkNameMatchedCard(jobId, cardId){
+  if(!_isOwnerSession()) return;
+  const job=getJobRecord(jobId);
+  if(!job){ _dropNameLinkOffer(jobId); renderNameLinkNotice(); showToast('That schedule job is no longer here.'); return; }
+  const row=(_lastJobRows||[]).find(r=>r&&String(r.id)===String(cardId));
+  job.boardRowId=cardId;
+  const saved=await saveJobRecords(job.id);
+  if(saved===false){ delete job.boardRowId; showToast('Could not save that link. Try again.'); return; }
+  _dropNameLinkOffer(job.id);
+  await logAudit('board_job_updated', job.customer||'Job', 'Linked to board card '+(row&&row.customer?row.customer:'by id'));
+  showToast('Linked '+(job.customer||'that job')+' to its Jobs board card.');
+  renderNameLinkNotice();
 }
 // Crew can mark the schedule record complete, and cannot write the Jobs board.
 // The next owner or office load moves each linked card to complete. A second run
@@ -3447,14 +3526,19 @@ async function catchUpCompletedBoardCards(){
   const moved=[];
   for(const job of JOB_RECORDS){
     if(!job||job.status!=='complete') continue;
-    const row=_boardRowForRecord(job);
+    const hit=_boardIdLink(job);
+    const row=hit.linked?hit.row:_boardRowForRecord(job);
     if(!row) continue;
-    if(!job.boardRowId&&!_boardCardSettled(row.status)){ job.boardRowId=row.id; linked=true; }
-    if(row.status==='complete'||_boardCardSettled(row.status)) continue;
+    if(hit.linked&&!job.boardRowId&&!_boardCardSettled(row.status)){ job.boardRowId=row.id; linked=true; }
+    if(row.status==='complete'||_boardCardSettled(row.status)){
+      if(!hit.linked) _offerNameLink(job, row);
+      continue;
+    }
     const from=row.status||'';
     const ok=await sb.update('jobs', row.id, {status:'complete'});
-    if(!ok) continue;
+    if(!ok){ if(!hit.linked) _offerNameLink(job, row); continue; }
     row.status='complete';
+    if(!hit.linked) _offerNameLink(job, row);
     boardChanged=true;
     moved.push(job.customer||'Job');
     await logAudit('board_status_changed', job.customer||'Job', (from?from+' → ':'')+'complete (schedule already complete)');
@@ -3466,6 +3550,7 @@ async function catchUpCompletedBoardCards(){
     showToast(moved.length>4?('Jobs board caught up — '+moved.length+' cards marked complete.'):('Jobs board caught up — '+names+'.'));
   }
   renderStaleJobNotice();
+  renderNameLinkNotice();
 }
 
 // Directory columns the signed-in role can still select after phase 2. Price lives in materials_private.
@@ -6040,7 +6125,7 @@ async function syncBoardCardStatus(job, recordStatus){
   const want={scheduled:'scheduled', in_progress:'inprogress', complete:'complete'}[recordStatus];
   if(!want) return;
   const rec=typeof job==='string'?(JOB_RECORDS.find(j=>j.customer===job)||{customer:job}):job;
-  const row=_boardRowForRecord(rec);           // linked row first, then name match
+  const row=_boardRowForDeleteOrComplete(rec); // job id or boardRowId, then name only if neither link exists
   if(!row) return;                             // no board row for this job — nothing to sync
   if(rec.id&&!rec.boardRowId){ rec.boardRowId=row.id; saveJobRecords(); }
   if(row.status===want||_boardCardSettled(row.status)) return;   // already there / never pull invoiced or paid backward
@@ -9542,7 +9627,12 @@ async function _flagSettledBoardCard(row, job){
 async function deleteJobRecord(){
   const job=getJobRecord(_jcId);
   const plan=_isOwnerSession()?_boardDeletePlan(job):{row:null,ambiguous:[]};
-  if(!confirm(_deleteJobConfirmMessage(plan))) return;
+  const nameMatched=!!(job&&plan.row&&!_boardIdLink(job).linked);
+  if(nameMatched){ _offerNameLink(job, plan.row); renderNameLinkNotice(); }
+  let msg=_deleteJobConfirmMessage(plan);
+  if(nameMatched) msg+='\n\nMatched by name only: schedule job "'+(job.customer||'Unnamed job')+'" and board card "'+(plan.row.customer||'Unnamed card')+'". Cancel to link them from the notice.';
+  if(!confirm(msg)) return;
+  if(nameMatched){ _dropNameLinkOffer(job.id); renderNameLinkNotice(); }
   const delKeys=Object.entries(SLOT_JOB_MAP).filter(([,jid])=>jid===_jcId).map(([k])=>k);
   for(const key of delKeys){
     const[ci,w,d]=key.split('_').map(Number);
@@ -11854,7 +11944,7 @@ function showPage(id){
   mgrPhoneMark(id);
   document.body.classList.toggle('mgr-phone-crew', mgrPhoneOn()&&id==='crewview');
   if(id==='dashboard') renderDashboard();
-  if(id==='jobs') renderStaleJobNotice();
+  if(id==='jobs'){ renderStaleJobNotice(); renderNameLinkNotice(); }
   if(id==='schedule') renderSchedule();
   if(id==='salesschedule') renderSalesSchedule();
   if(id==='jobcosting') renderJobCostingPage();
