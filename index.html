@@ -1245,6 +1245,17 @@
             <button class="btn btn-primary" onclick="addOfficeUser()" style="font-size:12px;padding:7px 14px;">+ Add</button>
           </div>
         </div>
+        <div class="jobs-block" id="slot-map-cleanup-block" style="padding:0;margin-bottom:16px;">
+          <div style="padding:14px 18px;border-bottom:1px solid var(--border);">
+            <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);">Schedule Map Cleanup</div>
+            <div style="font-size:11.5px;color:var(--text2);margin-top:5px;line-height:1.45;">One-time cleanup for the owner. Removes saved slot-map keys that point at a job that no longer exists, and keys for weeks before this one. It does not delete scheduled jobs, and it does not run on its own. Preview first.</div>
+          </div>
+          <div style="padding:16px 18px;">
+            <button type="button" class="btn btn-ghost" onclick="jcPreviewSlotMapCleanup()">Preview cleanup</button>
+            <pre id="slot-map-cleanup-preview" style="margin:12px 0 0;white-space:pre-wrap;font-family:'DM Mono',monospace;font-size:11.5px;color:var(--text2);line-height:1.45;"></pre>
+            <button type="button" class="btn btn-primary" id="slot-map-cleanup-run" style="display:none;margin-top:12px;" onclick="jcRunSlotMapCleanup()">Remove these keys</button>
+          </div>
+        </div>
         <div class="jobs-block" style="padding:0;">
           <div style="padding:14px 18px;border-bottom:1px solid var(--border);">
             <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);">Session</div>
@@ -2565,6 +2576,7 @@ const AUDIT_ACTION_META={
   pin_unlocked:{icon:'🔓',label:'Sign-in unlocked',color:'var(--blue)'},
   schedule_added:{icon:'📅',label:'Added to schedule',color:'var(--green)'},
   schedule_removed:{icon:'🗑️',label:'Removed from schedule',color:'var(--red)'},
+  slot_map_removed:{icon:'🧹',label:'Schedule map key removed',color:'var(--text2)'},
   schedule_updated:{icon:'📅',label:'Schedule slot updated',color:'var(--blue)'},
   job_created:{icon:'✚',label:'Job created',color:'var(--green)'},
   job_deleted:{icon:'✖',label:'Job deleted',color:'var(--red)'},
@@ -4320,6 +4332,7 @@ function sjConfirm(){
     const _slotDt=new Date(BASE.getTime()+curW*7*24*60*60*1000+curD*24*60*60*1000);
     const _slotDateStr=_slotDt.toISOString().split('T')[0];
     sjCrew.forEach(ci=>{
+      if(isCrewInactive(ci)) return;
       if(newSlots[ci]?.[curW]?.[curD]){
         // Already occupied — double-book as extra slot
         dbAddExtraSlot(ci,curW,curD,cust,cssType,jobId,_slotDateStr);
@@ -4343,7 +4356,7 @@ function sjConfirm(){
     jobType: cssType,
     jobTypeLabel: document.getElementById('sj-type').value,
     value: document.getElementById('sj-val').value,
-    crewNames: sjCrew.map(i=>CREW[i].full).join(', '),
+    crewNames: sjCrew.filter(i=>!isCrewInactive(i)).map(i=>CREW[i].full).join(', '),
     startDate: sjFound.startDate.toISOString().split('T')[0],
     endDate: sjFound.endDate.toISOString().split('T')[0],
     status: 'scheduled',
@@ -4363,7 +4376,7 @@ function sjConfirm(){
   for(let i=0;i<days;i++){
     if(curD>BOOK_MD){curW++;curD=0;}
     // Only map crew that got a primary slot — skip those that were double-booked into multiSlots
-    sjCrew.forEach(ci=>{ if(newSlots[ci]?.[curW]?.[curD]?.l===cust) SLOT_JOB_MAP[jcSlotKey(ci,curW,curD)]=jobId; });
+    sjCrew.forEach(ci=>{ if(!isCrewInactive(ci)&&newSlots[ci]?.[curW]?.[curD]?.l===cust) SLOT_JOB_MAP[jcSlotKey(ci,curW,curD)]=jobId; });
     curD++;
   }}
   saveJobRecords(); saveSlotJobMap();
@@ -5301,6 +5314,129 @@ async function loadSlotJobMap(){
 }
 async function saveSlotJobMap(){ SLOT_JOB_MAP = await _saveKVMerged('slot_job_map', SLOT_JOB_MAP); }
 
+// Owner-only, on-demand cleanup of slot_job_map. Never runs from load or save.
+// Removes keys whose job id is not in job_records, keys that don't parse, and keys
+// for weeks before the current schedule week. Does not delete scheduled_slots rows.
+let _slotMapCleanupReady=false;
+function jcSlotMapKeyParts(key){
+  const m=String(key).match(/^(\d+)_(-?\d+)_(\d+)$/);
+  if(!m) return null;
+  return {ci:+m[1], w:+m[2], d:+m[3]};
+}
+function jcSlotMapIsPastWeek(parts){
+  // The board's current week opens on Sunday, which is stored as the previous
+  // Monday-based week, day 6. Anything before that Sunday is a past week.
+  const open=new Date(BASE);
+  open.setDate(open.getDate()-1);
+  open.setHours(0,0,0,0);
+  const mon=getMonday(parts.w);
+  const dt=new Date(mon);
+  dt.setDate(mon.getDate()+parts.d);
+  dt.setHours(0,0,0,0);
+  return dt<open;
+}
+function jcStaleSlotMapRemovals(map, jobs){
+  const ids=new Set((jobs||[]).map(j=>String(j&&j.id)));
+  const removals=[];
+  for(const [key, jobId] of Object.entries(map||{})){
+    const id=jobId==null?'':String(jobId);
+    const parts=jcSlotMapKeyParts(key);
+    if(!parts){ removals.push({key, jobId:id, reason:'unreadable key'}); continue; }
+    if(!ids.has(id)){ removals.push({key, jobId:id, reason:'job is not in job records'}); continue; }
+    if(jcSlotMapIsPastWeek(parts)) removals.push({key, jobId:id, reason:'past week'});
+  }
+  const rank={'job is not in job records':0,'unreadable key':1,'past week':2};
+  removals.sort((a,b)=>(rank[a.reason]??9)-(rank[b.reason]??9)||String(a.key).localeCompare(String(b.key)));
+  return removals;
+}
+async function jcReadSlotMapCleanup(){
+  const jobsRead=await _jobRecordsRead();
+  const mapRead=await sb.readKV('slot_job_map');
+  if(!jobsRead.ok||!mapRead.ok) return {ok:false};
+  let jobs=[], map={};
+  try{
+    jobs=jobsRead.value!=null?JSON.parse(jobsRead.value):[];
+    map=mapRead.value!=null?JSON.parse(mapRead.value):{};
+    if(!Array.isArray(jobs)||!map||typeof map!=='object'||Array.isArray(map)) throw new Error('bad shape');
+  }catch(e){
+    console.error('slot map cleanup read was not valid', e);
+    return {ok:false};
+  }
+  return {ok:true, jobs, map, removals:jcStaleSlotMapRemovals(map, jobs)};
+}
+function jcRenderSlotMapCleanupPreview(removals){
+  const el=document.getElementById('slot-map-cleanup-preview');
+  const btn=document.getElementById('slot-map-cleanup-run');
+  if(!el) return;
+  if(!removals.length){
+    el.textContent='Nothing to remove. Keys for this week and later that point at a current job are left in place. Scheduled jobs were not changed.';
+    if(btn) btn.style.display='none';
+    _slotMapCleanupReady=false;
+    return;
+  }
+  const counts={};
+  removals.forEach(r=>{ counts[r.reason]=(counts[r.reason]||0)+1; });
+  const summary=removals.length+' key'+(removals.length===1?'':'s')+' would be removed. No scheduled jobs are deleted.\n'
+    +Object.entries(counts).map(([reason,n])=>n+' — '+reason).join('\n');
+  const sample=removals.slice(0,20).map(r=>r.key+' → '+(r.jobId||'(none)')+' ('+r.reason+')').join('\n');
+  const more=removals.length>20?'\n… and '+(removals.length-20)+' more':'';
+  el.textContent=summary+'\n\n'+sample+more;
+  if(btn) btn.style.display='';
+  _slotMapCleanupReady=true;
+}
+async function jcPreviewSlotMapCleanup(){
+  if(!msgOwnerLogin()){ showToast('Only the owner can clean the schedule map.'); return; }
+  _slotMapCleanupReady=false;
+  const btn=document.getElementById('slot-map-cleanup-run');
+  if(btn) btn.style.display='none';
+  const loaded=await jcReadSlotMapCleanup();
+  const el=document.getElementById('slot-map-cleanup-preview');
+  if(!loaded.ok){
+    if(el) el.textContent='Could not read the schedule map. Nothing was changed.';
+    return;
+  }
+  jcRenderSlotMapCleanupPreview(loaded.removals);
+}
+async function _logSlotMapRemovals(removals){
+  const queue=removals.slice();
+  const n=Math.min(8, queue.length);
+  await Promise.all(Array.from({length:n}, async()=>{
+    while(queue.length){
+      const r=queue.shift();
+      await logAudit('slot_map_removed', r.key, (r.jobId||'(none)')+' — '+r.reason);
+    }
+  }));
+}
+async function jcRunSlotMapCleanup(){
+  if(!msgOwnerLogin()){ showToast('Only the owner can clean the schedule map.'); return; }
+  if(!_slotMapCleanupReady){ showToast('Preview the cleanup first.'); return; }
+  const loaded=await jcReadSlotMapCleanup();
+  if(!loaded.ok){ showToast('Could not read the schedule map. Nothing was changed.'); return; }
+  jcRenderSlotMapCleanupPreview(loaded.removals);
+  if(!loaded.removals.length){ showToast('Nothing to remove.'); return; }
+  const n=loaded.removals.length;
+  if(!confirm('Remove '+n+' schedule-map key'+(n===1?'':'s')+'? This does not delete any scheduled jobs.')) return;
+  const serverCopy=_jrClone(loaded.map);
+  _kvBaselines.slot_job_map=serverCopy;
+  SLOT_JOB_MAP=_jrClone(serverCopy);
+  for(const r of loaded.removals) delete SLOT_JOB_MAP[r.key];
+  await saveSlotJobMap();
+  if(!_kvSaveOk.slot_job_map){
+    SLOT_JOB_MAP=serverCopy;
+    _kvBaselines.slot_job_map=_jrClone(serverCopy);
+    showToast('Cleanup was not saved. Nothing was removed.');
+    return;
+  }
+  const gone=loaded.removals.filter(r=>!Object.prototype.hasOwnProperty.call(SLOT_JOB_MAP, r.key));
+  await _logSlotMapRemovals(gone);
+  _slotMapCleanupReady=false;
+  const runBtn=document.getElementById('slot-map-cleanup-run');
+  if(runBtn) runBtn.style.display='none';
+  const el=document.getElementById('slot-map-cleanup-preview');
+  if(el) el.textContent='Removed '+gone.length+' key'+(gone.length===1?'':'s')+'. Scheduled jobs were not deleted.';
+  showToast('Removed '+gone.length+' schedule-map key'+(gone.length===1?'':'s')+'.');
+}
+
 // Bring in job records, the slot map, and schedule rows when the tab is focused again.
 // A page left open does not otherwise see a crew day added somewhere else, and the next
 // Save was writing from that old copy. This never writes. Unsaved edits on this page stay.
@@ -5483,9 +5619,23 @@ function jcDropCrewDay(job, ds){
     if(Array.isArray(job.crewDays[name])) job.crewDays[name]=job.crewDays[name].filter(d=>d!==ds);
   }
 }
-// Whole-job reschedule already places every person who has a slot onto every new day.
-// Dropping the day lists makes the record match that calendar instead of pointing at the old dates.
+// Whole-job reschedule places every person still on the job onto every new day.
+// Dropping those day lists makes the record match that calendar instead of pointing at the old dates.
 function jcClearCrewDays(job){ if(job&&job.crewDays) delete job.crewDays; }
+// Who a whole-job move carries. Membership is the job record: a name in crewNames
+// with at least one assigned day (every work day when crewDays has no entry for them).
+// Leftover slot_job_map keys and old slot rows are not membership. Inactive crew never move.
+function jcCarryCrew(job){
+  const out=[];
+  if(!job) return out;
+  for(const name of jcCrewNames(job)){
+    const ci=CREW.findIndex(c=>c&&c.full===name);
+    if(ci<0||isCrewInactive(ci)) continue;
+    if(!jcAssignedDates(job, name).length) continue;
+    out.push(ci);
+  }
+  return out;
+}
 // One-person drag. Freeze everyone else on the days they have now, take the moved
 // days off the origin, and give those new dates to the target — so the next sync
 // does not put the origin back or book the target for the whole job.
@@ -5630,6 +5780,7 @@ async function jcSyncCrewSlots(job, force=false){
   let added=0;
   for(const name of names){
     const ci=CREW.findIndex(c=>c.full===name); if(ci===-1) continue;
+    if(isCrewInactive(ci)) continue; // inactive crew are never auto-booked by a save or a reload heal
     for(const ds of jcAssignedDates(job, name)){
       const pos=cvDateToSlot(new Date(ds+'T00:00:00')); if(!pos) continue;
       const{w,d}=pos; const key=jcSlotKey(ci,w,d);
@@ -5804,6 +5955,7 @@ async function jcToggleCrew(i){
   const names=jcCrewNames(job);
   const idx=names.indexOf(name);
   const adding=idx===-1;
+  if(adding&&isCrewInactive(i)){ showToast(name+' is inactive and was not added to the schedule.'); return; }
   if(adding){
     jcMaterializeCrewDays(job); // freeze everyone already on the job before this person joins
     names.push(name);
@@ -5840,6 +5992,8 @@ async function jcToggleCrewDay(i, ds){
   const job=getJobRecord(_jcId); if(!job) return;
   const name=CREW[i]?.full; if(!name) return;
   if(!jcJobWorkDates(job).includes(ds)){ showToast('That day is not on this job.'); return; }
+  const alreadyOn=jcCrewDaysExplicit(job, name)?job.crewDays[name].includes(ds):jcCrewNames(job).includes(name);
+  if(!alreadyOn&&isCrewInactive(i)){ showToast(name+' is inactive and was not added to the schedule.'); return; }
   jcMaterializeCrewDays(job);
   const names=jcCrewNames(job);
   let days=(jcCrewDaysExplicit(job, name)?job.crewDays[name]:[]).slice();
@@ -6887,6 +7041,8 @@ async function jcAddExtraDay(){
   // day) pick up the extra day. Someone assigned only some days stays on those days.
   const before=new Set(jcJobWorkDates(job));
   const wholeJob=jcCrewNames(job).filter(name=>{
+    const ci=CREW.findIndex(c=>c.full===name);
+    if(ci>=0&&isCrewInactive(ci)) return false;
     if(!jcCrewDaysExplicit(job, name)) return true;
     const days=job.crewDays[name];
     return before.size>0&&[...before].every(d=>days.includes(d));
@@ -9338,19 +9494,12 @@ async function jcRescheduleConfirm(){
   if(!newStart){showToast('Pick a new start date.');return;}
   const duration=parseInt(document.getElementById('rs-duration').value,10)||1;
 
-  // Collect distinct crew CIs that have slots for this job. A double-booked "extra" slot's
-  // jobId tag only lives in memory — loadScheduledSlots rebuilds multiSlots from the raw
-  // scheduled_slots rows on every reload and can't restore it (it isn't a persisted column),
-  // so a job that's ENTIRELY double-booked (no day where it's the primary occupant) would
-  // otherwise vanish from this lookup after any reload. Fall back to matching by customer
-  // label for multiSlots, same convention already used elsewhere in this file for stale
-  // SLOT_JOB_MAP data (see "SLOT_JOB_MAP can be stale" in CLAUDE.md).
-  const primaryCIs=Object.entries(SLOT_JOB_MAP)
-    .filter(([,jid])=>jid===_jcId)
-    .map(([key])=>+key.split('_')[0]);
-  const extraCIs=_jobOwnExtraCIs(job);
-  const crewCIs=[...new Set([...primaryCIs,...extraCIs])];
-  if(!crewCIs.length){showToast('No schedule slots found for this job.');closeModal('reschedule');return;}
+  // Who moves is the job record's current crew (crewNames / crewDays), not leftover
+  // slot_job_map keys or old slot rows. A key from a week this job used to occupy still
+  // points at this job id after the person was taken off, and reading it put them back
+  // on the new dates — including crew who had since been marked inactive.
+  const crewCIs=jcCarryCrew(job);
+  if(!crewCIs.length){showToast('No current crew on this job to reschedule.');closeModal('reschedule');return;}
 
   const includeWeekends=document.getElementById('rs-include-weekends').checked;
   const newDates=getWorkingDaysFrom(newStart,duration,includeWeekends);
@@ -9402,12 +9551,20 @@ function jcSyncStatusToDate(job,effectiveStartStr){
 }
 
 async function jcRescheduleApply(crewCIs,newDates,duration,job,newStart,force=false){
+  // Recompute from the job record even if a caller passed a stale index list.
+  const moving=jcCarryCrew(job);
+  if(!moving.length){
+    showToast('No current crew on this job to reschedule.');
+    closeModal('reschedule');
+    return;
+  }
   // 1. Remove ALL old slots belonging to this job — primary slots via SLOT_JOB_MAP, plus any
   // of the job's own double-booked EXTRA slots on its old dates, matched by customer label
-  // (not jobId, which multiSlots can't reliably carry across a reload — see crewCIs above).
-  // seRemoveExtraSlotForLabel only removes entries matching this exact label, so an unrelated
-  // job double-booked on the same crew/day is left untouched.
-  const oldEntries=Object.entries(SLOT_JOB_MAP).filter(([,jid])=>jid===_jcId);
+  // (not jobId, which multiSlots can't reliably carry across a reload). This includes people
+  // who are no longer on the job, so a leftover row leaves with the old dates and is not
+  // recreated below. seRemoveSlot only removes the primary. seRemoveExtraSlotForLabel only
+  // removes entries matching this exact label, so an unrelated job sharing the square stays.
+  const oldEntries=Object.entries(SLOT_JOB_MAP).filter(([,jid])=>String(jid)===String(job.id));
   for(const[key]of oldEntries){
     const[ci,w,d]=key.split('_').map(Number);
     // SLOT_JOB_MAP can go stale when double-booking swaps which job is primary for a cell
@@ -9423,48 +9580,69 @@ async function jcRescheduleApply(crewCIs,newDates,duration,job,newStart,force=fa
     const _eDow=new Date(job.endDate+'T00:00:00').getDay();
     const _wknd=(_sDow===0||_sDow===6||_eDow===0||_eDow===6);
     const oldDates=[...new Set([...(_wknd?jcAllDays(job.startDate,job.endDate):jcWeekdays(job.startDate,job.endDate)),...(job.extraDays||[])])];
-    for(const ci of crewCIs){
+    for(let ci=0; ci<CREW.length; ci++){
       for(const ds of oldDates){
-        const pos=seDateToPos(ds);
+        const pos=seDateToPos(ds); if(!pos) continue;
+        const key=jcSlotKey(ci,pos.w,pos.d);
+        const s=newSlots[ci]?.[pos.w]?.[pos.d];
+        const mapped=SLOT_JOB_MAP[key];
+        // A leftover primary with no map key (or this job's key) still belongs to this job.
+        // A primary whose map points at a different job is the other booking in the square.
+        if(s&&s.l===job.customer&&(!mapped||String(mapped)===String(job.id))){
+          await seRemoveSlot(ci,pos.w,pos.d);
+          if(String(SLOT_JOB_MAP[key])===String(job.id)) delete SLOT_JOB_MAP[key];
+        }
         await seRemoveExtraSlotForLabel(ci,pos.w,pos.d,job.customer);
       }
     }
   }
-  // 2. Place new slots for each crew member × each new working day. When force=true (user
-  // clicked "Apply Anyway" after seeing the conflict warning), a conflicting day is added as a
-  // double-booked EXTRA slot instead of being skipped — same mechanism jcForceOverride already
-  // uses for the crew-picker's own conflict override.
+  // 2. Place new slots for each CURRENT crew member × each new working day. When force=true
+  // (user clicked "Apply Anyway" after seeing the conflict warning), a conflicting day is added
+  // as a double-booked EXTRA slot instead of being skipped — the other job's primary stays.
   let skipped=0, doubled=0;
-  for(const ci of crewCIs){
+  for(const ci of moving){
+    if(isCrewInactive(ci)) continue;
     for(const dt of newDates){
       const dateStr=dt.toISOString().split('T')[0];
       const pos=seDateToPos(dateStr); if(!pos){skipped++;continue;}
       const key=jcSlotKey(ci,pos.w,pos.d);
-      if(newSlots[ci]?.[pos.w]?.[pos.d]&&SLOT_JOB_MAP[key]&&SLOT_JOB_MAP[key]!==_jcId){
+      if(newSlots[ci]?.[pos.w]?.[pos.d]&&SLOT_JOB_MAP[key]&&String(SLOT_JOB_MAP[key])!==String(job.id)){
         if(!force){ skipped++; continue; }
-        await dbAddExtraSlot(ci,pos.w,pos.d,job.customer,job.jobType||'epoxy',_jcId,dateStr);
+        await dbAddExtraSlot(ci,pos.w,pos.d,job.customer,job.jobType||'epoxy',job.id,dateStr);
         doubled++;
         continue;
       }
       await sePlaceSlot(ci,pos.w,pos.d,job.customer,job.jobType||'epoxy');
-      SLOT_JOB_MAP[key]=_jcId;
+      SLOT_JOB_MAP[key]=job.id;
     }
   }
-  // 3. Update job record dates. A whole-job move books every person who had a slot
-  // onto every new day, so any per-day list would still point at the old dates.
+  // 3. Update job record dates. Everyone who moved is now on every new day, so their old
+  // day lists would point at the wrong dates. Anyone left on the record but not moved
+  // (inactive, or an explicit empty day list) keeps an empty list so a later sync cannot
+  // treat them as booked for the whole new range.
   const newEnd=newDates[newDates.length-1].toISOString().split('T')[0];
+  const carriedNames=moving.map(ci=>CREW[ci]&&CREW[ci].full).filter(Boolean);
+  const heldBack=jcCrewNames(job).filter(n=>!carriedNames.includes(n));
   jcClearCrewDays(job);
   job.startDate=newStart; job.endDate=newEnd;
-  // Drop any extraDays that fall outside the new date range
   const newDateSet=new Set(newDates.map(d=>d.toISOString().split('T')[0]));
   if(job.extraDays?.length) job.extraDays=job.extraDays.filter(ds=>newDateSet.has(ds));
+  if(heldBack.length){
+    job.crewDays={};
+    heldBack.forEach(n=>{ job.crewDays[n]=[]; });
+  }
   jcSyncStatusToDate(job,newStart);
-  saveJobRecords(); saveSlotJobMap();
+  await saveJobRecords();
+  await saveSlotJobMap();
   closeModal('reschedule');
   renderSchedule();
   if(document.getElementById('page-crewview')?.classList.contains('active')) renderCrewView();
-  const msg=doubled?`Rescheduled — ${doubled} slot${doubled!==1?'s':''} double-booked as requested.`
-    :(skipped?`Rescheduled — ${skipped} slot${skipped!==1?'s':''} skipped (conflict)`:'Job rescheduled for all crew. ✓');
+  const inactiveNote=jcCrewNames(job).some(n=>{
+    const ci=CREW.findIndex(c=>c&&c.full===n);
+    return ci>=0&&isCrewInactive(ci);
+  })?' Inactive crew were not added back.':'';
+  const msg=(doubled?`Rescheduled — ${doubled} slot${doubled!==1?'s':''} double-booked as requested.`
+    :(skipped?`Rescheduled — ${skipped} slot${skipped!==1?'s':''} skipped (conflict)`:'Job rescheduled. ✓'))+inactiveNote;
   showToast(msg);
 }
 
@@ -11482,6 +11660,8 @@ function mgrPhoneSync(){
 })();
 
 function showPage(id){
+  const mapBox=document.getElementById('slot-map-cleanup-block');
+  if(mapBox&&!msgOwnerLogin()) mapBox.style.display='none';
   // Crew mode — block all navigation except Crew View
   if((localStorage.getItem('fpRole')==='crew'||localStorage.getItem('fpCrewPreview')==='1')&&id!=='crewview') return;
   // On a phone, estimating, costing, payroll, and the rest of the sidebar are not opened.
@@ -11528,7 +11708,11 @@ function showPage(id){
   if(id==='ptoreqs') renderPtoRequestsPage();
   if(id==='photos') renderPhotosPage();
   if(id==='jobscope') renderJobScopePage();
-  if(id==='pinsettings'){ renderCrewPins(); renderOfficeUsers(); }
+  if(id==='pinsettings'){
+    renderCrewPins(); renderOfficeUsers();
+    const mapBox=document.getElementById('slot-map-cleanup-block');
+    if(mapBox) mapBox.style.display=msgOwnerLogin()?'':'none';
+  }
   if(id==='auditlog'){ AUDIT_LOG_CACHE=null; renderAuditLog(); }
   if(id==='jobs') _markJobsSeen();
   try{localStorage.setItem('fpLastPage',id);}catch(e){}
@@ -16333,13 +16517,10 @@ async function schedHandleDrop(ci, targetSw, targetSd, dragData){
   const duration=(job.startDate&&job.endDate)?(includeWeekends?jcAllDays(job.startDate,job.endDate).length:jcWeekdays(job.startDate,job.endDate).length):1;
   const newDates=getWorkingDaysFrom(targetDateStr,duration,includeWeekends);
 
-  // Same crew-collection convention as jcRescheduleConfirm (primary SLOT_JOB_MAP entries +
-  // double-booked extras matched by customer label, since multiSlots can't carry a jobId
-  // across a reload).
-  const primaryCIs=Object.entries(SLOT_JOB_MAP).filter(([,jid])=>jid===dragData.jobId).map(([key])=>+key.split('_')[0]);
-  const extraCIs=_jobOwnExtraCIs(job);
-  const crewCIs=[...new Set([...primaryCIs,...extraCIs])];
-  if(!crewCIs.length){ showToast('No schedule slots found for this job.'); return; }
+  // Same membership rule as the Reschedule modal: current crewNames / crewDays, never
+  // a leftover map key or an old slot row, and never an inactive person.
+  const crewCIs=jcCarryCrew(job);
+  if(!crewCIs.length){ showToast('No current crew on this job to reschedule.'); return; }
 
   const conflicts=[];
   for(const c of crewCIs){
@@ -16390,6 +16571,7 @@ async function schedHandleCrewReassign(originCi,targetCi,targetSw,targetSd,jobId
   if(!job){ return; }
   const targetName=CREW[targetCi]?.full, originName=CREW[originCi]?.full;
   if(!targetName||!originName){ return; }
+  if(isCrewInactive(targetCi)){ showToast(targetName+' is inactive and was not added to the schedule.'); return; }
 
   // Find the ORIGIN crew member's ACTUAL scheduled days for this job (primary + extras) directly
   // off the calendar — NOT derived from job.startDate/endDate, which is the WHOLE job's span and
@@ -19342,7 +19524,7 @@ async function deleteMaintEntry(id){
       <div id="rs-preview" style="font-size:12.5px;color:var(--accent);font-family:'DM Mono',monospace;min-height:18px;margin-top:6px;"></div>
       <div id="rs-warn" style="display:none;margin-top:14px;padding:10px 14px;background:var(--red-dim);border:1px solid var(--red);border-radius:var(--radius-sm);font-size:12.5px;color:var(--red);"></div>
       <div class="info-box" style="margin-top:14px;font-size:12px;color:var(--text3);">
-        Changes apply to <strong>all crew members</strong> on this job. Unless "Include weekend days" is checked, Saturday and Sunday are skipped.
+        Changes apply to crew currently on this job. Someone who was taken off, and anyone marked inactive, is not added back. Unless "Include weekend days" is checked, Saturday and Sunday are skipped.
       </div>
     </div>
     <div class="modal-footer">
