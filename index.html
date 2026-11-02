@@ -3257,7 +3257,7 @@ const STALE_IN_PROGRESS_DAYS=3;
 function _boardRowForRecord(rec, rows){
   rows=rows||_lastJobRows||[];
   if(!rec) return null;
-  if(rec.boardRowId){ const linked=rows.find(r=>r&&r.id===rec.boardRowId); if(linked) return linked; }
+  if(rec.boardRowId){ const linked=rows.find(r=>r&&String(r.id)===String(rec.boardRowId)); if(linked) return linked; }
   const takenByOther=id=>JOB_RECORDS.some(j=>j!==rec&&j.boardRowId===id);
   const free=rows.filter(r=>r&&!_boardCardSettled(r.status)&&!takenByOther(r.id));
   const key=_jobMatchKey(rec.customer);
@@ -3270,6 +3270,27 @@ function _boardRowForRecord(rec, rows){
   }
   const loose=free.filter(r=>_looseNameMatch(r.customer||'',rec.customer)&&_sameJobValue(r.value,rec.value));
   return loose.length===1?loose[0]:null;
+}
+// Delete and completion sync. An id link wins: the card whose id is this schedule job's id,
+// or the card stored on the record as boardRowId. If either link exists, a different card
+// with the same name is not used. Name matching runs only when neither link exists.
+function _boardIdLink(rec, rows){
+  rows=rows||_lastJobRows||[];
+  if(!rec) return {linked:false, row:null};
+  if(rec.boardRowId){
+    return {linked:true, row:rows.find(r=>r&&String(r.id)===String(rec.boardRowId))||null};
+  }
+  if(rec.id){
+    const same=rows.find(r=>r&&String(r.id)===String(rec.id));
+    if(same) return {linked:true, row:same};
+  }
+  return {linked:false, row:null};
+}
+function _boardRowForDeleteOrComplete(rec, rows){
+  const hit=_boardIdLink(rec, rows);
+  if(hit.linked) return hit.row;
+  const nameRec=rec&&rec.boardRowId?Object.assign({}, rec, {boardRowId:''}):rec;
+  return _boardRowForRecord(nameRec, rows);
 }
 
 async function autoAdvanceJobsByDate(){
@@ -3364,6 +3385,8 @@ async function autoAdvanceJobsByDate(){
 // sure is left for the confirm dialog, so a repeat customer's other card is not removed.
 function _boardDeletePlan(job){
   if(!job) return {row:null, ambiguous:[]};
+  const hit=_boardIdLink(job);
+  if(hit.linked) return {row:hit.row, ambiguous:[]};
   const row=_boardRowForRecord(job);
   if(row) return {row, ambiguous:[]};
   const rows=_lastJobRows||[];
@@ -3430,7 +3453,9 @@ function renderStaleJobNotice(){
           const id=String(item.job.id||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
           const name=_alEsc(item.job.customer||'Unnamed job');
           const when=_alEsc(typeof jcFmtDate==='function'?jcFmtDate(item.job.endDate):item.job.endDate);
-          return `<button type="button" onclick="openJobCard('${id}')" style="text-align:left;background:none;border:none;padding:3px 0;cursor:pointer;font:inherit;color:var(--text2);font-size:12.5px;"><b style="color:var(--text);">${name}</b> — last log ${item.past} days after ${when}</button>`;
+          const crew=(typeof jcCrewNames==='function'?jcCrewNames(item.job):[]).map(_alEsc).join(', ');
+          const who=crew?crew+' — ':'';
+          return `<button type="button" onclick="openJobCard('${id}')" style="text-align:left;background:none;border:none;padding:3px 0;cursor:pointer;font:inherit;color:var(--text2);font-size:12.5px;"><b style="color:var(--text);">${name}</b> — ${who}last log ${item.past} days after ${when}</button>`;
         }).join('')}
       </div>
       ${more?`<div style="font-size:12px;color:var(--text3);margin-top:4px;">+ ${more} more</div>`:''}
@@ -3447,7 +3472,7 @@ async function catchUpCompletedBoardCards(){
   const moved=[];
   for(const job of JOB_RECORDS){
     if(!job||job.status!=='complete') continue;
-    const row=_boardRowForRecord(job);
+    const row=_boardRowForDeleteOrComplete(job);
     if(!row) continue;
     if(!job.boardRowId&&!_boardCardSettled(row.status)){ job.boardRowId=row.id; linked=true; }
     if(row.status==='complete'||_boardCardSettled(row.status)) continue;
@@ -6040,7 +6065,7 @@ async function syncBoardCardStatus(job, recordStatus){
   const want={scheduled:'scheduled', in_progress:'inprogress', complete:'complete'}[recordStatus];
   if(!want) return;
   const rec=typeof job==='string'?(JOB_RECORDS.find(j=>j.customer===job)||{customer:job}):job;
-  const row=_boardRowForRecord(rec);           // linked row first, then name match
+  const row=_boardRowForDeleteOrComplete(rec); // job id or boardRowId, then name only if neither link exists
   if(!row) return;                             // no board row for this job — nothing to sync
   if(rec.id&&!rec.boardRowId){ rec.boardRowId=row.id; saveJobRecords(); }
   if(row.status===want||_boardCardSettled(row.status)) return;   // already there / never pull invoiced or paid backward

@@ -337,6 +337,7 @@ test('the stale notice lists only in-progress jobs whose last log is 3 or more d
   reset();
   putRecord({
     id: 'zz-stale', customer: 'ZZ Board Sync Stale', value: '424242', status: 'in_progress',
+    crewNames: 'Seth, Brendon',
     startDate: '2026-10-01', endDate: '2026-10-02',
     dayLogs: { '2026-10-02': { task: 'coat' }, '2026-10-07': { task: 'still here' } },
   });
@@ -361,6 +362,7 @@ test('the stale notice lists only in-progress jobs whose last log is 3 or more d
   const dash = w.document.getElementById('dash-stale-notice').textContent;
   const jobs = w.document.getElementById('jobs-stale-notice').textContent;
   assert.match(dash, /ZZ Board Sync Stale/);
+  assert.match(dash, /Seth, Brendon/);
   assert.match(dash, /5 days after/);
   assert.equal(dash, jobs);
   assert.doesNotMatch(dash, /424242|\$|Fresh|No Log|Finished/);
@@ -368,6 +370,43 @@ test('the stale notice lists only in-progress jobs whose last log is 3 or more d
   call('renderStaleJobNotice');
   assert.equal(w.document.getElementById('dash-stale-notice').textContent, '');
   assert.equal(w.document.getElementById('jobs-stale-notice').style.display, 'none');
+});
+
+test('a saved board link is used even when another card has the same name', async () => {
+  reset();
+  putRecord({ id: 'zz-linked', customer: 'ZZ Board Sync Twin', value: '100', status: 'complete', startDate: '2026-10-01', endDate: '2026-10-02', boardRowId: 'card-real', dayLogs: {} });
+  putCard({ id: 'card-real', customer: 'ZZ Board Sync Twin', value: '100', status: 'inprogress', detail: '', notes: '' });
+  putCard({ id: 'card-other-name', customer: 'ZZ Board Sync Twin', value: '100', status: 'inprogress', detail: '', notes: '' });
+  rememberRecords();
+  await call('catchUpCompletedBoardCards');
+  assert.equal(state.jobs.find(r => r.id === 'card-real').status, 'complete');
+  assert.equal(state.jobs.find(r => r.id === 'card-other-name').status, 'inprogress');
+});
+
+test('a broken board link does not fall back onto a same-named card', async () => {
+  reset();
+  putRecord({ id: 'zz-stale-link', customer: 'ZZ Board Sync Twin', value: '100', status: 'complete', startDate: '2026-10-01', endDate: '2026-10-02', boardRowId: 'card-missing', dayLogs: {} });
+  putCard({ id: 'card-decoy', customer: 'ZZ Board Sync Twin', value: '100', status: 'inprogress', detail: '', notes: '' });
+  rememberRecords();
+  await call('catchUpCompletedBoardCards');
+  assert.equal(state.jobs[0].status, 'inprogress');
+  assert.equal(audits('board_status_changed').length, 0);
+  w.eval('_jcId = "zz-stale-link"');
+  await call('deleteJobRecord');
+  assert.equal(state.jobs.length, 1);
+  assert.equal(state.jobs[0].id, 'card-decoy');
+  assert.equal(state.jobs[0].status, 'inprogress');
+});
+
+test('a card whose id is the schedule job id is used before the name', async () => {
+  reset();
+  putRecord({ id: 'card-by-job', customer: 'ZZ Board Sync Renamed', value: '80', status: 'complete', startDate: '2026-10-01', endDate: '2026-10-02', dayLogs: {} });
+  putCard({ id: 'card-by-job', customer: 'Old Customer Name', value: '80', status: 'inprogress', detail: '', notes: '' });
+  putCard({ id: 'card-by-name', customer: 'ZZ Board Sync Renamed', value: '80', status: 'scheduled', detail: '', notes: '' });
+  rememberRecords();
+  await call('catchUpCompletedBoardCards');
+  assert.equal(state.jobs.find(r => r.id === 'card-by-job').status, 'complete');
+  assert.equal(state.jobs.find(r => r.id === 'card-by-name').status, 'scheduled');
 });
 
 test('syncBoardCardStatus does not pull a paid or invoiced card backward', async () => {
