@@ -438,7 +438,7 @@
   .crew-mode #jc-value-group{display:none!important;}
   .crew-mode #jc-invoice-section{display:none!important;}
   .crew-mode #jc-delete-btn{display:none!important;}
-  body.crew-mode #dash-stale-notice,body.crew-mode #jobs-stale-notice,body.crew-mode #dash-name-link-notice,body.crew-mode #jobs-name-link-notice{display:none!important;}
+  body.crew-mode #dash-stale-notice,body.crew-mode #jobs-stale-notice,body.crew-mode #dash-name-link-notice,body.crew-mode #jobs-name-link-notice,body.crew-mode #wave-link-banner{display:none!important;}
   .crew-mode #jc-reschedule-btn{display:none!important;}
   .crew-mode #jc-crew-picker-group{display:none!important;}
   /* PIN login */
@@ -913,6 +913,7 @@
       </div>
       <!-- 4 column board matching pipeline style -->
       <div class="content">
+        <div id="wave-link-banner" style="display:none;"></div>
         <div id="jobs-stale-notice" style="display:none;"></div>
         <div id="jobs-name-link-notice" style="display:none;"></div>
         <div class="pipeline" style="grid-template-columns:repeat(4,1fr);" id="jobs-board">
@@ -3134,7 +3135,24 @@ async function dbSaveJob(jobObj){
   const isNew=!jobObj.db_id;
   const row={customer:jobObj.customer,job_label:jobObj.jobLabel,value:jobObj.value||'',display_val:jobObj.displayVal||'',detail:jobObj.detail||'',status:jobObj.status||'approved',crew:jobObj.crew||'',notes:jobObj.notes||''};
   if(jobObj.db_id){const ok=await sb.update('jobs',jobObj.db_id,row);if(!ok){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}}
-  else{const res=await sb.insert('jobs',row);if(!res||!res[0]){showSyncStatus('⚠ Save failed – check connection','var(--red)');return false;}jobObj.db_id=res[0].id;}
+  else{
+    const res=await sb.insert('jobs',row);
+    if(!res||!res[0]){
+      // An empty array (not a network failure) means this Wave number is already on a
+      // card, so the insert was skipped. A same-customer estimate with a new number
+      // is NOT skipped — that insert succeeds and the Jobs page asks if it replaces one.
+      const waveNum=_waveEstimateNum(row.notes, row.customer);
+      if(waveNum && Array.isArray(res)){
+        try{ await loadJobs(); if(_jobsListActive()) renderJobsListView(); }catch(e){}
+        showSyncStatus('✓ Already on the board');
+        showToast('Wave #'+waveNum+' is already on the board. No duplicate was added.');
+        return true;
+      }
+      showSyncStatus('⚠ Save failed – check connection','var(--red)');
+      return false;
+    }
+    jobObj.db_id=res[0].id;
+  }
   logAudit(isNew?'board_job_created':'board_job_updated',jobObj.customer||'Job','Status: '+(jobObj.status||'approved'));
   showSyncStatus('✓ Synced');
   return true;
@@ -3149,9 +3167,16 @@ async function dbDeleteJob(db_id,customerName){
 // status against the actual DATA, not the DOM (which can be transiently empty and was spawning
 // duplicate no-Wave rows — e.g. Bob Gerke appearing twice in Complete).
 let _lastJobRows=[];
+let WAVE_LINK_NOTICES=[];
 async function loadJobs(){
   // The jobs board holds prices. Crew use the schedule and job records, not this table.
-  if(!_isOwnerSession()){ _lastJobRows=[]; return; }
+  if(!_isOwnerSession()){
+    _lastJobRows=[];
+    WAVE_LINK_NOTICES=[];
+    _renderWaveLinkBanner();
+    return;
+  }
+  await _loadWaveLinkNotices();
   // Newest-added jobs first (created_at ≈ when a Wave estimate was accepted/imported),
   // so just-approved jobs land at the top of each column instead of in arbitrary id order.
   const rows=await sb.get('jobs','order=created_at.desc');
@@ -3200,6 +3225,7 @@ async function loadJobs(){
   updateJobCounts();
   updateInvoicedBtn();
   _updateJobsApprovedBadge(Object.values(best));
+  _renderWaveLinkBanner();
 }
 
 // ── "New approved jobs" notification badge on the Jobs nav item ──────────────────
@@ -13846,14 +13872,404 @@ async function requestWaveSync(){
       clearInterval(iv);
       const added=parseInt(st.split('|')[1]||'0')||0;
       try{ await loadJobs(); if(_jobsListActive()) renderJobsListView(); }catch(e){}
-      finish(added>0?('Wave sync done — added '+added+' approved job'+(added!==1?'s':'')+'.'):'Wave sync done — no new accepted estimates.', added>0?('Synced — '+added+' new'):'Up to date');
+      const linked=(WAVE_LINK_NOTICES||[]).filter(n=>n&&n.at&&String(n.at)>=ts).length;
+      const parts=[];
+      if(added>0) parts.push('added '+added+' new');
+      if(linked>0) parts.push(linked+' also match an existing customer — leave as a new card, or mark as a replacement');
+      finish(parts.length?('Wave sync done — '+parts.join(', ')+'.'):'Wave sync done — no new accepted estimates.', linked>0?'Needs confirmation':(added>0?('Synced — '+added+' new'):'Up to date'));
     } else if(tries>=18){ clearInterval(iv); finish('Sync is still working — give it a moment, then refresh the Jobs page.'); }
   }, 12000);
 }
 
+// The office Wave script inserts into jobs. A database trigger skips that insert only when
+// the same Wave number is already on a card. A new number for a customer who already has
+// a job is still added, and settings.wave_link_notices asks the owner whether it replaces
+// one of those jobs. Crew never load the Jobs board, and they cannot read this settings key.
+let _waveLinkBusy=false;
+function _waveEsc(s){
+  return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function _waveParseState(raw){
+  let data=raw;
+  for(let i=0;i<4 && typeof data==='string';i++){
+    try{ data=JSON.parse(data); }catch(e){ data=null; break; }
+  }
+  if(!data || typeof data!=='object' || Array.isArray(data)) return {allow:[], notices:[]};
+  return {
+    allow: Array.isArray(data.allow)?data.allow.map(String):[],
+    notices: Array.isArray(data.notices)?data.notices.filter(Boolean):[]
+  };
+}
+function _waveRewriteNote(oldNote, newNum){
+  const src=String(oldNote||'');
+  const num=String(newNum||'');
+  const current=(src.match(/Wave #(\d+)/i)||[])[1]||'';
+  const superseded=[];
+  const re=/superseded #(\d+)/gi;
+  let m;
+  while((m=re.exec(src))){
+    if(m[1]!==num && superseded.indexOf(m[1])<0) superseded.push(m[1]);
+  }
+  if(current && current!==num && superseded.indexOf(current)<0) superseded.unshift(current);
+  let tail=src.replace(/Wave #\d+/ig,'').replace(/superseded #\d+/ig,'');
+  tail=tail.replace(/\s*\|\s*/g,' | ').replace(/^(?:\s*\|\s*)+|(?:\s*\|\s*)+$/g,'').replace(/(?:\s*\|\s*){2,}/g,' | ').trim();
+  let out='Wave #'+num;
+  superseded.forEach(s=>{ out+=' | superseded #'+s; });
+  if(tail) out+=' | '+tail;
+  return out;
+}
+function _waveJobNeedsReview(id){
+  if(!id||!_isOwnerSession()||!Array.isArray(WAVE_LINK_NOTICES)) return false;
+  const sid=String(id);
+  return WAVE_LINK_NOTICES.some(n=>{
+    if(!n) return false;
+    // The new card is the one waiting on a choice. Existing jobs are unchanged.
+    if(n.kind==='choose') return n.newJobId && String(n.newJobId)===sid;
+    if(n.jobId && String(n.jobId)===sid) return true;
+    if(n.newJobId && String(n.newJobId)===sid) return true;
+    return Array.isArray(n.candidates) && n.candidates.some(c=>c&&c.jobId&&String(c.jobId)===sid);
+  });
+}
+async function _loadWaveLinkNotices(){
+  if(!_isOwnerSession()){ WAVE_LINK_NOTICES=[]; return; }
+  const read=await sb.readKV('wave_link_notices');
+  if(!read.ok) return;
+  WAVE_LINK_NOTICES=_waveParseState(read.value).notices;
+}
+async function _waveReadState(){
+  const read=await sb.readKV('wave_link_notices');
+  if(!read.ok) return null;
+  return _waveParseState(read.value);
+}
+async function _waveWriteState(state){
+  const text=JSON.stringify({allow:(state&&state.allow)||[], notices:(state&&state.notices)||[]});
+  const res=await sb.setKV('wave_link_notices', text);
+  return !!res;
+}
+function _waveNoticeByEstimate(state, estimate){
+  const id=String(estimate);
+  return (state.notices||[]).find(n=>n&&(String(n.estimate)===id||String(n.id)===id))||null;
+}
+function _waveMoney(v){
+  const n=parseFloat(String(v==null?'':v).replace(/[$,\s]/g,''));
+  return isFinite(n)?n:0;
+}
+function _waveMoneyText(v){
+  const n=_waveMoney(v);
+  if(!(n>0)) return 'none';
+  const cents=Math.round(n*100)%100!==0;
+  return '$'+n.toLocaleString('en-US',{minimumFractionDigits:cents?2:0,maximumFractionDigits:2});
+}
+function _waveBoardValue(jobId){
+  const row=(_lastJobRows||[]).find(r=>r&&String(r.id)===String(jobId));
+  if(!row) return null;
+  return row.display_val||row.value||'';
+}
+function _renderWaveLinkBanner(){
+  const box=document.getElementById('wave-link-banner');
+  if(!box) return;
+  const crew=!_isOwnerSession()||localStorage.getItem('fpRole')==='crew'||localStorage.getItem('fpCrewPreview')==='1';
+  const notices=crew?[]:(WAVE_LINK_NOTICES||[]);
+  if(!notices.length){ box.style.display='none'; box.innerHTML=''; return; }
+  const statusLabel={approved:'Approved',scheduled:'Scheduled',inprogress:'In Progress',complete:'Complete',in_progress:'In Progress'};
+  const blocks=notices.map(n=>{
+    const est=_waveEsc(n.estimate||n.id||'');
+    const who=_waveEsc(n.incomingCustomer||'This customer');
+    const amt=n.acceptedAmount?`<div style="font-size:12px;color:var(--text2);margin-top:4px;">Accepted amount <b>${_waveEsc(n.acceptedAmount)}</b> is on the new card only. No existing price or schedule was changed.</div>`:'<div style="font-size:12px;color:var(--text2);margin-top:4px;">No existing price or schedule was changed.</div>';
+    let body='';
+    let actions='';
+    if(n.kind==='choose'){
+      const choices=(n.candidates||[]).map(c=>{
+        const name=c.customer||'that job';
+        const jid=String(c.jobId||'').replace(/[^a-zA-Z0-9-]/g,'');
+        const rid=String(c.recordId||'').replace(/[^a-zA-Z0-9-]/g,'');
+        let label;
+        let click;
+        if(c.waveNum && jid){
+          label='Replaces #'+c.waveNum+' on '+name;
+          click="waveLinkReplace('"+est+"','"+jid+"')";
+        }else if(jid){
+          label='Same job as '+name;
+          click="waveLinkReplace('"+est+"','"+jid+"')";
+        }else{
+          label='Same schedule job as '+name;
+          click="waveLinkUseSchedule('"+est+"','"+rid+"')";
+        }
+        let priceChoice='';
+        if(jid && _isOwnerSession()){
+          const current=_waveBoardValue(jid);
+          const curN=_waveMoney(current);
+          const newN=_waveMoney(n.acceptedAmount);
+          if((curN>0||newN>0) && Math.abs(curN-newN)>=0.01){
+            const curTxt=_waveEsc(_waveMoneyText(current));
+            const newTxt=_waveEsc(_waveMoneyText(n.acceptedAmount));
+            priceChoice=`<div style="font-size:12px;color:var(--text2);margin:6px 0 4px;">Current <b>${curTxt}</b> · Accepted <b>${newTxt}</b></div>
+              <button class="btn btn-ghost" style="font-size:12px;padding:6px 10px;" onclick="waveLinkReplace('${est}','${jid}',true)">Update job to ${newTxt}</button>`;
+          }
+        }
+        return `<span style="display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center;"><button class="btn btn-ghost" style="font-size:12px;padding:6px 10px;" onclick="${click}">${_waveEsc(label)}</button>${priceChoice}</span>`;
+      }).join('');
+      body=`<div style="font-size:13.5px;font-weight:650;color:var(--text);">Wave #${est} for ${who} was added as a new card.</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:4px;">No existing job was changed. If this estimate replaces an earlier one, choose that job. Otherwise leave the new card.</div>${amt}`;
+      actions=`${choices}<button class="btn btn-primary" style="font-size:12px;padding:6px 10px;" onclick="waveLinkKeepNew('${est}')">New job card</button>`;
+    }else if(n.kind==='ambiguous'){
+      const choices=(n.candidates||[]).map(c=>{
+        const label=_waveEsc(c.customer||'Job');
+        const st=_waveEsc(statusLabel[c.status]||c.status||'');
+        const jid=String(c.jobId||'').replace(/[^a-zA-Z0-9-]/g,'');
+        return `<button class="btn btn-ghost" style="font-size:12px;padding:6px 10px;" onclick="waveLinkChoose('${est}','${jid}')">Link to ${label}${st?' ('+st+')':''}</button>`;
+      }).join('');
+      body=`<div style="font-size:13.5px;font-weight:650;color:var(--text);">Wave #${est} for ${who} matches more than one job.</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:4px;">No card was created, and no job was changed. Pick the job this estimate belongs to, or make it a separate card.</div>${amt}`;
+      actions=`${choices}<button class="btn btn-ghost" style="font-size:12px;padding:6px 10px;" onclick="waveLinkSplit('${est}')">It's a different job — create a separate card</button>`;
+    }else if(n.kind==='schedule'){
+      const job=_waveEsc(n.recordCustomer||'the schedule job');
+      body=`<div style="font-size:13.5px;font-weight:650;color:var(--text);">Wave #${est} for ${who} matches the schedule job ${job}.</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:4px;">That job has no board card. A second card was not created.</div>${amt}`;
+      actions=`<button class="btn btn-primary" style="font-size:12px;padding:6px 10px;" onclick="waveLinkAttach('${est}')">Add one board card for ${job}</button>
+        <button class="btn btn-ghost" style="font-size:12px;padding:6px 10px;" onclick="waveLinkSplit('${est}')">It's a different job — create a separate card</button>`;
+    }else{
+      const job=_waveEsc(n.jobCustomer||'the existing job');
+      const was=n.superseded?` The note now says Wave #${est}. The previous number, #${_waveEsc(n.superseded)}, is kept on the note.`:'';
+      body=`<div style="font-size:13.5px;font-weight:650;color:var(--text);">Wave #${est} for ${who} was linked to ${job}.</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:4px;">No new card was added.${was}</div>${amt}`;
+      actions=`<button class="btn btn-primary" style="font-size:12px;padding:6px 10px;" onclick="waveLinkConfirm('${est}')">Confirm — same job</button>
+        <button class="btn btn-ghost" style="font-size:12px;padding:6px 10px;" onclick="waveLinkSplit('${est}')">Not the same job — create a separate card</button>`;
+    }
+    return `<div style="border:1px solid #f59e0b88;background:#fffbeb;border-radius:10px;padding:12px 14px;margin-bottom:8px;">
+      ${body}
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">${actions}</div>
+    </div>`;
+  }).join('');
+  box.style.display='block';
+  box.style.margin='0 0 12px';
+  box.innerHTML=`<div style="font-size:11px;font-family:'DM Mono',monospace;letter-spacing:.4px;text-transform:uppercase;color:#b45309;font-weight:700;margin-bottom:6px;">Wave sync needs a look</div>${blocks}`;
+}
+async function waveLinkKeepNew(estimate){
+  if(_waveLinkBusy||!_isOwnerSession()) return;
+  _waveLinkBusy=true;
+  try{
+    const st=await _waveReadState();
+    if(!st){ showToast('Could not reach the server.'); return; }
+    const n=_waveNoticeByEstimate(st, estimate);
+    st.notices=st.notices.filter(x=>String(x.estimate)!==String(estimate)&&String(x.id)!==String(estimate));
+    if(!await _waveWriteState(st)){ showToast('Could not save.'); return; }
+    logAudit('board_job_updated', (n&&n.incomingCustomer)||'Job', 'Wave #'+estimate+' kept as a new job card');
+    await loadJobs();
+    if(_jobsListActive()) renderJobsListView();
+    showToast('Left as a new job card.');
+  }finally{ _waveLinkBusy=false; }
+}
+async function waveLinkReplace(estimate, jobId, updateValue){
+  if(_waveLinkBusy||!_isOwnerSession()||!jobId) return;
+  _waveLinkBusy=true;
+  try{
+    const st=await _waveReadState();
+    if(!st){ showToast('Could not reach the server.'); return; }
+    const n=_waveNoticeByEstimate(st, estimate);
+    const rows=await sb.get('jobs','id=eq.'+encodeURIComponent(jobId)+'&select=id,notes,customer,status,value');
+    const cur=rows&&rows[0];
+    if(!cur){ showToast('That job is no longer on the board.'); return; }
+    const note=_waveRewriteNote(cur.notes, estimate);
+    const patch={notes:note};
+    const newNum=_waveMoney(n&&n.acceptedAmount);
+    if(updateValue && newNum>0){
+      patch.value=newNum.toFixed(2);
+      patch.display_val=_waveMoneyText(newNum);
+    }
+    const ok=await sb.update('jobs', jobId, patch);
+    if(!ok){ showToast('Could not update the Wave number.'); return; }
+    if(updateValue && newNum>0 && typeof JOB_RECORDS!=='undefined'){
+      const cand=(n&&n.candidates||[]).find(c=>c&&String(c.jobId)===String(jobId));
+      const rec=JOB_RECORDS.find(j=>j&&(String(j.boardRowId)===String(jobId)||(cand&&cand.recordId&&String(j.id)===String(cand.recordId))));
+      if(rec && String(rec.value||'')!==patch.value){
+        rec.value=patch.value;
+        try{ await saveJobRecords(); }catch(e){}
+      }
+    }
+    const newId=n&&n.newJobId;
+    if(newId && String(newId)!==String(jobId)){
+      const fresh=await sb.get('jobs','id=eq.'+encodeURIComponent(newId)+'&select=id,notes,status');
+      const row=fresh&&fresh[0];
+      if(row && String(_waveEstimateNum(row.notes,'')||'')===String(estimate)){
+        await sb.delete('jobs', newId);
+        logAudit('board_job_deleted', (n&&n.incomingCustomer)||'Job', 'Removed the new card after Wave #'+estimate+' replaced an earlier estimate');
+      }
+    }
+    st.notices=st.notices.filter(x=>String(x.estimate)!==String(estimate)&&String(x.id)!==String(estimate));
+    if(!await _waveWriteState(st)){ showToast('The Wave number was saved, but the notice could not be cleared.'); return; }
+    logAudit('board_job_updated', cur.customer||'Job', 'Wave #'+estimate+' replaces the earlier estimate. '+(updateValue&&newNum>0?'Job value updated to the accepted amount.':'Job value kept.'));
+    await loadJobs();
+    if(_jobsListActive()) renderJobsListView();
+    showToast('Wave #'+estimate+' now replaces the earlier estimate on '+(cur.customer||'that job')+'. '+(updateValue&&newNum>0?'The job value was updated to the accepted amount.':'The current amount was kept.'));
+  }finally{ _waveLinkBusy=false; }
+}
+async function waveLinkUseSchedule(estimate, recordId){
+  if(_waveLinkBusy||!_isOwnerSession()||!recordId) return;
+  _waveLinkBusy=true;
+  try{
+    const st=await _waveReadState();
+    if(!st){ showToast('Could not reach the server.'); return; }
+    const n=_waveNoticeByEstimate(st, estimate);
+    const rec=(typeof JOB_RECORDS!=='undefined'?JOB_RECORDS:[]).find(j=>j&&String(j.id)===String(recordId));
+    if(!rec){ showToast('The schedule is not loaded yet. Open the schedule, then try again.'); return; }
+    if(n&&n.newJobId && !rec.boardRowId){
+      rec.boardRowId=n.newJobId;
+      try{ await saveJobRecords(); }catch(e){ showToast('Could not link the schedule job.'); return; }
+    }
+    st.notices=st.notices.filter(x=>String(x.estimate)!==String(estimate)&&String(x.id)!==String(estimate));
+    if(!await _waveWriteState(st)){ showToast('Could not clear the notice.'); return; }
+    logAudit('board_job_updated', rec.customer||'Job', 'Wave #'+estimate+' kept as the board card for the schedule job. Price was not changed.');
+    await loadJobs();
+    if(_jobsListActive()) renderJobsListView();
+    showToast('Left the new card, and linked it to '+(rec.customer||'the schedule job')+'.');
+  }finally{ _waveLinkBusy=false; }
+}
+async function waveLinkConfirm(estimate){
+  if(_waveLinkBusy||!_isOwnerSession()) return;
+  _waveLinkBusy=true;
+  try{
+    const st=await _waveReadState();
+    if(!st){ showToast('Could not reach the server.'); return; }
+    const n=_waveNoticeByEstimate(st, estimate);
+    if(!n){ showToast('That notice is already gone.'); await loadJobs(); return; }
+    st.notices=st.notices.filter(x=>x!==n);
+    if(!await _waveWriteState(st)){ showToast('Could not save the confirmation.'); return; }
+    if(n) logAudit('board_job_updated', n.jobCustomer||n.incomingCustomer||'Job', 'Wave #'+estimate+' link confirmed');
+    await loadJobs();
+    if(_jobsListActive()) renderJobsListView();
+    showToast('Confirmed. The job keeps the new Wave number.');
+  }finally{ _waveLinkBusy=false; }
+}
+async function waveLinkSplit(estimate){
+  if(_waveLinkBusy||!_isOwnerSession()) return;
+  _waveLinkBusy=true;
+  try{
+    const st=await _waveReadState();
+    if(!st){ showToast('Could not reach the server.'); return; }
+    const n=_waveNoticeByEstimate(st, estimate);
+    if(!n){ showToast('That notice is already gone.'); await loadJobs(); return; }
+    if(n.jobId && n.rewrittenNotes!=null){
+      const rows=await sb.get('jobs','id=eq.'+encodeURIComponent(n.jobId)+'&select=id,notes');
+      const cur=rows&&rows[0];
+      if(!cur){ showToast('The linked job is no longer on the board.'); return; }
+      if(String(cur.notes||'')!==String(n.rewrittenNotes)){
+        showToast('The note on that job changed after the link. Nothing was split.');
+        return;
+      }
+      const reverted=await sb.update('jobs', n.jobId, {notes:n.previousNotes==null?'':n.previousNotes});
+      if(!reverted){ showToast('Could not restore the previous Wave number.'); return; }
+    }
+    if(st.allow.map(String).indexOf(String(estimate))<0) st.allow.push(String(estimate));
+    st.notices=st.notices.filter(x=>x!==n);
+    if(!await _waveWriteState(st)){ showToast('Could not save.'); return; }
+    const inc=n.incoming||{};
+    const res=await sb.insert('jobs',{
+      customer:inc.customer||n.incomingCustomer||'Job',
+      job_label:inc.job_label||'',
+      value:inc.value||'',
+      display_val:inc.display_val||'',
+      detail:inc.detail||'',
+      status:inc.status||'approved',
+      crew:inc.crew||'',
+      notes:inc.notes||('Wave #'+estimate),
+      start_date:inc.start_date||'',
+      end_date:inc.end_date||''
+    });
+    if(!res||!res[0]){
+      if(n.jobId && n.rewrittenNotes!=null) await sb.update('jobs', n.jobId, {notes:n.rewrittenNotes});
+      st.allow=st.allow.filter(a=>String(a)!==String(estimate));
+      st.notices.push(n);
+      await _waveWriteState(st);
+      showToast('The separate card was not created. The link was put back.');
+      await loadJobs();
+      return;
+    }
+    logAudit('board_job_created', inc.customer||n.incomingCustomer||'Job', 'Separate card for Wave #'+estimate);
+    await loadJobs();
+    if(_jobsListActive()) renderJobsListView();
+    showToast('Separate card created. The original job was put back.');
+  }finally{ _waveLinkBusy=false; }
+}
+async function waveLinkChoose(estimate, jobId){
+  if(_waveLinkBusy||!_isOwnerSession()||!jobId) return;
+  _waveLinkBusy=true;
+  try{
+    const rows=await sb.get('jobs','id=eq.'+encodeURIComponent(jobId)+'&select=id,notes,customer');
+    const cur=rows&&rows[0];
+    if(!cur){ showToast('That job is no longer on the board.'); return; }
+    const note=_waveRewriteNote(cur.notes, estimate);
+    const ok=await sb.update('jobs', jobId, {notes:note});
+    if(!ok){ showToast('Could not update the Wave number.'); return; }
+    const st=await _waveReadState();
+    if(!st){ showToast('The number was saved, but the notice could not be cleared. Refresh and confirm.'); return; }
+    st.notices=st.notices.filter(n=>String(n.estimate)!==String(estimate)&&String(n.id)!==String(estimate));
+    if(!await _waveWriteState(st)){ showToast('The number was saved, but the notice could not be cleared.'); return; }
+    logAudit('board_job_updated', cur.customer||'Job', 'Wave #'+estimate+' linked by owner. Price and schedule were not changed.');
+    await loadJobs();
+    if(_jobsListActive()) renderJobsListView();
+    showToast('Linked Wave #'+estimate+' to '+(cur.customer||'the job')+'. Price and schedule were not changed.');
+  }finally{ _waveLinkBusy=false; }
+}
+async function waveLinkAttach(estimate){
+  if(_waveLinkBusy||!_isOwnerSession()) return;
+  _waveLinkBusy=true;
+  try{
+    const st=await _waveReadState();
+    if(!st){ showToast('Could not reach the server.'); return; }
+    const n=_waveNoticeByEstimate(st, estimate);
+    if(!n){ showToast('That notice is already gone.'); await loadJobs(); return; }
+    if(st.allow.map(String).indexOf(String(estimate))<0) st.allow.push(String(estimate));
+    st.notices=st.notices.filter(x=>x!==n);
+    if(!await _waveWriteState(st)){ showToast('Could not save.'); return; }
+    const statusMap={in_progress:'inprogress',inprogress:'inprogress',scheduled:'scheduled',complete:'complete',approved:'approved'};
+    const status=statusMap[n.recordStatus]||'approved';
+    const value=n.recordValue!=null&&String(n.recordValue)!==''?String(n.recordValue):'';
+    const num=parseFloat(String(value).replace(/[$,\s]/g,''))||0;
+    const display=num>0?'$'+num.toLocaleString('en-US',{minimumFractionDigits:num%1?2:0,maximumFractionDigits:2}):'';
+    const res=await sb.insert('jobs',{
+      customer:n.recordCustomer||n.incomingCustomer||'Job',
+      job_label:(n.incoming&&n.incoming.job_label)||'',
+      value:value,
+      display_val:display,
+      detail:'',
+      status:status,
+      crew:'',
+      notes:'Wave #'+estimate,
+      start_date:'',
+      end_date:''
+    });
+    if(!res||!res[0]){
+      st.allow=st.allow.filter(a=>String(a)!==String(estimate));
+      st.notices.push(n);
+      await _waveWriteState(st);
+      showToast('The board card was not created.');
+      await loadJobs();
+      return;
+    }
+    const rec=(typeof JOB_RECORDS!=='undefined'?JOB_RECORDS:[]).find(j=>j&&String(j.id)===String(n.recordId));
+    if(rec && !rec.boardRowId){
+      rec.boardRowId=res[0].id;
+      try{ await saveJobRecords(); }catch(e){}
+    }
+    logAudit('board_job_created', n.recordCustomer||'Job', 'Board card attached for Wave #'+estimate+'. Accepted amount was not copied.');
+    await loadJobs();
+    if(_jobsListActive()) renderJobsListView();
+    const amt=n.acceptedAmount?(' Accepted amount '+n.acceptedAmount+' was not copied.'):'';
+    showToast('Board card added for '+(n.recordCustomer||'the schedule job')+'.'+amt);
+  }finally{ _waveLinkBusy=false; }
+}
+
 let _jobsSortMode = 'default';   // 'default' | 'date_desc' | 'date_asc'
 function setJobsSort(m){ _jobsSortMode = m; renderJobsListView(); }
-function _parseApprovedDate(notes){ const m=(notes||'').match(/Wave #\d+\s*\|\s*(\d{4}-\d{2}-\d{2})/); return m?m[1]:''; }
+function _parseApprovedDate(notes){
+  const src=notes||'';
+  const direct=src.match(/Wave #\d+\s*\|\s*(\d{4}-\d{2}-\d{2})/);
+  if(direct) return direct[1];
+  // "Wave #693 | superseded #685 | 2026-10-01" still carries the original approved date.
+  const after=src.match(/Wave #\d+(?:\s*\|\s*superseded #\d+)*\s*\|\s*(\d{4}-\d{2}-\d{2})/);
+  return after?after[1]:'';
+}
 function _fmtApprovedDate(d){ if(!d) return ''; const dt=new Date(d+'T12:00:00'); return isNaN(dt)?'':dt.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
 
 function renderJobsListView(){
@@ -13881,7 +14297,8 @@ function renderJobsListView(){
       const displayVal = card.querySelector('.lead-value')?.textContent.trim()||'—';
       const dbId     = card.dataset.dbId||'';
       const notes    = card.dataset.notes||'';
-      allJobs.push({customer,jobLabel,detail,displayVal,status,dbId,notes});
+      const waveReview = card.dataset.waveReview==='1';
+      allJobs.push({customer,jobLabel,detail,displayVal,status,dbId,notes,waveReview});
     });
   });
 
@@ -13916,6 +14333,7 @@ function renderJobsListView(){
         <div style="flex:1;padding:10px 16px;min-width:0;overflow:hidden;">
           <div style="font-size:13.5px;font-weight:600;color:var(--text);line-height:1.2;">${job.customer}${_lwt}</div>
           ${(job.jobLabel||job.detail)?`<div style="font-size:11px;color:var(--text2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${[job.jobLabel,job.detail].filter(Boolean).join(' &nbsp;·&nbsp; ')}</div>`:''}
+          ${job.waveReview?`<div style="font-size:10.5px;color:#b45309;font-weight:700;margin-top:3px;">New estimate — does this replace an existing job?</div>`:''}
         </div>
         ${job.approvedDate?`<div class="jlist-date" style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text3);padding:0 8px;flex-shrink:0;white-space:nowrap;text-align:right;" title="Date approved">${_fmtApprovedDate(job.approvedDate)}</div>`:''}
         <div style="font-family:'DM Mono',monospace;font-size:13px;font-weight:700;color:var(--accent);padding:0 16px;flex-shrink:0;white-space:nowrap;">${job.displayVal}</div>
@@ -14014,6 +14432,8 @@ function addJobCard(customer, jobLabel, value, displayVal, detail, status, exist
   };
   const _cardWn=(addrNote||'').match(/Wave #(\d+)/);
   const _waveTag=_cardWn?` <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--text3);font-weight:400;vertical-align:middle;">#${_cardWn[1]}</span>`:'';
+  const waveReview=_waveJobNeedsReview(existingDbId);
+  if(waveReview) card.dataset.waveReview='1';
   card.innerHTML=`
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px;">
       <div class="lead-name" style="flex:1;">${customer}${_waveTag}</div>
@@ -14027,6 +14447,7 @@ function addJobCard(customer, jobLabel, value, displayVal, detail, status, exist
     <div class="lead-value">${displayVal}</div>
     <div style="display:flex;gap:5px;margin-top:10px;flex-wrap:wrap;align-items:center;">
       <span class="status-pill" style="background:${sc.bg};color:${sc.color};border:1px solid ${sc.color}44;">${statusLabels[status]}</span>
+      ${waveReview?`<span class="status-pill" style="background:#fef3c7;color:#b45309;border:1px solid #f59e0b55;">New estimate — replacement?</span>`:''}
       ${_schedRemoved?`<span class="status-pill" style="background:var(--orange-dim);color:var(--orange);border:1px solid var(--orange);">Schedule removed</span>`:''}
       ${status==='approved'?`<button class="btn btn-primary" style="font-size:11px;padding:4px 10px;margin-left:auto;" onclick="event.stopPropagation();scheduleApprovedJob('${safeCustomer}','${safeLabel}','${safeVal}',this)">📅 Schedule</button>`:''}
       ${nextStages[status]?`<button class="btn btn-ghost" style="font-size:10px;padding:3px 8px;${status!=='approved'?'margin-left:auto;':''}" onclick="event.stopPropagation();advanceJobCard(this,'${nextStages[status]}')">${nextLabels[status]}</button>`:''}
