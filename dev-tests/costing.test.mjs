@@ -529,6 +529,66 @@ test('a crew person past the five seed names is locked on the request forms', as
   await ev('loadCrew()');
 });
 
+test('a saved unit cost of 0 is priced from the kit, and a blank crew price is not stamped as 0', async () => {
+  await freshCrewAndSettings();
+  const ds = '2026-10-31';
+  ev(`MATERIALS.splice(0, MATERIALS.length,
+    { db_id: 'sable', name: 'Epoxy -  DT454 - Sable', unit: '15 Gallon', price: '700' },
+    { db_id: 'flake', name: 'Flake - Shale', unit: 'Lbs', price: '2.7' },
+    { db_id: 'kit', name: 'TEST Kit Urethane S248', unit: '1.075 Gallon', price: '212.30' }
+  );`);
+  assert.equal(ev(`unitPackSize('15 Gallon')`), 15);
+  assert.equal(ev(`unitPackSize('1.075 Gallon')`), 1.075);
+  putJob({
+    id: 'zero-cost', customer: 'Haeffner - Pool House Garage', status: 'in_progress', value: '1000',
+    startDate: ds, endDate: ds,
+    dayLogs: { [ds]: { materialsUsed: [
+      { matIdx: 0, name: 'Epoxy -  DT454 - Sable', qty: '6', usageUnit: 'Gallon', matId: 'sable', unitCost: 0 },
+      { matIdx: 1, name: 'Flake - Shale', qty: '157', usageUnit: 'Lbs', matId: 'flake', unitCost: 2.7 },
+      { matIdx: 2, name: 'TEST Kit Urethane S248', qty: '1.075', usageUnit: 'Gallon', matId: 'kit' },
+    ] } },
+  });
+  const byName = (L) => Object.fromEntries(L.matRows.map(r => [r.name, r]));
+  let rows = byName(lines('zero-cost'));
+  assert.equal(rows['Epoxy -  DT454 - Sable'].unitCost, 46.67);
+  assert.equal(rows['Epoxy -  DT454 - Sable'].cost, 280.02);
+  assert.equal(rows['Epoxy -  DT454 - Sable'].pkgNote, '$700.00/15 Gallon');
+  assert.equal(rows['Flake - Shale'].unitCost, 2.7);
+  assert.equal(rows['Flake - Shale'].cost, r2(157 * 2.7));
+  assert.equal(rows['TEST Kit Urethane S248'].unitCost, 197.49);
+  assert.equal(rows['TEST Kit Urethane S248'].cost, 212.3);
+  // The zero was not rewritten on the job. Costing only reads it as missing.
+  assert.equal(ev(`getJobRecord('zero-cost').dayLogs['${ds}'].materialsUsed[0].unitCost`), 0);
+  ev(`_jcId='zero-cost'; renderJobCosting();`);
+  const card = ev(`document.getElementById('jc-costing-content').textContent`);
+  assert.match(card, /\$280\.02/);
+  assert.match(card, /\$700\.00\/15 Gallon/);
+  assert.match(card, /\$423\.90/);
+  // A real stamp still wins after the list price changes.
+  ev(`MATERIALS[1].price='9.00';`);
+  rows = byName(lines('zero-cost'));
+  assert.equal(rows['Flake - Shale'].cost, r2(157 * 2.7));
+  ev(`MATERIALS[1].price='2.7';`);
+  // String "0" is the same miss. A positive stamp is left alone.
+  ev(`getJobRecord('zero-cost').dayLogs['${ds}'].materialsUsed[0].unitCost='0';`);
+  rows = byName(lines('zero-cost'));
+  assert.equal(rows['Epoxy -  DT454 - Sable'].cost, 280.02);
+
+  // Crew session: the price list is blank, so entering a quantity must not save 0.
+  ev(`MATERIALS.forEach(m=>{ m.price=''; }); localStorage.setItem('fpRole','crew');`);
+  ev(`getJobRecord('zero-cost').dayLogs['${ds}'].materialsUsed.push({ matIdx: 0, name: 'Epoxy -  DT454 - Sable', qty: '', usageUnit: 'Gallon', matId: 'sable' });`);
+  const idx = ev(`getJobRecord('zero-cost').dayLogs['${ds}'].materialsUsed.length-1`);
+  ev(`jcLogSetMaterial('${ds}', ${idx}, 'qty', '4');`);
+  assert.equal(ev(`getJobRecord('zero-cost').dayLogs['${ds}'].materialsUsed[${idx}].unitCost`), undefined);
+  const dayHtml = ev(`jcDayMatsHtml('${ds}', getJobRecord('zero-cost').dayLogs['${ds}'])`);
+  assert.equal(dayHtml.includes('$'), false);
+  assert.equal(dayHtml.includes('700'), false);
+  // An office quantity with the price loaded still stamps price ÷ kit size.
+  ev(`localStorage.removeItem('fpRole'); MATERIALS[0].price='700';`);
+  ev(`jcLogSetMaterial('${ds}', 0, 'qty', '6');`);
+  assert.equal(ev(`getJobRecord('zero-cost').dayLogs['${ds}'].materialsUsed[0].unitCost`), 700 / 15);
+});
+
 test('no page errors', () => {
   assert.deepEqual(consoleErrors.filter(e => !/fetch|network|Not implemented|loadCostingSettings: saved value is not usable/i.test(e)), []);
 });
