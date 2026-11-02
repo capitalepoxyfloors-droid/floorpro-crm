@@ -7406,8 +7406,13 @@ function _jcCaptureUnitCost(m){
   const ri=jcResolveMatIdx(m);
   if(ri<0||!MATERIALS[ri]) return;
   const mat=MATERIALS[ri];
+  const price=parseFloat(mat.price);
+  // Crew sessions load the directory with a blank price. Dividing that by the
+  // kit size used to stamp unitCost 0, and costing then treated 0 as final.
+  // Leave the field unset so the office prices it from the list.
+  if(!(price>0)) return;
   const pkgQty=unitPackSize(mat.unit)||1;
-  m.unitCost=(parseFloat(mat.price)||0)/pkgQty;
+  m.unitCost=price/pkgQty;
 }
 function jcLogSetMaterial(ds,idx,field,val){
   const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
@@ -8215,13 +8220,16 @@ function jcJobCostLines(job,mode){
       const qty=parseFloat(m.qty)||0;
       const ri=jcResolveMatIdx(m);
       let unitCost=0, pkgNote='';
-      const stored=(m.unitCost!=null&&m.unitCost!==''&&!isNaN(parseFloat(m.unitCost)))?parseFloat(m.unitCost):null;
+      const storedNum=(m.unitCost!=null&&m.unitCost!==''&&!isNaN(parseFloat(m.unitCost)))?parseFloat(m.unitCost):null;
+      // A saved 0 is not a captured price (crew used to stamp 0). Price it from
+      // the list, same as a missing cost: price ÷ kit size (15 Gallon, 1.075 Gallon).
+      const stored=(storedNum!=null&&storedNum>0)?storedNum:null;
       if(stored!=null){
         unitCost=Math.round(stored*100)/100;
         if(ri>=0&&MATERIALS[ri]&&MATERIALS[ri].unit) pkgNote='$'+(parseFloat(MATERIALS[ri].price)||0).toFixed(2)+'/'+MATERIALS[ri].unit;
       } else if(ri>=0&&MATERIALS[ri]){
         const mat=MATERIALS[ri];
-        const pkgQty=parseFloat((mat.unit||'').match(/^(\d+\.?\d*)/)?.[1])||1;
+        const pkgQty=unitPackSize(mat.unit)||1;
         unitCost=Math.round((parseFloat(mat.price)||0)/pkgQty*100)/100;
         pkgNote=mat.unit?'$'+(parseFloat(mat.price)||0).toFixed(2)+'/'+mat.unit:'';
       }
