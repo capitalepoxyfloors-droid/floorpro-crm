@@ -126,6 +126,26 @@ function slotLabel(ci, iso) {
   })()`);
 }
 
+function extraLabels(ci, iso) {
+  return w.eval(`(() => {
+    const p = cvDateToSlot(new Date(${JSON.stringify(iso)} + 'T00:00:00'));
+    return getExtraSlots(${ci}, p.w, p.d).map(e => e.l);
+  })()`);
+}
+
+function pushJobOnly(job) {
+  w.__fpJob = job;
+  w.eval('JOB_RECORDS.push(window.__fpJob)');
+  w.eval('_jrBaseline = JSON.parse(JSON.stringify(JOB_RECORDS))');
+  return job;
+}
+
+function conflictWarn() {
+  const el = w.document.getElementById('jc-conflict-warn');
+  const msg = w.document.getElementById('jc-conflict-msg');
+  return { hidden: el.style.display === 'none', text: msg.textContent || '' };
+}
+
 test.before(async () => {
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', (err) => {
@@ -389,4 +409,146 @@ test('crew mode cannot change who is on a day', async () => {
   w.document.body.classList.add('crew-mode');
   assert.equal(w.getComputedStyle(group).display, 'none');
   w.document.body.classList.remove('crew-mode');
+});
+
+test('syncing a different job does not show its crew conflicts on the open card', async () => {
+  resetBoard();
+  const mon = lex('BASE').toISOString().slice(0, 10);
+  const fri = addDays(mon, 4);
+  const later = addDays(mon, 14);
+  const booked = pushJobOnly({
+    id: 'helais',
+    customer: 'Helias',
+    startDate: mon,
+    endDate: fri,
+    crewNames: 'Hunter Schuler, Seth West, Brendon Bennett, Will Bradford',
+    status: 'scheduled',
+    dayLogs: {},
+  });
+  await call('jcSyncCrewSlots', booked);
+  assert.equal(slotLabel(4, mon), 'Helias');
+  assert.equal(slotLabel(0, fri), 'Helias');
+
+  pushJobOnly({
+    id: 'schupp',
+    customer: 'Schupp - Garage',
+    startDate: later,
+    endDate: addDays(later, 1),
+    crewNames: 'Brendon Bennett',
+    status: 'scheduled',
+    dayLogs: {},
+  });
+  call('openJobCard', 'schupp');
+  assert.equal(lex('_jcId'), 'schupp');
+  const before = conflictWarn();
+  assert.equal(before.hidden, true, before.text);
+
+  const other = pushJobOnly({
+    id: 'other-shop',
+    customer: 'Other Shop',
+    startDate: mon,
+    endDate: fri,
+    crewNames: 'Hunter Schuler, Seth West, Brendon Bennett, Will Bradford',
+    extraDays: [addDays(mon, 7)],
+    status: 'scheduled',
+    dayLogs: {},
+  });
+  const conflicts = plain(await call('jcSyncCrewSlots', other));
+  assert.equal(conflicts.length, 20);
+  assert.ok(conflicts.some(c => c.crewName === 'Hunter Schuler' && c.date === mon));
+  assert.ok(conflicts.some(c => c.crewName === 'Seth West'));
+  assert.ok(conflicts.some(c => c.crewName === 'Brendon Bennett'));
+  assert.ok(conflicts.some(c => c.crewName === 'Will Bradford'));
+  assert.equal(slotLabel(4, mon), 'Helias', 'a conflicted day is skipped, not overwritten');
+  assert.equal(slotLabel(0, mon), 'Helias');
+  assert.equal(slotLabel(1, mon), 'Helias');
+  assert.equal(slotLabel(2, mon), 'Helias');
+  const after = conflictWarn();
+  assert.equal(after.hidden, true, after.text);
+  assert.equal(after.text, before.text);
+  assert.equal(plain(lex('_jcConflicts')).length, 0);
+  assert.equal(lex('_jcId'), 'schupp');
+});
+
+test('the open job card still shows its own skipped crew days', async () => {
+  resetBoard();
+  const mon = lex('BASE').toISOString().slice(0, 10);
+  const tue = addDays(mon, 1);
+  const helais = pushJobOnly({
+    id: 'helais',
+    customer: 'Helias',
+    startDate: mon,
+    endDate: tue,
+    crewNames: 'Seth West',
+    status: 'scheduled',
+    dayLogs: {},
+  });
+  await call('jcSyncCrewSlots', helais);
+  pushJobOnly({
+    id: 'schupp',
+    customer: 'Schupp - Garage',
+    startDate: mon,
+    endDate: tue,
+    crewNames: 'Brendon Bennett, Seth West',
+    status: 'scheduled',
+    dayLogs: {},
+  });
+  call('openJobCard', 'schupp');
+  const schupp = lex('getJobRecord')('schupp');
+  const own = plain(await call('jcSyncCrewSlots', schupp));
+  assert.deepEqual(own.map(c => c.crewName), ['Seth West', 'Seth West']);
+  assert.deepEqual(own.map(c => c.date), [mon, tue]);
+  assert.equal(slotLabel(1, mon), 'Schupp - Garage');
+  assert.equal(slotLabel(1, tue), 'Schupp - Garage');
+  assert.equal(slotLabel(0, mon), 'Helias');
+  assert.equal(slotLabel(0, tue), 'Helias');
+  const shown = conflictWarn();
+  assert.equal(shown.hidden, false);
+  assert.match(shown.text, /Seth West is already booked/);
+  assert.match(shown.text, /those slots were skipped/);
+  assert.doesNotMatch(shown.text, /Brendon Bennett|Hunter Schuler|Will Bradford/);
+
+  const busy = pushJobOnly({
+    id: 'busy',
+    customer: 'Busy Yard',
+    startDate: mon,
+    endDate: tue,
+    crewNames: 'Hunter Schuler, Will Bradford',
+    status: 'scheduled',
+    dayLogs: {},
+  });
+  await call('jcSyncCrewSlots', busy);
+  assert.equal(conflictWarn().hidden, false);
+  assert.equal(conflictWarn().text, shown.text);
+
+  const other = pushJobOnly({
+    id: 'other-shop',
+    customer: 'Other Shop',
+    startDate: mon,
+    endDate: tue,
+    crewNames: 'Hunter Schuler, Will Bradford',
+    extraDays: [addDays(mon, 7)],
+    status: 'scheduled',
+    dayLogs: {},
+  });
+  const otherConflicts = plain(await call('jcSyncCrewSlots', other));
+  assert.ok(otherConflicts.some(c => c.crewName === 'Hunter Schuler' && c.date === mon));
+  assert.ok(otherConflicts.some(c => c.crewName === 'Will Bradford' && c.date === tue));
+  assert.equal(slotLabel(4, mon), 'Busy Yard');
+  assert.equal(slotLabel(2, tue), 'Busy Yard');
+  const after = conflictWarn();
+  assert.equal(after.hidden, false);
+  assert.equal(after.text, shown.text);
+  assert.deepEqual([...new Set(plain(lex('_jcConflicts')).map(c => c.crewName))], ['Seth West']);
+
+  await call('jcForceOverride');
+  assert.equal(slotLabel(0, mon), 'Helias', 'override double-books and leaves the other job primary');
+  assert.equal(slotLabel(0, tue), 'Helias');
+  assert.deepEqual(plain(extraLabels(0, mon)), ['Schupp - Garage']);
+  assert.deepEqual(plain(extraLabels(0, tue)), ['Schupp - Garage']);
+  assert.equal(conflictWarn().hidden, true);
+  const again = plain(await call('jcSyncCrewSlots', lex('getJobRecord')('schupp')));
+  assert.deepEqual(again, []);
+  assert.deepEqual(plain(extraLabels(0, mon)), ['Schupp - Garage']);
+  assert.equal(conflictWarn().hidden, true);
 });

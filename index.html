@@ -4121,6 +4121,7 @@ async function loadAllFromSupabase(){
       if(_materialsFromServer) jcBackfillMaterialIds();
       await fixSlotDrift();
       await deduplicateSlotsByJobRecord();
+      // Repair only. The returned skips belong to each job; the open card paints its own.
       for(const job of JOB_RECORDS){ if((job.extraDays||[]).length>0) await jcSyncCrewSlots(job); }
     }
     HOLIDAYS=buildHolidayLookup();
@@ -6006,12 +6007,25 @@ async function jcCleanOrphanedSlots(job){
 // For every crew member listed in job.crewNames, check if they have actual schedule
 // slots for this job's dates. If not, create them automatically. This fixes jobs
 // where crewNames was set manually but slots were never saved (old workflow).
-let _jcConflicts = []; // [{crewName, date}] — slots skipped due to another job being booked
+// Skipped days for whichever job card is open. A sync of any other job must not
+// write this list — startup repair used to leave every job's skips on the card.
+let _jcConflicts = []; // [{crewName, date}]
+
+function _jcApplyOpenConflicts(job, conflicts){
+  if(!job || String(job.id)!==String(_jcId)) return;
+  _jcConflicts = Array.isArray(conflicts) ? conflicts : [];
+  _jcUpdateConflictWarn();
+}
 
 async function jcSyncCrewSlots(job, force=false){
-  if(!job||!job.startDate||!job.endDate||!job.crewNames) return;
+  const conflicts=[];
+  const finish=()=>{
+    _jcApplyOpenConflicts(job, conflicts);
+    return conflicts;
+  };
+  if(!job||!job.startDate||!job.endDate||!job.crewNames) return finish();
   const names=jcCrewNames(job);
-  if(!names.length) return;
+  if(!names.length) return finish();
   // Only each person's assigned days. A name with no crewDays entry is still on every
   // current work day (see jcJobWorkDates), so an old whole-job crew list is not trimmed.
   let added=0;
@@ -6023,9 +6037,11 @@ async function jcSyncCrewSlots(job, force=false){
       const{w,d}=pos; const key=jcSlotKey(ci,w,d);
       // Already has a slot for this job on this date AND the slot actually exists — skip
       if((SLOT_JOB_MAP[key]===job.id&&newSlots[ci]?.[w]?.[d])||(newSlots[ci]?.[w]?.[d]?.l===job.customer)) continue;
+      // Already double-booked onto this job. That day was not skipped.
+      if(getExtraSlots(ci,w,d).some(ex=>ex&&ex.l===job.customer)) continue;
       // Conflict: a different job already has this crew member on this day
       if(newSlots[ci]?.[w]?.[d]&&SLOT_JOB_MAP[key]&&SLOT_JOB_MAP[key]!==job.id){
-        if(!force){ _jcConflicts.push({crewName:name, date:ds}); continue; }
+        if(!force){ conflicts.push({crewName:name, date:ds}); continue; }
         // force=true — add as a double-booked extra slot, don't overwrite primary.
         // Pass ds (the absolute date already in hand) so the slot never drifts once
         // BASE advances to a new current week — omitting it was a latent bug here.
@@ -6042,7 +6058,7 @@ async function jcSyncCrewSlots(job, force=false){
     if(document.getElementById('page-schedule')?.classList.contains('active')) renderSchedule();
     if(document.getElementById('page-crewview')?.classList.contains('active')) renderCrewView();
   }
-  _jcUpdateConflictWarn();
+  return finish();
 }
 
 function _jcUpdateConflictWarn(){
@@ -6060,9 +6076,9 @@ function _jcUpdateConflictWarn(){
 
 async function jcForceOverride(){
   const job=getJobRecord(_jcId); if(!job) return;
-  _jcConflicts=[];
-  await jcSyncCrewSlots(job, true);
-  if(!_jcConflicts.length) showToast('✓ Override applied — assigned days scheduled.');
+  const conflicts=await jcSyncCrewSlots(job, true);
+  _jcApplyOpenConflicts(job, conflicts);
+  if(!(conflicts||[]).length) showToast('✓ Override applied — assigned days scheduled.');
 }
 
 function jcWeekdays(s,e){
@@ -6083,6 +6099,7 @@ function openJobCard(jobId){
   const job=getJobRecord(jobId); if(!job) return;
   _jcId=jobId;
   _jcConflicts=[];  // clear any stale conflicts from previous card
+  _jcUpdateConflictWarn();
   // Opening a card does not write schedule slots. Repairs run from an owner/manager load
   // only, and only when that load succeeded (see loadAllFromSupabase).
   // Hide pricing + costing tab when opened from crew view page OR in locked crew mode
@@ -6188,7 +6205,6 @@ function jcRenderCrewPicker(){
 async function jcToggleCrew(i){
   if(document.body.classList.contains('crew-mode')){ showToast('Only the manager can add or remove jobs from the schedule.'); return; }
   const job=getJobRecord(_jcId); if(!job) return;
-  _jcConflicts=[];  // reset so new conflicts are detected fresh
   const name=CREW[i].full;
   const names=jcCrewNames(job);
   const idx=names.indexOf(name);
@@ -6214,6 +6230,7 @@ async function jcToggleCrew(i){
   }
 
   await saveSlotJobMap();
+  _jcApplyOpenConflicts(job, await jcSyncCrewSlots(job));
   jcRenderCrewPicker();
   // Refresh whichever schedule view is open
   if(document.getElementById('page-schedule')?.classList.contains('active')) renderSchedule();
@@ -9625,7 +9642,7 @@ async function saveJobCard(){
     row.display_val=cleanDisplay;
   }
   if(_jcRows.length){ await loadJobs(); if(_jobsListActive()) renderJobsListView(); }
-  await jcSyncCrewSlots(job);   // heal any missing slots after date/crew changes
+  _jcApplyOpenConflicts(job, await jcSyncCrewSlots(job));   // heal any missing slots after date/crew changes
   showSaveBadge('Saved');
   closeModal('jobcard');
   renderSchedule();
