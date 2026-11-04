@@ -4527,6 +4527,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   // session. Painting it first showed the placeholder owner and an empty
   // schedule whenever that proof failed.
   fpBootAuth();
+  _restoreSignOutArm();
   fpInstallMediaHydrator();
   // Slide the inactivity window on real use. The timer itself does not.
   ['click','keydown','touchstart','mousemove'].forEach(ev=>
@@ -11780,21 +11781,123 @@ function tapAgain(el, armedLabel){
   }, 3000);
   return false;
 }
+// Sign-out's second tap must count even when it is a fast double-click, a
+// slower follow-up, or the first tap after a reload. The 400ms gate on
+// tapAgain is for deletes. Photo delete keeps that gate; sign-out does not.
+const FP_SIGNOUT_ARM='fpSignOutArm';
+const FP_SIGNOUT_ARM_MS=10*60*1000;
+let _pinLogoutBusy=false;
+function _signOutButtons(){
+  return document.querySelectorAll('[onclick*="pinLogout"]');
+}
+function _signOutEl(ev){
+  if(ev&&ev.tagName) return ev;
+  if(ev&&ev.currentTarget&&ev.currentTarget.tagName) return ev.currentTarget;
+  return document.getElementById('sb-sign-out')||document.getElementById('cv-sign-out')||document.getElementById('mgr-mobile-signout');
+}
+function _signOutArmFresh(){
+  try{
+    const t=Number(sessionStorage.getItem(FP_SIGNOUT_ARM)||0);
+    if(!t) return false;
+    if(Date.now()-t>FP_SIGNOUT_ARM_MS){
+      sessionStorage.removeItem(FP_SIGNOUT_ARM);
+      return false;
+    }
+    return true;
+  }catch(e){ return false; }
+}
+function _signOutArmed(el){
+  if(el&&el.dataset&&el.dataset.confirm==='1') return true;
+  return _signOutArmFresh();
+}
+function _rememberSignOutLabel(el){
+  if(!el||!el.tagName||el.dataset.tapHtml!=null) return;
+  el.dataset.tapHtml=el.innerHTML;
+}
+function _restoreSignOutLabel(el){
+  if(!el||el.dataset.tapHtml==null) return;
+  el.innerHTML=el.dataset.tapHtml;
+  delete el.dataset.tapHtml;
+}
+function _clearSignOutArm(){
+  try{ sessionStorage.removeItem(FP_SIGNOUT_ARM); }catch(e){}
+  clearTimeout(window._fpSignOutArmT);
+  window._fpSignOutArmT=null;
+  _signOutButtons().forEach(el=>{
+    clearTimeout(el._tapT);
+    if(el.dataset.confirm==='1') _restoreSignOutLabel(el);
+    el.dataset.confirm='';
+    el.dataset.confirmAt='';
+  });
+}
+function _armSignOut(el){
+  const stamp=Date.now();
+  try{ sessionStorage.setItem(FP_SIGNOUT_ARM, String(stamp)); }catch(e){}
+  if(el&&el.tagName){
+    _rememberSignOutLabel(el);
+    el.dataset.confirm='1';
+    el.dataset.confirmAt=String(stamp);
+    el.textContent='Tap again to sign out';
+  }
+  if(typeof showToast==='function') showToast('Tap again to confirm.');
+  clearTimeout(window._fpSignOutArmT);
+  window._fpSignOutArmT=setTimeout(()=>{
+    let stamped=0;
+    try{ stamped=Number(sessionStorage.getItem(FP_SIGNOUT_ARM)||0); }catch(e){}
+    if(stamped!==stamp) return;
+    _clearSignOutArm();
+  }, 3000);
+}
+function _restoreSignOutArm(){
+  if(!_signOutArmFresh()) return;
+  _signOutButtons().forEach(el=>{
+    if(el.dataset.confirm==='1') return;
+    _rememberSignOutLabel(el);
+    el.dataset.confirm='1';
+    el.dataset.confirmAt=String(Date.now());
+    el.textContent='Tap again to sign out';
+  });
+}
 async function pinLogout(ev){
-  const el=(ev&&ev.tagName)?ev:((ev&&ev.currentTarget)||document.getElementById('sb-sign-out')||document.getElementById('cv-sign-out'));
-  if(!tapAgain(el, 'Tap again to sign out')) return;
-  try{ await fpPushDrop(); }catch(e){}
-  try{ await fpEnsureSession(); }catch(e){}
+  if(_pinLogoutBusy) return;
+  const el=_signOutEl(ev);
+  if(!_signOutArmed(el)){
+    _armSignOut(el);
+    return;
+  }
+  // Drop every saved session before any network call. A refresh used to run
+  // first and could leave another office login in storage; the next load then
+  // opened that person instead of the PIN screen.
+  _pinLogoutBusy=true;
+  _clearSignOutArm();
   const token=_accessToken;
   fpClearLocalAuth();
-  showLoginScreen();
-  if(!token) return;
+  try{ showLoginScreen(); }catch(e){}
   try{
-    await fetch(`${SUPABASE_URL}/auth/v1/logout?scope=local`,{
-      method:'POST',
-      headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+token, 'Content-Type':'application/json' }
-    });
+    if(token) _accessToken=token;
+    try{ await fpPushDrop(); }catch(e){}
+    if(token){
+      await fetch(`${SUPABASE_URL}/auth/v1/logout?scope=local`,{
+        method:'POST',
+        headers:{ apikey:SUPABASE_KEY, Authorization:'Bearer '+token, 'Content-Type':'application/json' }
+      });
+    }
   }catch(e){}
+  finally{
+    _pinLogoutBusy=false;
+    if(!_sessionAuthed){
+      _accessToken='';
+      _refreshToken='';
+      _accessExp=0;
+      _sessionUserId='';
+      try{
+        localStorage.removeItem(_pinAuthKey());
+        localStorage.removeItem('fpOfficeUser');
+        localStorage.removeItem('fpRole');
+        localStorage.removeItem('fpClockCrew');
+      }catch(e){}
+    }
+  }
 }
 
 async function pinSaveSettings(){
