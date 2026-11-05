@@ -23,6 +23,60 @@ function json(data, status = 200) {
   });
 }
 
+function installPinFetch(window, callLog) {
+  window.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    let body = null;
+    if (opts.body && typeof opts.body === 'string') {
+      try { body = JSON.parse(opts.body); } catch { body = opts.body; }
+    }
+    const headers = opts.headers || {};
+    const auth = headers.Authorization || headers.authorization || '';
+    callLog.push({ u, body, method: opts.method || 'GET', auth });
+    if (u.includes('/functions/v1/pin-login')) {
+      if (body && body.action === 'roster') {
+        return json({
+          accounts: [
+            { id: 'office-1', label: 'Remember Test Office', kind: 'office', pin_len: 6 },
+            { id: 'crew-1', label: 'Remember Test Crew', kind: 'crew', pin_len: 4 },
+          ],
+        });
+      }
+      if (body && body.pin === '999999' && body.account_id === 'office-1') {
+        return json({
+          access_token: 'access-office',
+          refresh_token: 'refresh-office',
+          expires_in: 3600,
+          account: { kind: 'office', office_id: 'tb', display_name: 'Remember Test Office', crew_idx: null },
+        });
+      }
+      if (body && body.pin === '1111' && body.account_id === 'crew-1') {
+        return json({
+          access_token: 'access-crew',
+          refresh_token: 'refresh-crew',
+          expires_in: 3600,
+          account: { kind: 'crew', crew_idx: 3, display_name: 'Remember Test Crew', office_id: null },
+        });
+      }
+      return json({ error: 'Incorrect PIN — try again.' }, 401);
+    }
+    if (u.includes('grant_type=refresh_token')) {
+      if (body && body.refresh_token === 'dead') return json({ error: 'invalid' }, 401);
+      if (body && body.refresh_token === 'refresh-helias') return json({ access_token: 'access-helias', refresh_token: 'refresh-helias', expires_in: 3600 });
+      return json({ access_token: 'access-new', refresh_token: 'refresh-rotated', expires_in: 3600 });
+    }
+    if (u.includes('/functions/v1/pin-admin')) {
+      if (String(auth).includes('stale-nonce')) return json({ error: 'no' }, 401);
+      if (String(auth).includes('whoami-down')) return json({ error: 'down' }, 503);
+      if (String(auth).includes('owner-token')) return json({ kind: 'owner', display_name: 'Will Bradford', office_id: null, crew_idx: null });
+      if (String(auth).includes('access-helias')) return json({ kind: 'office', display_name: 'PM - Helias', office_id: 'pm', crew_idx: null });
+      return json({ kind: 'office', display_name: 'Remember Test Office', office_id: 'tb', crew_idx: null });
+    }
+    if (u.includes('/logout')) return json({});
+    return json([]);
+  };
+}
+
 const dom = new JSDOM(html, {
   url: 'http://127.0.0.1/?env=test',
   runScripts: 'dangerously',
@@ -36,55 +90,7 @@ const dom = new JSDOM(html, {
       logs.push(args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '));
       origLog(...args);
     };
-    window.fetch = async (url, opts = {}) => {
-      const u = String(url);
-      let body = null;
-      if (opts.body && typeof opts.body === 'string') {
-        try { body = JSON.parse(opts.body); } catch { body = opts.body; }
-      }
-      const headers = opts.headers || {};
-      const auth = headers.Authorization || headers.authorization || '';
-      calls.push({ u, body, method: opts.method || 'GET', auth });
-      if (u.includes('/functions/v1/pin-login')) {
-        if (body && body.action === 'roster') {
-          return json({
-            accounts: [
-              { id: 'office-1', label: 'Remember Test Office', kind: 'office', pin_len: 6 },
-              { id: 'crew-1', label: 'Remember Test Crew', kind: 'crew', pin_len: 4 },
-            ],
-          });
-        }
-        if (body && body.pin === '999999' && body.account_id === 'office-1') {
-          return json({
-            access_token: 'access-office',
-            refresh_token: 'refresh-office',
-            expires_in: 3600,
-            account: { kind: 'office', office_id: 'tb', display_name: 'Remember Test Office', crew_idx: null },
-          });
-        }
-        if (body && body.pin === '1111' && body.account_id === 'crew-1') {
-          return json({
-            access_token: 'access-crew',
-            refresh_token: 'refresh-crew',
-            expires_in: 3600,
-            account: { kind: 'crew', crew_idx: 3, display_name: 'Remember Test Crew', office_id: null },
-          });
-        }
-        return json({ error: 'Incorrect PIN — try again.' }, 401);
-      }
-      if (u.includes('grant_type=refresh_token')) {
-        if (body && body.refresh_token === 'dead') return json({ error: 'invalid' }, 401);
-        return json({ access_token: 'access-new', refresh_token: 'refresh-rotated', expires_in: 3600 });
-      }
-      if (u.includes('/functions/v1/pin-admin')) {
-        if (String(auth).includes('stale-nonce')) return json({ error: 'no' }, 401);
-        if (String(auth).includes('whoami-down')) return json({ error: 'down' }, 503);
-        if (String(auth).includes('owner-token')) return json({ kind: 'owner', display_name: 'Will Bradford', office_id: null, crew_idx: null });
-        return json({ kind: 'office', display_name: 'Remember Test Office', office_id: 'tb', crew_idx: null });
-      }
-      if (u.includes('/logout')) return json({});
-      return json([]);
-    };
+    installPinFetch(window, calls);
   },
 });
 
@@ -103,6 +109,94 @@ const bootFresh = async (data) => {
   await sleep(50);
 };
 const fail = (msg) => { console.error('FAIL:', msg); process.exitCode = 1; };
+const extraPages = [];
+function dumpStorage(storage) {
+  const out = {};
+  for (let i = 0; i < storage.length; i++) {
+    const k = storage.key(i);
+    out[k] = storage.getItem(k);
+  }
+  return out;
+}
+function mountPage(localDump, sessionDump) {
+  const pageErrors = [];
+  const pageVc = new VirtualConsole();
+  pageVc.on('jsdomError', (err) => {
+    const msg = String(err && err.message ? err.message : err);
+    if (/css/i.test(msg)) return;
+    pageErrors.push(msg);
+  });
+  pageVc.on('error', (...args) => pageErrors.push(args.map(String).join(' ')));
+  const pageCalls = [];
+  const pageDom = new JSDOM(html, {
+    url: 'http://127.0.0.1/?env=test',
+    runScripts: 'dangerously',
+    pretendToBeVisual: true,
+    virtualConsole: pageVc,
+    beforeParse(window) {
+      window.confirm = () => true;
+      window.CSS = window.CSS || { escape(s) { return String(s); } };
+      installPinFetch(window, pageCalls);
+      if (localDump) {
+        for (const [k, v] of Object.entries(localDump)) window.localStorage.setItem(k, v);
+      }
+      if (sessionDump) {
+        for (const [k, v] of Object.entries(sessionDump)) window.sessionStorage.setItem(k, v);
+      }
+      window.addEventListener('DOMContentLoaded', () => {
+        window.loadAllFromSupabase = async function(){ return true; };
+        window.showPage = function(){};
+        window.showToast = function(){};
+        window.logAudit = function(){};
+      });
+    },
+  });
+  const page = {
+    dom: pageDom,
+    w: pageDom.window,
+    errors: pageErrors,
+    calls: pageCalls,
+    $: (id) => pageDom.window.document.getElementById(id),
+  };
+  extraPages.push(page);
+  return page;
+}
+function heliasBlob() {
+  return {
+    refresh_token: 'refresh-helias',
+    access_token: 'access-helias',
+    expires_at: Date.now() + 3600000,
+    kind: 'office',
+    role: 'admin',
+    remember: true,
+    ts: Date.now(),
+    display_name: 'PM - Helias',
+    office_id: 'pm',
+  };
+}
+async function signInOffice() {
+  if ($('login-screen').style.display === 'none' && $('sb-user-name').textContent === 'Remember Test Office' && evalFn('_sessionAuthed') === true) return;
+  un.value = 'Remember Test Office';
+  pw.value = '999999';
+  un.dispatchEvent(new w.Event('input', { bubbles: true }));
+  pw.dispatchEvent(new w.Event('input', { bubbles: true }));
+  form.dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+  for (let i = 0; i < 40 && $('login-screen').style.display !== 'none'; i++) await sleep(25);
+  if ($('login-screen').style.display !== 'none' || $('sb-user-name').textContent !== 'Remember Test Office') {
+    fail('could not sign in Remember Test Office for sign-out checks: ' + $('sb-user-name').textContent + ' / ' + $('login-screen').style.display);
+  }
+}
+async function expectLoggedOut(page, label) {
+  const win = page ? page.w : w;
+  const el = (id) => (page ? page.$(id) : $(id));
+  for (let i = 0; i < 20 && win.eval('_sessionAuthed') !== true; i++) await sleep(25);
+  const screen = el('login-screen');
+  const name = el('sb-user-name') ? el('sb-user-name').textContent : '';
+  if (!screen || screen.style.display !== 'flex' || win.eval('_sessionAuthed') === true || name) {
+    fail(label + ' screen=' + (screen && screen.style.display) + ' authed=' + win.eval('_sessionAuthed') + ' name=' + name);
+  }
+  if (win.localStorage.getItem('fpAuth_v2') || win.localStorage.getItem('fpOfficeUser')) fail(label + ' kept a saved session');
+}
 
 await sleep(50);
 evalFn('loadAllFromSupabase = async function(){ return true; }');
@@ -142,7 +236,9 @@ if (pw.value !== '') fail('PIN left in the field after sign-in');
 if (logs.some(l => l.includes('999999') || l.includes('1111'))) fail('PIN was written to the console');
 
 // Sign out clears the remembered session and asks the server to drop this device only.
+// The button asks for a second tap. A fast second tap has to finish the sign-out.
 calls.length = 0;
+await evalFn('pinLogout()');
 await evalFn('pinLogout()');
 await sleep(30);
 if (w.localStorage.getItem('fpAuth_v2') !== null) fail('sign-out left fpAuth_v2');
@@ -160,6 +256,7 @@ if (!b || b.remember !== false || b.kind !== 'crew' || b.role !== 'crew') fail('
 if ($('pin-remember-wrap').style.display !== 'none') fail('remember stayed visible for crew');
 
 // Keypad path on the office account.
+await evalFn('pinLogout()');
 await evalFn('pinLogout()');
 await sleep(40);
 // Last person was crew, so the PIN step is already up. Switch with the keypad after picking office from the roster.
@@ -294,6 +391,62 @@ await sleep(30);
 w.fetch = origFetch;
 if ($('login-screen').style.display !== 'flex' || evalFn('_sessionAuthed') === true) fail('401 left the board signed in');
 
+// Two taps finish sign-out. A fast double-click counts. A slower second tap counts.
+// Sign-out also has to forget any other office saved in this browser, and a reload
+// after that has to come back to the PIN screen.
+evalFn('_clearSignOutArm()');
+await signInOffice();
+const signOutBtn = $('sb-sign-out');
+signOutBtn.click();
+if (signOutBtn.textContent !== 'Tap again to sign out') fail('first tap did not ask for a second tap: ' + signOutBtn.textContent);
+if ($('login-screen').style.display !== 'none' || evalFn('_sessionAuthed') !== true) fail('first tap signed out');
+signOutBtn.click();
+await expectLoggedOut(null, 'fast second tap');
+if (!$('mgr-mobile-signout').querySelector('span')) fail('mobile sign-out button lost its icon');
+
+await signInOffice();
+$('sb-sign-out').click();
+if ($('login-screen').style.display !== 'none') fail('slow-tap setup signed out on the first tap');
+await sleep(500);
+$('sb-sign-out').click();
+await expectLoggedOut(null, 'slow second tap');
+
+await signInOffice();
+w.localStorage.setItem('fpAuth_v2', JSON.stringify(heliasBlob()));
+w.localStorage.setItem('fpOfficeUser', 'PM - Helias');
+if ($('sb-user-name').textContent !== 'Remember Test Office') fail('open office changed before sign-out');
+$('sb-sign-out').click();
+$('sb-sign-out').click();
+await expectLoggedOut(null, 'sign-out with another office saved');
+await evalFn('fpBootAuth()');
+await expectLoggedOut(null, 'boot after sign-out');
+if ($('sb-user-name').textContent === 'PM - Helias') fail('boot restored PM - Helias');
+
+await signInOffice();
+$('sb-sign-out').click();
+$('sb-sign-out').click();
+await expectLoggedOut(null, 'sign-out before reload');
+const reloaded = mountPage(dumpStorage(w.localStorage), {});
+await expectLoggedOut(reloaded, 'reload after sign-out');
+if (reloaded.errors.length) fail('reload errors:\n' + reloaded.errors.join('\n'));
+
+await signInOffice();
+$('sb-sign-out').click();
+if ($('sb-sign-out').textContent !== 'Tap again to sign out') fail('arm before reload failed');
+if ($('login-screen').style.display !== 'none') fail('arm before reload signed out');
+const armedPage = mountPage(dumpStorage(w.localStorage), dumpStorage(w.sessionStorage));
+for (let i = 0; i < 40 && (armedPage.$('login-screen').style.display !== 'none' || armedPage.$('sb-user-name').textContent !== 'Remember Test Office'); i++) await sleep(25);
+if (armedPage.$('login-screen').style.display !== 'none' || armedPage.w.eval('_sessionAuthed') !== true || armedPage.$('sb-user-name').textContent !== 'Remember Test Office') {
+  fail('reload before the second tap dropped the open session: ' + armedPage.$('sb-user-name').textContent + ' screen ' + armedPage.$('login-screen').style.display);
+}
+if (armedPage.$('sb-sign-out').textContent !== 'Tap again to sign out') fail('reload forgot the sign-out confirm: ' + armedPage.$('sb-sign-out').textContent);
+armedPage.$('sb-sign-out').click();
+await expectLoggedOut(armedPage, 'second tap after reload');
+const afterArmed = mountPage(dumpStorage(armedPage.w.localStorage), {});
+await expectLoggedOut(afterArmed, 'reload after the confirming tap');
+if (armedPage.errors.length) fail('armed reload errors:\n' + armedPage.errors.join('\n'));
+if (afterArmed.errors.length) fail('after armed reload errors:\n' + afterArmed.errors.join('\n'));
+
 // One Sign in gesture works when the password manager commits on mousedown,
 // which used to move the button and swallow the click.
 evalFn('pinLogout = async function(){ fpClearLocalAuth(); showLoginScreen(); }');
@@ -318,6 +471,9 @@ if (process.exitCode) {
   console.error('pin logic test failed');
 } else {
   console.log('pin logic test passed');
+}
+for (const page of extraPages) {
+  try { page.w.close(); } catch { /* jsdom timers */ }
 }
 try { w.close(); } catch { /* jsdom timers */ }
 process.exit(process.exitCode || 0);
