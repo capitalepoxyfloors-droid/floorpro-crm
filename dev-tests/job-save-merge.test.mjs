@@ -22,8 +22,30 @@ const state = {
   slots: [],
   audit: [],
   failRpc: true,
+  holdWrite: null,
 };
 const calls = [];
+let releaseWrite = () => {};
+
+function holdNextWrite() {
+  state.holdWrite = new Promise(resolve => { releaseWrite = resolve; });
+}
+
+function applyPatches(jobs, patches) {
+  const stamp = '2026-10-30T15:00:00.000Z';
+  for (const p of patches || []) {
+    const idx = jobs.findIndex(j => j.id === p.id);
+    if (p.op === 'delete') {
+      if (idx >= 0) jobs.splice(idx, 1);
+      continue;
+    }
+    if (idx < 0) continue;
+    Object.keys(p.patch || {}).forEach(k => { jobs[idx][k] = p.patch[k]; });
+    (p.drop || []).forEach(k => { delete jobs[idx][k]; });
+    jobs[idx].updated_at = stamp;
+  }
+  return jobs;
+}
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
@@ -41,7 +63,15 @@ function mockFetch(url, opts = {}) {
     if (state.failRpc) {
       return Promise.resolve(jsonResponse({ code: 'PGRST202', message: 'Could not find the function public.fp_patch_job_records(patches) in the schema cache' }, 404));
     }
-    return Promise.resolve(jsonResponse({ ok: true, jobs: [] }));
+    const jobs = applyPatches(JSON.parse(state.settings.job_records || '[]'), body && body.patches);
+    state.settings.job_records = JSON.stringify(jobs);
+    const finish = () => jsonResponse({ ok: true, jobs: JSON.parse(state.settings.job_records) });
+    if (state.holdWrite) {
+      const gate = state.holdWrite;
+      state.holdWrite = null;
+      return gate.then(finish);
+    }
+    return Promise.resolve(finish());
   }
   if (u.includes('/rest/v1/settings')) {
     if (method === 'GET') {
@@ -53,8 +83,16 @@ function mockFetch(url, opts = {}) {
       return Promise.resolve(jsonResponse([]));
     }
     if (method === 'POST' && body && body.key) {
-      state.settings[body.key] = body.value;
-      return Promise.resolve(jsonResponse([body]));
+      const finish = () => {
+        state.settings[body.key] = body.value;
+        return jsonResponse([body]);
+      };
+      if (state.holdWrite) {
+        const gate = state.holdWrite;
+        state.holdWrite = null;
+        return gate.then(finish);
+      }
+      return Promise.resolve(finish());
     }
   }
   if (u.includes('/rest/v1/scheduled_slots') && method === 'GET') return Promise.resolve(jsonResponse(state.slots));
@@ -111,6 +149,8 @@ function serverWithBrendon(gbhNotes) {
 function arm(localJobs, serverJobs) {
   state.slots = [];
   state.audit = [];
+  state.failRpc = true;
+  state.holdWrite = null;
   calls.length = 0;
   lex('JOB_RECORDS').splice(0, lex('JOB_RECORDS').length, ...JSON.parse(JSON.stringify(localJobs)));
   setLex('_jrBaseline', JSON.parse(JSON.stringify(localJobs)));
@@ -218,6 +258,99 @@ test('slot cleanup re-reads and does not delete Brendon from a stale job list', 
   await call('jcCleanOrphanedSlots', stale);
   assert.equal(state.slots.length, 3, 'fresh crewDays still has Brendon');
   assert.equal(state.audit.filter(a => String(a.details || '').includes('501')).length, 0);
+});
+
+function gbhNotes(jobs) {
+  return jobs.find(j => j.id === GBH).dayLogs['2026-10-28'].notes;
+}
+
+async function waitUntil(fn) {
+  for (let i = 0; i < 50; i++) {
+    if (fn()) return;
+    await new Promise(r => setTimeout(r, 10));
+  }
+  throw new Error('timed out');
+}
+
+test('typing a daily log note saves that job without Save Log', async () => {
+  arm(loadedPair(), serverWithBrendon('old note'));
+  setLex('_jcId', GBH);
+  call('jcLogSet', '2026-10-28', 'notes', 'poured the primer');
+  assert.equal(gbhNotes(lex('JOB_RECORDS')), 'poured the primer');
+  await new Promise(r => setTimeout(r, 200));
+  assert.equal(gbhNotes(storedJobs()), 'old note');
+  call('flushDayLogSave');
+  await waitUntil(() => gbhNotes(storedJobs()) === 'poured the primer');
+  assert.equal(gbhNotes(lex('JOB_RECORDS')), 'poured the primer');
+  assert.deepEqual(zimm(storedJobs()).crewDays['Brendon Bennett'], BRENDON_DAYS);
+  assert.equal(lex('_jcDayLogSaveTimer'), null);
+});
+
+test('a material quantity saves with the daily log', async () => {
+  arm(loadedPair(), serverWithBrendon('old note'));
+  setLex('_jcId', GBH);
+  call('jcLogAddMat', '2026-10-28');
+  call('jcLogSetMaterial', '2026-10-28', 0, 'name', 'Primer');
+  call('jcLogSetMaterial', '2026-10-28', 0, 'qty', '2');
+  call('flushDayLogSave');
+  await waitUntil(() => {
+    const mats = storedJobs().find(j => j.id === GBH).dayLogs['2026-10-28'].materialsUsed;
+    return mats && mats[0] && mats[0].name === 'Primer' && String(mats[0].qty) === '2';
+  });
+  assert.deepEqual(zimm(storedJobs()).crewDays['Brendon Bennett'], BRENDON_DAYS);
+});
+
+test('keystrokes during a save stay and the next save stores them', async () => {
+  arm(loadedPair(), serverWithBrendon('old note'));
+  const gbh = lex('JOB_RECORDS').find(j => j.id === GBH);
+  gbh.dayLogs['2026-10-28'].notes = 'ab';
+  holdNextWrite();
+  try {
+    const first = call('saveJobRecords', GBH);
+    await waitUntil(() => calls.some(c => c.method === 'POST' && c.url.includes('/rest/v1/settings')));
+    gbh.dayLogs['2026-10-28'].notes = 'abc';
+    releaseWrite();
+    assert.equal(await first, true);
+    assert.equal(gbh.dayLogs['2026-10-28'].notes, 'abc');
+    assert.equal(gbhNotes(lex('_jrBaseline')), 'ab');
+    assert.equal(gbhNotes(storedJobs()), 'ab');
+    assert.deepEqual(zimm(storedJobs()).crewDays['Brendon Bennett'], BRENDON_DAYS);
+    const second = await call('saveJobRecords', GBH);
+    assert.equal(second, true);
+    assert.equal(gbhNotes(storedJobs()), 'abc');
+    assert.equal(gbh.dayLogs['2026-10-28'].notes, 'abc');
+    assert.deepEqual(zimm(storedJobs()).crewDays['Brendon Bennett'], BRENDON_DAYS);
+  } finally {
+    releaseWrite();
+    state.holdWrite = null;
+  }
+});
+
+test('keystrokes during a patch save stay when the database function answers', async () => {
+  arm(loadedPair(), serverWithBrendon('old note'));
+  state.failRpc = false;
+  const gbh = lex('JOB_RECORDS').find(j => j.id === GBH);
+  gbh.dayLogs['2026-10-28'].notes = 'ab';
+  holdNextWrite();
+  try {
+    const first = call('saveJobRecords', GBH);
+    await waitUntil(() => calls.some(c => c.url.includes('/rest/v1/rpc/fp_patch_job_records')));
+    gbh.dayLogs['2026-10-28'].notes = 'abc';
+    releaseWrite();
+    assert.equal(await first, true);
+    assert.equal(gbh.dayLogs['2026-10-28'].notes, 'abc');
+    assert.equal(gbhNotes(lex('_jrBaseline')), 'ab');
+    assert.equal(gbhNotes(storedJobs()), 'ab');
+    const second = await call('saveJobRecords', GBH);
+    assert.equal(second, true);
+    assert.equal(gbhNotes(storedJobs()), 'abc');
+    assert.equal(gbh.dayLogs['2026-10-28'].notes, 'abc');
+    assert.deepEqual(zimm(storedJobs()).crewDays['Brendon Bennett'], BRENDON_DAYS);
+  } finally {
+    releaseWrite();
+    state.holdWrite = null;
+    state.failRpc = true;
+  }
 });
 
 test('slot cleanup deletes only when the fresh job agrees, and logs it', async () => {
