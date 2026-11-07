@@ -1,0 +1,428 @@
+/**
+ * Per-person credited hours. Fake people and jobs only. No live network.
+ * Counted time stays on the existing 0.1h clock steps. 6h 10m counts as 6.2h.
+ * A 1.8h credit plus that 6.2h is an exact 8.0h day. 1h 50m is 1.8333h and is not stored as 8.
+ */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { JSDOM, VirtualConsole } from 'jsdom';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+const DAY = '2026-06-23';
+
+const state = { settings: {}, audit: [], rpcBodies: [] };
+
+function jsonResponse(data, status = 200) {
+  return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
+}
+function mockFetch(url, opts = {}) {
+  const method = String(opts.method || 'GET').toUpperCase();
+  const u = String(url);
+  let body = null;
+  if (opts.body && typeof opts.body === 'string') {
+    try { body = JSON.parse(opts.body); } catch { body = opts.body; }
+  }
+  if (u.includes('/rest/v1/rpc/')) {
+    state.rpcBodies.push({ url: u, body });
+    if (u.includes('fp_patch_job_records')) {
+      return Promise.resolve(jsonResponse({ code: 'PGRST202', message: 'Could not find the function public.fp_patch_job_records(patches) in the schema cache' }, 404));
+    }
+    return Promise.resolve(jsonResponse({ ok: true, jobs: [] }));
+  }
+  if (u.includes('/rest/v1/settings')) {
+    if (method === 'GET') {
+      const m = u.match(/key=eq\.([^&]+)/);
+      const key = m ? decodeURIComponent(m[1]) : '';
+      if (Object.prototype.hasOwnProperty.call(state.settings, key)) {
+        return Promise.resolve(jsonResponse([{ key, value: state.settings[key] }]));
+      }
+      return Promise.resolve(jsonResponse([]));
+    }
+    if (method === 'POST' && body && body.key) {
+      state.settings[body.key] = body.value;
+      return Promise.resolve(jsonResponse([body]));
+    }
+  }
+  if (u.includes('/rest/v1/audit_log') && method === 'POST') {
+    state.audit.push(body);
+    return Promise.resolve(jsonResponse([{ id: state.audit.length }]));
+  }
+  if (method === 'GET') return Promise.resolve(jsonResponse([]));
+  if (method === 'POST') return Promise.resolve(jsonResponse([{ id: 1 }]));
+  return Promise.resolve(new Response(null, { status: 204 }));
+}
+
+let dom;
+let w;
+const ev = (src) => w.eval(src);
+const plain = (v) => JSON.parse(JSON.stringify(v));
+function call(name, ...args) {
+  w.__fpArgs = args;
+  return w.eval(name + '.apply(undefined, window.__fpArgs)');
+}
+
+const FAKE = [
+  ['Avery', 'Avery Cole'],
+  ['Blake', 'Blake Diaz'],
+  ['Casey', 'Casey Ng'],
+  ['Drew', 'Drew Patel'],
+  ['Eden', 'Eden Brooks'],
+];
+
+function useFakeCrew() {
+  FAKE.forEach(([first, full], i) => {
+    ev(`CREW_DATA[${i}].name=${JSON.stringify(first)}; CREW_DATA[${i}].full=${JSON.stringify(full)}; CREW_DATA[${i}].hourly='';`);
+    ev(`if(CREW[${i}]){ CREW[${i}].name=${JSON.stringify(first)}; CREW[${i}].full=${JSON.stringify(full)}; }`);
+  });
+  w.localStorage.setItem('fpOfficeUser', 'Ops Reviewer');
+  w.localStorage.removeItem('fpRole');
+}
+
+function row(idx, start, end) {
+  return { crewIdx: idx, name: FAKE[idx][1], startTime: start, endTime: end };
+}
+
+function putJobs(jobs) {
+  w.__jobs = JSON.parse(JSON.stringify(jobs));
+  w.eval('JOB_RECORDS.splice(0, JOB_RECORDS.length, ...window.__jobs)');
+}
+function J() { return w.eval('JOB_RECORDS'); }
+function setBaseline(jobs) {
+  w.__baseJobs = JSON.parse(JSON.stringify(jobs));
+  w.eval('_jrBaseline = window.__baseJobs');
+}
+
+test.before(async () => {
+  const virtualConsole = new VirtualConsole();
+  virtualConsole.on('jsdomError', (err) => {
+    const msg = String(err && err.message ? err.message : err);
+    if (/Could not parse CSS|css/i.test(msg)) return;
+    throw err;
+  });
+  dom = new JSDOM(html, {
+    url: 'http://127.0.0.1/',
+    runScripts: 'dangerously',
+    pretendToBeVisual: true,
+    virtualConsole,
+    beforeParse(window) {
+      window.fetch = mockFetch;
+      window.AbortController = AbortController;
+      window.confirm = () => true;
+      window.CSS = window.CSS || { escape(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, '\\$&'); } };
+    },
+  });
+  w = dom.window;
+  await new Promise(r => setTimeout(r, 40));
+  w.__realSave = w.saveJobRecords.bind(w);
+  w.saveJobRecords = () => Promise.resolve(true);
+});
+test.after(() => { if (w) w.close(); });
+
+test('clock rounding is unchanged and 1h 50m is not an 8.0h day', () => {
+  useFakeCrew();
+  assert.equal(call('jcCalcHrs', '7:50 AM', '3:10 PM'), '7.3 hrs');
+  assert.equal(call('jcCalcHrs', '9:00 AM', '3:10 PM'), '6.2 hrs');
+  assert.equal(call('jcCalcHrs', '7:45 AM', '8:15 AM'), '0.5 hrs');
+  assert.equal(call('jcLegacyTenths', 6.2), 62);
+  assert.equal(call('jcLegacyTenths', 7.3), 73);
+  assert.equal(call('jcLegacyTenths', 0.5), 5);
+  assert.equal(call('jcParseCreditTenths', '1.8'), 18);
+  assert.equal(call('jcParseCreditTenths', '8.0'), 80);
+  assert.equal(call('jcParseCreditTenths', '1.83'), null);
+  assert.equal(call('jcParseCreditMinutes', '1:50'), 110);
+  const explained = plain(call('jcExplainMinuteCredit', 110, 62));
+  assert.equal(explained.isTenth, false);
+  assert.equal(explained.lowerTenths, 18);
+  assert.equal(explained.upperTenths, 19);
+  assert.equal(explained.dayTenthsIfLower, 80);
+  assert.equal(explained.dayTenthsIfUpper, 81);
+  assert.ok(Math.abs(explained.dayHoursIfExact - 8.0333) < 0.0001);
+  assert.ok(Math.abs(explained.exactHours - (110 / 60)) < 1e-12);
+  assert.ok(Math.abs(explained.dayHoursIfExact - 8) > 0.03);
+  // Rounding 8.0333h to the nearest tenth looks like 8.0. The day total must not do that.
+  assert.equal(Math.round(explained.dayHoursIfExact * 10) / 10, 8);
+  assert.equal(explained.dayTenthsIfLower, 80);
+});
+
+test('target day is exactly 8.0h in tenths while clocks and the 6.2h job stay put', () => {
+  useFakeCrew();
+  const harbor = {
+    id: 'harbor', customer: 'Harbor Hall', status: 'in_progress',
+    startDate: DAY, endDate: DAY,
+    dayLogs: {
+      [DAY]: {
+        startTime: '9:00 AM', endTime: '3:10 PM',
+        crewPresent: [
+          row(0, '7:50 AM', '3:10 PM'),
+          row(1, '9:00 AM', '3:10 PM'),
+          row(2, '9:00 AM', '3:10 PM'),
+        ],
+      },
+    },
+  };
+  const ridge = {
+    id: 'ridge', customer: 'Ridge Hall', status: 'in_progress',
+    startDate: DAY, endDate: DAY,
+    dayLogs: {
+      [DAY]: {
+        startTime: '7:45 AM', endTime: '8:15 AM',
+        crewPresent: [row(1, '7:45 AM', '8:15 AM'), row(2, '7:45 AM', '8:15 AM')],
+      },
+    },
+  };
+  putJobs([harbor, ridge]);
+  ev(`_jcId='harbor'`);
+  const avery = call('jcSetHourCredit', DAY, 0, { creditedTenths: 80, reason: 'Count the short clock as a full day' });
+  assert.equal(avery.ok, true);
+  ev(`_jcId='ridge'`);
+  const blake = call('jcBalanceHourCredit', DAY, 0, 'Bring the counted day to 8.0h');
+  const casey = call('jcBalanceHourCredit', DAY, 1, 'Bring the counted day to 8.0h');
+  assert.equal(blake.ok, true);
+  assert.equal(casey.ok, true);
+
+  const jobs = plain(J());
+  const hLog = jobs[0].dayLogs[DAY];
+  const rLog = jobs[1].dayLogs[DAY];
+  assert.equal(hLog.crewPresent[0].startTime, '7:50 AM');
+  assert.equal(hLog.crewPresent[0].endTime, '3:10 PM');
+  assert.equal(hLog.crewPresent[1].startTime, '9:00 AM');
+  assert.equal(hLog.crewPresent[1].endTime, '3:10 PM');
+  assert.equal(rLog.crewPresent[0].startTime, '7:45 AM');
+  assert.equal(rLog.crewPresent[0].endTime, '8:15 AM');
+  assert.equal(hLog.hourAdjustments.length, 1);
+  assert.equal(hLog.hourAdjustments[0].creditedTenths, 80);
+  assert.equal(hLog.hourAdjustments[0].by, 'Ops Reviewer');
+  assert.ok(hLog.hourAdjustments[0].at);
+  assert.equal(rLog.hourAdjustments[0].creditedTenths, 18);
+  assert.equal(rLog.hourAdjustments[0].balance.otherJobsTenths, 62);
+  assert.equal(rLog.hourAdjustments[1].creditedTenths, 18);
+  assert.equal(rLog.hourAdjustments[0].requestedMinutes, undefined);
+
+  const hLines = plain(call('jcJobCostLines', J()[0], 'recorded'));
+  const rLines = plain(call('jcJobCostLines', J()[1], 'recorded'));
+  const hBy = Object.fromEntries(hLines.laborRows.map(r => [r.name, r]));
+  const rBy = Object.fromEntries(rLines.laborRows.map(r => [r.name, r]));
+  assert.equal(hBy['Avery Cole'].hrs, 8);
+  assert.equal(hBy['Avery Cole'].tenths, 80);
+  assert.equal(hBy['Avery Cole'].clockTenths, 73);
+  assert.equal(hBy['Blake Diaz'].hrs, 6.2);
+  assert.equal(hBy['Blake Diaz'].tenths, 62);
+  assert.equal(hBy['Blake Diaz'].credited, false);
+  assert.equal(hBy['Casey Ng'].tenths, 62);
+  assert.equal(rBy['Blake Diaz'].hrs, 1.8);
+  assert.equal(rBy['Blake Diaz'].tenths, 18);
+  assert.equal(rBy['Blake Diaz'].clockTenths, 5);
+  assert.equal(rBy['Casey Ng'].tenths, 18);
+  assert.equal(hBy['Blake Diaz'].hrs, plain(call('jcCalcHrs', '9:00 AM', '3:10 PM')).replace(' hrs', '') * 1);
+
+  ev('_payrollPeriodOffset=0');
+  const pay = plain(call('_payrollCompute', 0));
+  for (const name of ['Avery Cole', 'Blake Diaz', 'Casey Ng']) {
+    const person = pay.rows.find(r => r.label === name);
+    assert.ok(person, name);
+    const day = person.days.filter(d => d.date === DAY);
+    const tenths = day.reduce((s, d) => s + d.tenths, 0);
+    assert.equal(tenths, 80, name + ' day tenths');
+    assert.equal(person.regHrs, 8);
+  }
+  const blakePay = pay.rows.find(r => r.label === 'Blake Diaz');
+  const blakeHarbor = blakePay.days.find(d => d.job === 'Harbor Hall');
+  const blakeRidge = blakePay.days.find(d => d.job === 'Ridge Hall');
+  assert.equal(blakeHarbor.hrs, hBy['Blake Diaz'].hrs);
+  assert.equal(blakeRidge.hrs, rBy['Blake Diaz'].hrs);
+  assert.equal(blakeHarbor.credited, false);
+  assert.equal(blakeRidge.credited, true);
+  assert.equal(blakeHarbor.tenths + blakeRidge.tenths, 80);
+
+  ev(`_jcId='ridge'`);
+  const refused = call('jcSetHourCredit', DAY, 0, { creditedTenths: 11, reason: 'not a neighbor', requestedMinutes: 110, otherTenths: 62 });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error, 'not-a-tenth-choice');
+  const chosen = call('jcSetHourCredit', DAY, 0, { creditedTenths: 18, reason: 'Chose 1.8h after typing 1:50', requestedMinutes: 110, otherTenths: 62 });
+  assert.equal(chosen.ok, true);
+  assert.equal(J()[1].dayLogs[DAY].hourAdjustments[0].creditedTenths, 18);
+  assert.equal(J()[1].dayLogs[DAY].hourAdjustments[0].requestedMinutes, 110);
+  assert.equal(J()[1].dayLogs[DAY].crewPresent[0].endTime, '8:15 AM');
+});
+
+test('split shifts, full day, no work, and one person do not spill onto the others', () => {
+  useFakeCrew();
+  const split = {
+    id: 'split', customer: 'Split Hall', startDate: DAY, endDate: DAY,
+    dayLogs: {
+      [DAY]: {
+        crewPresent: [
+          row(0, '8:00 AM', '12:00 PM'),
+          row(0, '1:00 PM', '4:00 PM'),
+          row(1, '8:00 AM', '4:00 PM'),
+        ],
+      },
+    },
+  };
+  putJobs([split]);
+  ev(`_jcId='split'`);
+  let lines = plain(call('jcJobCostLines', J()[0], 'recorded'));
+  assert.equal(lines.laborRows.find(r => r.name === 'Avery Cole').hrs, 7);
+  assert.equal(lines.laborRows.find(r => r.name === 'Blake Diaz').hrs, 8);
+  call('jcSetHourCredit', DAY, 0, { creditedTenths: 80, reason: 'Count the split as 8.0h' });
+  lines = plain(call('jcJobCostLines', J()[0], 'recorded'));
+  const avery = lines.laborRows.find(r => r.name === 'Avery Cole');
+  const blake = lines.laborRows.find(r => r.name === 'Blake Diaz');
+  assert.equal(avery.tenths, 80);
+  assert.equal(avery.clockTenths, 70);
+  assert.equal(lines.laborRows.filter(r => r.name === 'Avery Cole').length, 1);
+  assert.equal(blake.tenths, 80);
+  assert.equal(blake.credited, false);
+  assert.equal(J()[0].dayLogs[DAY].crewPresent[0].startTime, '8:00 AM');
+  assert.equal(J()[0].dayLogs[DAY].crewPresent[1].endTime, '4:00 PM');
+
+  J()[0].dayLogs[DAY].fullDay = true;
+  call('jcClearHourCredit', DAY, 0);
+  lines = plain(call('jcJobCostLines', J()[0], 'recorded'));
+  assert.equal(lines.laborRows.find(r => r.name === 'Avery Cole').tenths, 80);
+  assert.equal(lines.hours, 16);
+
+  call('jcSetHourCredit', DAY, 2, { creditedTenths: 60, reason: 'Blake only, not the full-day flag' });
+  lines = plain(call('jcJobCostLines', J()[0], 'recorded'));
+  assert.equal(lines.laborRows.find(r => r.name === 'Avery Cole').tenths, 80);
+  assert.equal(lines.laborRows.find(r => r.name === 'Blake Diaz').tenths, 60);
+  assert.equal(lines.laborRows.find(r => r.name === 'Avery Cole').source, undefined);
+
+  J()[0].dayLogs[DAY].noWork = true;
+  lines = plain(call('jcJobCostLines', J()[0], 'recorded'));
+  assert.equal(lines.laborRows.length, 0);
+  assert.equal(lines.hours, 0);
+  ev('_payrollPeriodOffset=0');
+  const pay = plain(call('_payrollCompute', 0));
+  assert.equal(pay.rows.some(r => (r.days || []).some(d => d.date === DAY && d.job === 'Split Hall')), false);
+  assert.equal(J()[0].dayLogs[DAY].hourAdjustments[0].creditedTenths, 60);
+  assert.equal(J()[0].dayLogs[DAY].crewPresent[2].startTime, '8:00 AM');
+});
+
+test('old logs without a credit match the previous hour rules', () => {
+  useFakeCrew();
+  const old = {
+    id: 'old', customer: 'Old Hall', startDate: DAY, endDate: DAY,
+    dayLogs: {
+      [DAY]: {
+        fullDay: true,
+        crewPresent: [
+          { crewIdx: 0, name: 'Avery Cole' },
+          { crewIdx: 0, name: 'Avery Cole' },
+          { crewIdx: 1, name: 'Blake Diaz' },
+        ],
+      },
+    },
+  };
+  putJobs([old]);
+  let lines = plain(call('jcJobCostLines', J()[0], 'recorded'));
+  assert.equal(lines.laborRows.find(r => r.name === 'Avery Cole').hrs, 8);
+  assert.equal(lines.laborRows.find(r => r.name === 'Blake Diaz').hrs, 8);
+  assert.equal(lines.hours, 16);
+  J()[0].dayLogs[DAY].fullDay = false;
+  J()[0].dayLogs[DAY].startTime = '9:00 AM';
+  J()[0].dayLogs[DAY].endTime = '3:10 PM';
+  J()[0].dayLogs[DAY].crewPresent = [row(1, '', '')];
+  lines = plain(call('jcJobCostLines', J()[0], 'recorded'));
+  assert.equal(lines.laborRows[0].hrs, parseFloat(call('jcCalcHrs', '9:00 AM', '3:10 PM')));
+  assert.equal(lines.laborRows[0].tenths, 62);
+  J()[0].dayLogs[DAY].hourAdjustments = [{ crewIdx: 1, name: 'Blake Diaz', creditedTenths: 18.5, reason: 'bad' }];
+  lines = plain(call('jcJobCostLines', J()[0], 'recorded'));
+  assert.equal(lines.laborRows[0].tenths, 62);
+});
+
+test('a credit needs a reason and an office session, and the audit names the credit', () => {
+  useFakeCrew();
+  putJobs([{
+    id: 'audit', customer: 'Audit Hall', startDate: DAY, endDate: DAY,
+    dayLogs: { [DAY]: { crewPresent: [row(0, '7:50 AM', '3:10 PM')] } },
+  }]);
+  ev(`_jcId='audit'`);
+  const before = plain(J()[0].dayLogs);
+  assert.equal(call('jcSetHourCredit', DAY, 0, { creditedTenths: 80, reason: '   ' }).ok, false);
+  assert.equal(J()[0].dayLogs[DAY].hourAdjustments, undefined);
+  w.localStorage.setItem('fpRole', 'crew');
+  assert.equal(call('jcSetHourCredit', DAY, 0, { creditedTenths: 80, reason: 'crew attempt' }).error, 'office-only');
+  assert.equal(J()[0].dayLogs[DAY].hourAdjustments, undefined);
+  w.localStorage.removeItem('fpRole');
+  assert.equal(call('jcSetHourCredit', DAY, 0, { creditedTenths: 80, reason: 'Count the short clock as a full day' }).ok, true);
+  const diff = plain(call('_jrDiffDayLogs', before, J()[0].dayLogs));
+  const credit = diff.find(d => d.label.startsWith('Credited hours'));
+  assert.ok(credit);
+  assert.match(credit.to, /Avery Cole credited 8\.0h/);
+  assert.match(credit.to, /Count the short clock as a full day/);
+  assert.match(credit.to, /Ops Reviewer/);
+  assert.equal(diff.some(d => d.label.startsWith('Start Time') || d.label.startsWith('End Time')), false);
+  assert.match(call('jcDayCrewHtml', DAY, J()[0].dayLogs[DAY]), /8\.0333/);
+  assert.match(call('jcDayCrewHtml', DAY, J()[0].dayLogs[DAY]), /7:50 AM/);
+  assert.doesNotMatch(call('jcDayCrewHtml', DAY, J()[0].dayLogs[DAY]), /7:50 AM – 3:10 PM \(8/);
+  w.localStorage.setItem('fpRole', 'crew');
+  const crewHtml = call('jcDayCrewHtml', DAY, J()[0].dayLogs[DAY]);
+  assert.equal(crewHtml.includes('Save credit'), false);
+  assert.match(crewHtml, /Credited 8\.0h/);
+  assert.match(crewHtml, /7:50 AM/);
+});
+
+test('a notes edit keeps a credit, and a credit edit keeps server notes', () => {
+  useFakeCrew();
+  const adjA = [{ crewIdx: 0, name: 'Avery Cole', creditedTenths: 80, reason: 'first', at: '2026-06-23T15:00:00.000Z', by: 'Ops Reviewer' }];
+  const adjB = [{ crewIdx: 0, name: 'Avery Cole', creditedTenths: 75, reason: 'revised', at: '2026-06-23T16:00:00.000Z', by: 'Ops Reviewer' }];
+  const base = { id: 'merge', dayLogs: { [DAY]: { notes: 'old', startTime: '7:50 AM', endTime: '3:10 PM', hourAdjustments: adjA, crewPresent: [row(0, '7:50 AM', '3:10 PM')] } } };
+  const local = JSON.parse(JSON.stringify(base));
+  local.dayLogs[DAY].notes = 'typed on this screen';
+  const server = JSON.parse(JSON.stringify(base));
+  server.dayLogs[DAY].hourAdjustments = adjB;
+  J().splice(0, J().length, local);
+  w.__baseJobs = [JSON.parse(JSON.stringify(base))];
+  w.eval('_jrBaseline = window.__baseJobs');
+  call('_mergeServerIntoLocal', [server]);
+  assert.equal(J()[0].dayLogs[DAY].notes, 'typed on this screen');
+  assert.equal(J()[0].dayLogs[DAY].hourAdjustments[0].creditedTenths, 75);
+  assert.equal(J()[0].dayLogs[DAY].startTime, '7:50 AM');
+
+  const base2 = JSON.parse(JSON.stringify(base));
+  const local2 = JSON.parse(JSON.stringify(base));
+  local2.dayLogs[DAY].hourAdjustments = [{ crewIdx: 0, name: 'Avery Cole', creditedTenths: 70, reason: 'ours', at: '2026-06-23T17:00:00.000Z', by: 'Ops Reviewer' }];
+  const server2 = JSON.parse(JSON.stringify(base));
+  server2.dayLogs[DAY].notes = 'note from the other screen';
+  J().splice(0, J().length, local2);
+  w.__baseJobs = [base2];
+  w.eval('_jrBaseline = window.__baseJobs');
+  call('_mergeServerIntoLocal', [server2]);
+  assert.equal(J()[0].dayLogs[DAY].notes, 'note from the other screen');
+  assert.equal(J()[0].dayLogs[DAY].hourAdjustments[0].creditedTenths, 70);
+  assert.equal(J()[0].dayLogs[DAY].crewPresent[0].endTime, '3:10 PM');
+});
+
+test('a crew save cannot change a credit and does not send one back', async () => {
+  useFakeCrew();
+  const credit = [{ crewIdx: 0, name: 'Avery Cole', creditedTenths: 80, reason: 'office credit', at: '2026-06-23T15:00:00.000Z', by: 'Ops Reviewer' }];
+  const job = {
+    id: 'crew-job', customer: 'Crew Hall', startDate: DAY, endDate: DAY, updated_at: '2026-06-23T12:00:00.000Z',
+    dayLogs: { [DAY]: { notes: 'old', startTime: '7:50 AM', endTime: '3:10 PM', hourAdjustments: credit, crewPresent: [row(0, '7:50 AM', '3:10 PM')] } },
+  };
+  putJobs([JSON.parse(JSON.stringify(job))]);
+  setBaseline([job]);
+  w.eval('_jobRecordsLoadOk = true');
+  w.localStorage.setItem('fpRole', 'crew');
+  J()[0].dayLogs[DAY].notes = 'crew note';
+  J()[0].dayLogs[DAY].hourAdjustments = [{ crewIdx: 0, name: 'Avery Cole', creditedTenths: 10, reason: 'forged', at: '2026-06-23T18:00:00.000Z', by: 'Crew' }];
+  J()[0].dayLogs[DAY].crewPresent[0].endTime = '4:00 PM';
+  state.rpcBodies.length = 0;
+  state.settings.job_records = JSON.stringify([job]);
+  await w.__realSave();
+  assert.equal(J()[0].dayLogs[DAY].hourAdjustments[0].creditedTenths, 80);
+  assert.equal(J()[0].dayLogs[DAY].hourAdjustments[0].reason, 'office credit');
+  assert.equal(J()[0].dayLogs[DAY].notes, 'crew note');
+  const crewWrite = state.rpcBodies.find(c => c.url.includes('fp_crew_write_job_records'));
+  assert.ok(crewWrite, 'crew write was sent');
+  const payload = JSON.stringify(crewWrite.body);
+  assert.equal(payload.includes('hourAdjustments'), false);
+  assert.equal(payload.includes('forged'), false);
+  assert.match(payload, /crew note/);
+  assert.match(payload, /4:00 PM/);
+});

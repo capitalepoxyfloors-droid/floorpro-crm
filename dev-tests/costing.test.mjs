@@ -257,7 +257,9 @@ test('a missing stamp uses the rate on the work date, and a full day with no tim
   assert.equal(sat.type, 'Regular');
   assert.equal(sat.estimated, true);
   assert.equal(sethPay.regPay, 8 * 30.25);
-  ev(`renderPayroll();`);
+  // Period 0 is the anchor fortnight that contains 2026-06-27. The screen otherwise
+  // follows today's date, so the assertion would depend on when the test runs.
+  ev(`_payrollPeriodOffset=0; renderPayroll();`);
   assert.match(ev(`document.getElementById('payroll-content').textContent`), /estimated/);
   // A prevailing-wage day keeps the PW branch after a stamp is written.
   ev(`window.__seth={crewIdx:0,name:'Seth West'}; jcStampEntryRates(window.__seth,'2026-10-21');`);

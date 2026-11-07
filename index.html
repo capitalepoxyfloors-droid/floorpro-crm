@@ -5207,6 +5207,12 @@ async function _saveJobRecordsNow(onlyId){
   ++_jrDataGen;
   _jrSaving=true;
   try{
+    // Crew sessions cannot change credited hours. Put the loaded credits back before the
+    // patch is built, then omit the key on the wire so a newer office credit is not
+    // overwritten by this phone's copy. The server merge keeps a day-log key the payload
+    // leaves out (fp_overlay_json). A forged client can still send the key until a
+    // future database change treats hourAdjustments as office-only.
+    if(!_isOwnerSession()) _jcCrewFreezeHourAdjustments(_jrBaseline, JOB_RECORDS);
     const preLocal=_jrClone(JOB_RECORDS);
     const priorBaseline=_jrClone(_jrBaseline);
     const only=onlyId!=null&&onlyId!==''?new Set([String(onlyId)]):null;
@@ -5238,10 +5244,10 @@ async function _saveJobRecordsNow(onlyId){
     }
     if(!_isOwnerSession()){
       const payload=patches.map(p=>{
-        if(p.op==='insert') return p.patch;
+        if(p.op==='insert') return _jcJobWithoutHourAdjustments(p.patch);
         if(p.op==='delete') return null;
         const partial={id:p.id};
-        Object.keys(p.patch||{}).forEach(k=>{ partial[k]=p.patch[k]; });
+        Object.keys(p.patch||{}).forEach(k=>{ partial[k]=k==='dayLogs'?_jcDayLogsWithoutCredits(p.patch[k]):p.patch[k]; });
         return partial;
       }).filter(Boolean);
       const r=await sb.rpc('fp_crew_write_job_records',{payload});
@@ -5323,7 +5329,11 @@ function _jrValStr(v){
     else s=v.map(x=>{
       if(x&&typeof x==='object'){
         if('qty'in x||'unit'in x) return [x.name,x.qty,x.unit].filter(Boolean).join(' ');
-        if('name'in x||'crewIdx'in x) return x.name||(typeof CREW_DATA!=='undefined'&&CREW_DATA[x.crewIdx]&&CREW_DATA[x.crewIdx].full)||'';
+        if('name'in x||'crewIdx'in x){
+          const nm=x.name||(typeof CREW_DATA!=='undefined'&&CREW_DATA[x.crewIdx]&&CREW_DATA[x.crewIdx].full)||'';
+          const span=(x.startTime||x.endTime)?(' '+(x.startTime||'—')+'–'+(x.endTime||'—')):'';
+          return nm+span;
+        }
       }
       return String(x);
     }).filter(Boolean).join(', ')||'(empty)';
@@ -5334,7 +5344,7 @@ function _jrValStr(v){
 }
 const _JR_FIELD_LABELS={customer:'Customer',phone:'Phone',address:'Address',jobType:'Job Type',value:'Job Value',crewNames:'Crew',crewDays:'Crew days',startDate:'Start Date',endDate:'End Date',notes:'Notes',plannedMaterials:'Planned Materials',extraDays:'Extra Days'};
 const _JR_STATUS_LABELS={scheduled:'Scheduled',in_progress:'In Progress',complete:'Complete'};
-const _JR_DAYLOG_FIELD_LABELS={task:'Task',notes:'Notes',startTime:'Start Time',endTime:'End Time',overtimeWage:'OT Wages',cashWages:'Cash Wages'};
+const _JR_DAYLOG_FIELD_LABELS={task:'Task',notes:'Notes',startTime:'Start Time',endTime:'End Time',overtimeWage:'OT Wages',cashWages:'Cash Wages',fullDay:'Full Day',noWork:'No Work'};
 // Per-date, per-field diff of a job's day logs — this is what lets the audit log show the
 // exact note text / task / crew / materials a crew member added on a given day, not just
 // the fact that "day log" changed.
@@ -5347,6 +5357,7 @@ function _jrDiffDayLogs(oldDL,newDL){
     for(const f of Object.keys(_JR_DAYLOG_FIELD_LABELS)){
       if(!_jrEq(o[f],n[f])) out.push({label:_JR_DAYLOG_FIELD_LABELS[f]+' — '+dLabel,from:_jrValStr(o[f]),to:_jrValStr(n[f])});
     }
+    if(!_jrEq(o.hourAdjustments,n.hourAdjustments)) out.push({label:'Credited hours — '+dLabel,from:_jcFormatHourAdjustments(o.hourAdjustments),to:_jcFormatHourAdjustments(n.hourAdjustments)});
     if(!_jrEq(o.crewPresent,n.crewPresent)) out.push({label:'Crew — '+dLabel,from:_jrValStr(o.crewPresent),to:_jrValStr(n.crewPresent)});
     if(!_jrEq(o.materialsUsed,n.materialsUsed)) out.push({label:'Materials Used — '+dLabel,from:_jrValStr(o.materialsUsed),to:_jrValStr(n.materialsUsed)});
   }
@@ -7196,7 +7207,7 @@ function jcRenderDayLogs(){
     // jcGetCrewMemberHrs both return 0 with nothing set here, so Job Costing silently excludes
     // the whole day from labor cost with no indication why. Caught in the wild: real logged
     // work days missing from costing purely because the time fields were left blank.
-    const _hasTime=log.fullDay||jcGetLogHrs(log)>0||log.crewPresent.some(c=>jcGetCrewMemberHrs(c,log)>0);
+    const _hasTime=jcLogHasCountedTime(log);
     // "No Work Completed" (crew pulled off, not on site) is a deliberate zero-hour day, not
     // an incomplete log — never flag it as missing time regardless of what else got filled in
     // (e.g. a Task note explaining why).
@@ -7234,6 +7245,7 @@ function jcRenderDayLogs(){
             <span id="jch-${key}" style="font-size:13px;font-weight:700;color:var(--accent);">${log.fullDay?'8.0 hrs':(log.startTime&&log.endTime?jcCalcHrs(log.startTime,log.endTime):'—')}</span>
           </div>`:``}
         </div>
+        ${(Array.isArray(log.hourAdjustments)&&log.hourAdjustments.length)?`<div style="font-size:11px;color:var(--text2);">Per-person credits are on the crew rows. They do not change the site clock or anyone else's hours.</div>`:''}
         ${_isOwnerView?`<div class="form-group jc-pay-fields" style="margin:0;">
           <label class="form-label">Pay for this day <span style="font-weight:400;color:var(--text3);font-size:10px;">(overrides the job default)</span></label>
           <div style="display:flex;gap:18px;flex-wrap:wrap;padding-top:2px;">
@@ -7494,6 +7506,82 @@ function _jcMigrateCrewPresent(log){
 // typed anything (e.g. site time is still blank). Keyed 'ds|idx', in-memory only — not saved.
 const _jcExpandedCrewTime=new Set();
 
+function jcCrewBadgeText(c, log){
+  const effS=(c&&c.startTime)||(log&&log.startTime)||'';
+  const effE=(c&&c.endTime)||(log&&log.endTime)||'';
+  const adj=jcFindHourAdjustment(log, c);
+  if(adj){
+    const clock=effS&&effE?jcCalcHrs(effS,effE):'';
+    return clock&&clock!=='—'?clock+' clock':'';
+  }
+  if(log&&log.fullDay) return '8.0 hrs';
+  return effS&&effE?jcCalcHrs(effS,effE):'';
+}
+function jcHourCreditHtml(ds, i, c, log, isCrew){
+  const key=ds.replace(/-/g,'');
+  const effS=c.startTime||log.startTime||'';
+  const effE=c.endTime||log.endTime||'';
+  const spanMin=jcClockMinuteSpan(effS, effE);
+  const rowClock=jcClockHrsForRow(c, log);
+  const personRows=jcPersonRowsOnLog(log, c);
+  const counted=jcCountedHoursForPerson(personRows.length?personRows:[c], log);
+  const adj=counted.adjustment||jcFindHourAdjustment(log, c);
+  const roundingDiffers=spanMin!=null&&Math.abs(spanMin/60-rowClock)>0.001;
+  const clockLine=effS&&effE
+    ? ('Clock '+effS+' – '+effE+' ('+jcFormatClockMinutes(spanMin)+').')
+    : 'No clock on this row.';
+  const countLine=adj
+    ? ('This person\'s clocks on this job count as '+(counted.clockTenths/10).toFixed(1)+'h. Credited '+(adj.creditedTenths/10).toFixed(1)+'h for payroll and costing. The clock is unchanged.')
+    : ('Counted '+(counted.source==='fullDay'?'8.0':rowClock.toFixed(1))+'h'+(counted.source==='fullDay'?' because Full Day is on for the whole log.':' from the clock.'));
+  let extra='';
+  if(adj&&adj.balance&&Number.isInteger(adj.balance.otherJobsTenths)){
+    const other=(adj.balance.otherJobsTenths/10).toFixed(1);
+    const mine=(adj.creditedTenths/10).toFixed(1);
+    extra+=' Balanced so the counted day is 8.0h: other jobs '+other+'h + this credit '+mine+'h. ';
+    if(adj.creditedTenths===18&&adj.balance.otherJobsTenths===62){
+      extra+='That is 1.8h, not 1h 50m. 1h 50m is 1.8333h, and 1.8333 + 6.2 = 8.0333h.';
+    }
+  }
+  if(adj&&Number.isInteger(adj.requestedMinutes)){
+    const ex=jcExplainMinuteCredit(adj.requestedMinutes, adj.balance?adj.balance.otherJobsTenths:0);
+    extra+=' Typed '+jcFormatClockMinutes(adj.requestedMinutes)+' ('+jcFormatUnroundedHours(ex.exactHours)+'h) was not stored.';
+  }
+  if(roundingDiffers&&!adj){
+    extra+=' '+jcFormatClockMinutes(spanMin)+' is not '+(rowClock.toFixed(1))+'h. The 0.1h step is what payroll and costing use until a credit is saved.';
+  }
+  const meta=adj?(' Reason: '+adj.reason+(adj.by?' · '+adj.by:'')+(adj.at?' · '+adj.at:'')):'';
+  const summary=_ovhEsc(clockLine+' '+countLine+extra+meta);
+  if(isCrew){
+    return `<div style="padding:6px 8px 8px;border-top:1px solid var(--border2);font-size:11px;line-height:1.45;color:var(--text2);">${summary}</div>`;
+  }
+  const help='Credited hours use 0.1h steps, the same steps a clock already uses. 6h 10m counts as 6.2h. Balance sets this job so the person\'s counted day is 8.0h and leaves every other job\'s clocks and credits alone. The complement of 6.2h is 1.8h, not 1h 50m. 1h 50m is 1.8333h; 1.8333 + 6.2 = 8.0333, which is not saved as 8.0.';
+  return `<div style="padding:6px 8px 8px;border-top:1px solid var(--border2);display:flex;flex-direction:column;gap:6px;">
+    <div style="font-size:11px;line-height:1.45;color:var(--text2);">${summary}</div>
+    <div style="font-size:10.5px;line-height:1.4;color:var(--text3);">${help}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+      <label style="font-size:11px;color:var(--text2);">Credited hours
+        <input id="jcct-${key}-${i}" class="form-input" type="number" min="0" max="24" step="0.1" placeholder="1.8" value="${adj?(adj.creditedTenths/10).toFixed(1):''}" style="width:72px;font-size:12px;padding:3px 6px;margin-left:4px;">
+      </label>
+      <label style="font-size:11px;color:var(--text2);flex:1;min-width:140px;">Reason
+        <input id="jccr-${key}-${i}" class="form-input" type="text" placeholder="Why the credit differs from the clock" style="font-size:12px;padding:3px 6px;margin-left:4px;">
+      </label>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+      <button type="button" onclick="jcSaveHourCreditFromInputs('${ds}',${i})" style="font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--primary);background:var(--primary);color:#fff;cursor:pointer;">Save credit</button>
+      <button type="button" onclick="jcPreviewDayBalance('${ds}',${i})" style="font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--border2);background:var(--surface);color:var(--text);cursor:pointer;">Balance today to 8.0h</button>
+      ${adj?`<button type="button" onclick="jcClearHourCredit('${ds}',${i})" style="font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--border2);background:none;color:var(--text3);cursor:pointer;">Remove credit</button>`:''}
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+      <label style="font-size:11px;color:var(--text2);">Check an exact duration
+        <input id="jccm-${key}-${i}" class="form-input" type="text" placeholder="1:50" style="width:72px;font-size:12px;padding:3px 6px;margin-left:4px;">
+      </label>
+      <button type="button" onclick="jcPreviewMinuteCredit('${ds}',${i})" style="font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--border2);background:var(--surface);color:var(--text);cursor:pointer;">Explain, don't save</button>
+      <button type="button" onclick="jcApplyLowerExplained('${ds}',${i})" style="font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--border2);background:var(--surface);color:var(--text);cursor:pointer;">Use lower 0.1h</button>
+      <button type="button" onclick="jcApplyUpperExplained('${ds}',${i})" style="font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--border2);background:var(--surface);color:var(--text);cursor:pointer;">Use higher 0.1h</button>
+    </div>
+    <div id="jccn-${key}-${i}" style="font-size:11px;line-height:1.45;color:var(--text);"></div>
+  </div>`;
+}
 function jcDayCrewHtml(ds,log){
   const crew=log.crewPresent||[];
   const key=ds.replace(/-/g,'');
@@ -7505,7 +7593,7 @@ function jcDayCrewHtml(ds,log){
     const hasCustom=!!(cStart||cEnd);
     const expanded=hasCustom||_jcExpandedCrewTime.has(ds+'|'+i);
     const effStart=cStart||siteStart, effEnd=cEnd||siteEnd;
-    const hrsText=log.fullDay?'8.0 hrs':(effStart&&effEnd?jcCalcHrs(effStart,effEnd):'');
+    const hrsText=jcCrewBadgeText(c, log);
     const dimTime=log.fullDay?'opacity:.4;pointer-events:none;':'';
     const hrsSpan=(!isCrew&&hrsText)?`<span id="jccrh-${key}-${i}" style="font-size:11px;font-weight:700;color:${hasCustom?'var(--accent)':'var(--text3)'};">${hrsText}</span>`:'';
     const timeRow=expanded
@@ -7541,6 +7629,7 @@ function jcDayCrewHtml(ds,log){
       <div style="display:flex;align-items:center;gap:5px;padding:3px 8px 5px;border-top:1px solid var(--border2);background:var(--surface2);${dimTime}">
         ${timeRow}
       </div>
+      ${jcHourCreditHtml(ds, i, c, log, isCrew)}
     </div>`;
   });
   return `<div id="jc-crew-${key}">`+
@@ -7680,7 +7769,7 @@ function jcUpdateCrewHrs(ds,idx){
   const el=document.getElementById('jccrh-'+key+'-'+idx); if(!el) return;
   const effStart=c.startTime||log.startTime||'';
   const effEnd=c.endTime||log.endTime||'';
-  const hrsText=log.fullDay?'8.0 hrs':(effStart&&effEnd?jcCalcHrs(effStart,effEnd):'');
+  const hrsText=jcCrewBadgeText(c, log);
   const hasCustom=!!(c.startTime||c.endTime);
   el.textContent=hrsText;
   el.style.color=hasCustom?'var(--accent)':'var(--text3)';
@@ -7835,27 +7924,418 @@ function jcLogSetMaterial(ds,idx,field,val){
   if(field==='qty') _jcCaptureUnitCost(m);
 }
 
+function jcParseClockMinutes(t){
+  if(!t) return null;
+  const m=String(t).trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if(!m) return null;
+  let h=parseInt(m[1]), mn=parseInt(m[2]);
+  const ap=(m[3]||'').toUpperCase();
+  if(ap==='PM'&&h!==12) h+=12;
+  if(ap==='AM'&&h===12) h=0;
+  return h*60+mn;
+}
 function jcCalcHrs(s,e){
-  function toMins(t){
-    if(!t) return null;
-    const m=t.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
-    if(!m) return null;
-    let h=parseInt(m[1]), mn=parseInt(m[2]);
-    const ap=(m[3]||'').toUpperCase();
-    if(ap==='PM'&&h!==12) h+=12;
-    if(ap==='AM'&&h===12) h=0;
-    return h*60+mn;
-  }
-  const sm=toMins(s), em=toMins(e);
+  const sm=jcParseClockMinutes(s), em=jcParseClockMinutes(e);
   if(sm===null||em===null) return '—';
   const diff=em-sm;
   return diff>0?(diff/60).toFixed(1)+' hrs':'—';
 }
-// Returns hours for a day log — 8 if fullDay flag is set, otherwise calculates from start/end times
+// Site clock only. Full Day still reports 8 here. A per-person credit does not change this.
 function jcGetLogHrs(log){
   if(!log) return 0;
   if(log.fullDay) return 8;
   return parseFloat(jcCalcHrs(log.startTime,log.endTime))||0;
+}
+
+// Counted hours stay in the same 0.1h steps jcCalcHrs already uses (toFixed(1)).
+// A credit stores an integer number of those steps (creditedTenths). 18 is 1.8h.
+// Unadjusted clocks are still read with jcCalcHrs, so old totals do not move.
+// 6h 10m counts as 6.2h. The complement that makes a day exactly 8.0h is 1.8h, not 1h 50m.
+// 1h 50m is 1.8333h; 1.8333 + 6.2 = 8.0333, which is a different day and is not stored as 8.
+const JC_CREDIT_DAY_TENTHS=80;
+const JC_CREDIT_MAX_TENTHS=240;
+function jcLegacyTenths(hours){
+  if(!(hours>0)) return 0;
+  return Math.round(hours*10+1e-8);
+}
+function jcClockHrsForRow(c,log){
+  const s=(c&&c.startTime)||(log&&log.startTime)||'';
+  const e=(c&&c.endTime)||(log&&log.endTime)||'';
+  return parseFloat(jcCalcHrs(s,e))||0;
+}
+function jcClockMinuteSpan(s,e){
+  const sm=jcParseClockMinutes(s), em=jcParseClockMinutes(e);
+  if(sm===null||em===null||em<=sm) return null;
+  return em-sm;
+}
+function jcFormatClockMinutes(mins){
+  const n=Math.max(0,Math.round(Number(mins)||0));
+  const h=Math.floor(n/60), m=n%60;
+  if(h&&m) return h+'h '+String(m).padStart(2,'0')+'m';
+  if(h) return h+'h';
+  return m+'m';
+}
+function jcFormatUnroundedHours(hours){
+  const q=Math.round((Number(hours)||0)*10000)/10000;
+  return q.toFixed(4).replace(/(\.\d*?)0+$/,'$1').replace(/\.$/,'');
+}
+function _jcOfficeCanCredit(){
+  return localStorage.getItem('fpRole')!=='crew'
+    && !document.getElementById('page-crewview')?.classList.contains('active');
+}
+function jcSamePerson(a,b){
+  const ai=parseInt(a&&a.crewIdx), bi=parseInt(b&&b.crewIdx);
+  if(ai>=0&&bi>=0) return ai===bi;
+  const an=String((a&&a.name)||'').trim().toLowerCase();
+  const bn=String((b&&b.name)||'').trim().toLowerCase();
+  return !!an&&an===bn;
+}
+function jcCreditIdentity(c){
+  const idx=parseInt(c&&c.crewIdx);
+  const named=String((c&&c.name)||'').trim();
+  const fromCrew=(idx>=0&&typeof CREW_DATA!=='undefined'&&CREW_DATA[idx]&&CREW_DATA[idx].full)||'';
+  const name=named||String(fromCrew).trim();
+  if(!(idx>=0)&&!name) return null;
+  return {crewIdx:idx>=0?idx:-1, name};
+}
+function jcHourAdjustmentValid(a){
+  return !!(a&&Number.isInteger(a.creditedTenths)&&a.creditedTenths>=0&&a.creditedTenths<=JC_CREDIT_MAX_TENTHS&&String(a.reason||'').trim());
+}
+function jcFindHourAdjustment(log, person){
+  const list=Array.isArray(log&&log.hourAdjustments)?log.hourAdjustments:[];
+  const idx=parseInt(person&&person.crewIdx);
+  const name=String((person&&person.name)||(idx>=0&&CREW_DATA[idx]?CREW_DATA[idx].full:'')||'').trim().toLowerCase();
+  let byIdx=null, byName=null;
+  list.forEach(a=>{
+    if(!jcHourAdjustmentValid(a)) return;
+    if(idx>=0&&Number.isInteger(a.crewIdx)&&a.crewIdx===idx) byIdx=a;
+    const an=String(a.name||'').trim().toLowerCase();
+    if(an&&name&&an===name) byName=a;
+  });
+  return byIdx||byName||null;
+}
+function jcPersonRowsOnLog(log, person){
+  return (Array.isArray(log&&log.crewPresent)?log.crewPresent:[]).filter(c=>jcSamePerson(c, person));
+}
+// One total per person per job-day. A credit replaces that person's rows (a split shift
+// counts once). Full Day is still 8 for anyone without their own credit. Otherwise the
+// clocks are summed with the existing one-decimal rule.
+function jcCountedHoursForPerson(rows, log){
+  const list=Array.isArray(rows)?rows:[];
+  const clockHours=list.reduce((s,c)=>s+(jcClockHrsForRow(c, log)||0),0);
+  const clockTenths=jcLegacyTenths(clockHours);
+  if(log&&log.noWork) return {hours:0,tenths:0,clockTenths,source:'noWork'};
+  const adj=jcFindHourAdjustment(log, list[0]||{});
+  if(adj) return {hours:adj.creditedTenths/10,tenths:adj.creditedTenths,clockTenths,source:'credit',adjustment:adj};
+  if(log&&log.fullDay) return {hours:8,tenths:JC_CREDIT_DAY_TENTHS,clockTenths,source:'fullDay'};
+  return {hours:clockHours,tenths:clockTenths,clockTenths,source:'clock'};
+}
+function jcLogHasCountedTime(log){
+  if(!log||log.noWork) return false;
+  if(log.fullDay||jcGetLogHrs(log)>0) return true;
+  const crew=Array.isArray(log.crewPresent)?log.crewPresent:[];
+  if(crew.some(c=>jcClockHrsForRow(c,log)>0)) return true;
+  return (Array.isArray(log.hourAdjustments)?log.hourAdjustments:[]).some(a=>jcHourAdjustmentValid(a)&&a.creditedTenths>0);
+}
+function jcOtherJobsTenths(person, ds, exceptJobId){
+  let tenths=0;
+  const cashJobs=[];
+  (JOB_RECORDS||[]).forEach(job=>{
+    if(!job||String(job.id)===String(exceptJobId)) return;
+    const log=job.dayLogs&&job.dayLogs[ds];
+    if(!log||log.noWork) return;
+    const rows=jcPersonRowsOnLog(log, person);
+    if(!rows.length) return;
+    const counted=jcCountedHoursForPerson(rows, log);
+    tenths+=counted.tenths;
+    const cash=(log.cashWages!==undefined)?!!log.cashWages:!!job.cashWages;
+    if(cash&&!job.prevailingWage) cashJobs.push(job.customer||'Another job');
+  });
+  return {tenths,cashJobs};
+}
+function jcBalanceCreditTenths(person, ds, jobId){
+  const other=jcOtherJobsTenths(person, ds, jobId);
+  return {otherTenths:other.tenths, creditedTenths:JC_CREDIT_DAY_TENTHS-other.tenths, cashJobs:other.cashJobs};
+}
+// Exact minutes are not a tenth-hour. This explains the gap. It does not choose a credit.
+function jcExplainMinuteCredit(minutes, otherTenths){
+  const mins=Math.round(Number(minutes));
+  const other=Number.isInteger(otherTenths)?otherTenths:0;
+  const exact=mins/60;
+  const exactTenths=exact*10;
+  const nearest=Math.round(exactTenths);
+  const isTenth=Math.abs(exactTenths-nearest)<1e-6;
+  const lower=Math.floor(exactTenths+1e-9);
+  const upper=Math.ceil(exactTenths-1e-9);
+  return {
+    minutes:mins,
+    exactHours:exact,
+    isTenth,
+    lowerTenths:isTenth?nearest:lower,
+    upperTenths:isTenth?nearest:upper,
+    otherTenths:other,
+    dayHoursIfExact:exact+other/10,
+    dayTenthsIfLower:(isTenth?nearest:lower)+other,
+    dayTenthsIfUpper:(isTenth?nearest:upper)+other
+  };
+}
+function jcParseCreditTenths(text){
+  const s=String(text==null?'':text).trim();
+  if(!/^\d+(\.\d)?$/.test(s)) return null;
+  const n=Number(s);
+  if(!Number.isFinite(n)||n<0||n>JC_CREDIT_MAX_TENTHS/10) return null;
+  const tenths=Math.round(n*10);
+  if(Math.abs(n*10-tenths)>1e-6) return null;
+  if(tenths<0||tenths>JC_CREDIT_MAX_TENTHS) return null;
+  return tenths;
+}
+function jcParseCreditMinutes(text){
+  const s=String(text==null?'':text).trim();
+  if(!s) return null;
+  let m=s.match(/^(\d{1,2}):(\d{2})$/);
+  if(m){
+    const h=parseInt(m[1],10), min=parseInt(m[2],10);
+    if(min>59||h>24) return null;
+    return h*60+min;
+  }
+  m=s.match(/^(\d+)\s*h(?:\s*(\d+)\s*m)?$/i);
+  if(m){
+    const h=parseInt(m[1],10), min=m[2]?parseInt(m[2],10):0;
+    if(min>59) return null;
+    return h*60+min;
+  }
+  m=s.match(/^(\d+)\s*m$/i);
+  if(m) return parseInt(m[1],10);
+  return null;
+}
+function _jcFormatHourAdjustments(list){
+  if(!Array.isArray(list)||!list.length) return '(none)';
+  return list.map(a=>{
+    if(!a||typeof a!=='object') return '';
+    const tenths=Number.isInteger(a.creditedTenths)?a.creditedTenths:null;
+    const who=a.name||'Crew';
+    let s=who+' credited '+(tenths==null?'(invalid)':(tenths/10).toFixed(1)+'h');
+    if(a.balance&&Number.isInteger(a.balance.otherJobsTenths)){
+      s+=' (balance to 8.0h; other jobs '+(a.balance.otherJobsTenths/10).toFixed(1)+'h)';
+    }
+    if(Number.isInteger(a.requestedMinutes)){
+      s+=' (typed '+jcFormatClockMinutes(a.requestedMinutes)+', stored as tenths only)';
+    }
+    s+=' — '+(String(a.reason||'').trim()||'(no reason)');
+    if(a.by) s+=' · '+a.by;
+    if(a.at) s+=' · '+a.at;
+    return s;
+  }).filter(Boolean).join('; ')||'(none)';
+}
+function _jcCrewFreezeHourAdjustments(baseline, localArr){
+  const baseBy=new Map((baseline||[]).map(r=>[String(r.id), r]));
+  (localArr||[]).forEach(job=>{
+    if(!job||!job.dayLogs||typeof job.dayLogs!=='object') return;
+    const bLogs=(baseBy.get(String(job.id))||{}).dayLogs||{};
+    Object.keys(job.dayLogs).forEach(ds=>{
+      const day=job.dayLogs[ds];
+      if(!day||typeof day!=='object'||Array.isArray(day)) return;
+      const src=bLogs[ds];
+      if(src&&Object.prototype.hasOwnProperty.call(src,'hourAdjustments')) day.hourAdjustments=_jrClone(src.hourAdjustments);
+      else delete day.hourAdjustments;
+    });
+  });
+}
+function _jcDayLogsWithoutCredits(dayLogs){
+  const copy=_jrClone(dayLogs);
+  if(!copy||typeof copy!=='object') return copy;
+  Object.keys(copy).forEach(ds=>{
+    if(copy[ds]&&typeof copy[ds]==='object') delete copy[ds].hourAdjustments;
+  });
+  return copy;
+}
+function _jcJobWithoutHourAdjustments(job){
+  const copy=_jrClone(job)||{};
+  if(copy.dayLogs) copy.dayLogs=_jcDayLogsWithoutCredits(copy.dayLogs);
+  return copy;
+}
+function _jcUpsertHourAdjustment(log, identity, fields){
+  if(!Array.isArray(log.hourAdjustments)) log.hourAdjustments=[];
+  const idx=log.hourAdjustments.findIndex(a=>a&&((identity.crewIdx>=0&&a.crewIdx===identity.crewIdx)||(identity.crewIdx<0&&String(a.name||'').trim().toLowerCase()===identity.name.toLowerCase())));
+  const row=Object.assign({crewIdx:identity.crewIdx, name:identity.name}, fields);
+  if(idx>=0) log.hourAdjustments[idx]=row;
+  else log.hourAdjustments.push(row);
+}
+function jcSetHourCredit(ds, idx, opts){
+  opts=opts||{};
+  if(!_jcOfficeCanCredit()) return {ok:false, error:'office-only'};
+  const job=getJobRecord(_jcId); if(!job||!job.dayLogs||!job.dayLogs[ds]) return {ok:false, error:'missing-day'};
+  const log=job.dayLogs[ds];
+  _jcMigrateCrewPresent(log);
+  const c=log.crewPresent[idx]; if(!c) return {ok:false, error:'missing-person'};
+  const identity=jcCreditIdentity(c);
+  if(!identity) return {ok:false, error:'name'};
+  const tenths=opts.creditedTenths;
+  if(!Number.isInteger(tenths)||tenths<0||tenths>JC_CREDIT_MAX_TENTHS) return {ok:false, error:'tenths'};
+  const reason=String(opts.reason||'').trim();
+  if(!reason) return {ok:false, error:'reason'};
+  let requestedMinutes=null;
+  if(opts.requestedMinutes!=null&&opts.requestedMinutes!==''){
+    const mins=Math.round(Number(opts.requestedMinutes));
+    if(!Number.isInteger(mins)||mins<0) return {ok:false, error:'minutes'};
+    const other=Number.isInteger(opts.otherTenths)?opts.otherTenths:jcBalanceCreditTenths(c, ds, job.id).otherTenths;
+    const explained=jcExplainMinuteCredit(mins, other);
+    const allowed=explained.isTenth?[explained.lowerTenths]:[explained.lowerTenths, explained.upperTenths];
+    if(!allowed.includes(tenths)) return {ok:false, error:'not-a-tenth-choice'};
+    requestedMinutes=mins;
+  }
+  // by/at here are only a local draft. The database trigger replaces them with
+  // the signed-in pin account and the database clock, and ignores these values.
+  const row={
+    crewIdx:identity.crewIdx,
+    name:identity.name,
+    creditedTenths:tenths,
+    reason,
+    at:new Date().toISOString(),
+    by:(typeof currentActorName==='function'?currentActorName():'Office')
+  };
+  if(opts.balance&&Number.isInteger(opts.balance.otherJobsTenths)){
+    row.balance={dayTargetTenths:JC_CREDIT_DAY_TENTHS, otherJobsTenths:opts.balance.otherJobsTenths};
+  }
+  if(requestedMinutes!=null) row.requestedMinutes=requestedMinutes;
+  _jcUpsertHourAdjustment(log, identity, row);
+  if(typeof jcRenderDayCrew==='function') jcRenderDayCrew(ds);
+  if(typeof saveJobRecords==='function') saveJobRecords();
+  return {ok:true, adjustment:jcFindHourAdjustment(log, c)};
+}
+function jcClearHourCredit(ds, idx){
+  if(!_jcOfficeCanCredit()) return {ok:false, error:'office-only'};
+  const job=getJobRecord(_jcId); if(!job||!job.dayLogs||!job.dayLogs[ds]) return {ok:false, error:'missing-day'};
+  const log=job.dayLogs[ds];
+  _jcMigrateCrewPresent(log);
+  const c=log.crewPresent[idx]; if(!c) return {ok:false, error:'missing-person'};
+  const identity=jcCreditIdentity(c);
+  if(!identity||!Array.isArray(log.hourAdjustments)) return {ok:true};
+  log.hourAdjustments=log.hourAdjustments.filter(a=>{
+    if(!a) return false;
+    if(identity.crewIdx>=0&&a.crewIdx===identity.crewIdx) return false;
+    if(identity.crewIdx<0&&String(a.name||'').trim().toLowerCase()===identity.name.toLowerCase()) return false;
+    return true;
+  });
+  if(!log.hourAdjustments.length) delete log.hourAdjustments;
+  jcRenderDayCrew(ds);
+  saveJobRecords();
+  return {ok:true};
+}
+function jcBalanceHourCredit(ds, idx, reason){
+  if(!_jcOfficeCanCredit()) return {ok:false, error:'office-only'};
+  const job=getJobRecord(_jcId); if(!job||!job.dayLogs||!job.dayLogs[ds]) return {ok:false, error:'missing-day'};
+  const log=job.dayLogs[ds];
+  _jcMigrateCrewPresent(log);
+  const c=log.crewPresent[idx]; if(!c) return {ok:false, error:'missing-person'};
+  const bal=jcBalanceCreditTenths(c, ds, job.id);
+  if(bal.creditedTenths<0) return {ok:false, error:'over', otherTenths:bal.otherTenths};
+  return jcSetHourCredit(ds, idx, {creditedTenths:bal.creditedTenths, reason, balance:{otherJobsTenths:bal.otherTenths}});
+}
+const _jcCreditUi=new Map();
+function _jcCreditUiKey(ds, idx){ return ds+'|'+idx; }
+function jcPreviewDayBalance(ds, idx){
+  const note=document.getElementById('jccn-'+ds.replace(/-/g,'')+'-'+idx);
+  const input=document.getElementById('jcct-'+ds.replace(/-/g,'')+'-'+idx);
+  const job=getJobRecord(_jcId);
+  const log=job&&job.dayLogs&&job.dayLogs[ds];
+  const c=log&&log.crewPresent&&log.crewPresent[idx];
+  if(!note||!c) return;
+  const bal=jcBalanceCreditTenths(c, ds, job.id);
+  _jcCreditUi.set(_jcCreditUiKey(ds, idx), {balanceArmed:true, requestedMinutes:null});
+  if(bal.creditedTenths<0){
+    note.textContent='Other jobs already count '+(bal.otherTenths/10).toFixed(1)+'h. That is more than 8.0h, so this job cannot be balanced down to an exact 8.0h day.';
+    return;
+  }
+  if(input) input.value=(bal.creditedTenths/10).toFixed(1);
+  const lines=[
+    'Other jobs today count '+(bal.otherTenths/10).toFixed(1)+'h.',
+    'This credit will be '+(bal.creditedTenths/10).toFixed(1)+'h. '+((bal.otherTenths/10).toFixed(1))+' + '+((bal.creditedTenths/10).toFixed(1))+' = 8.0 in 0.1h steps.',
+    'The clock on this row stays as entered.'
+  ];
+  if(bal.otherTenths===62&&bal.creditedTenths===18){
+    lines.push('1h 50m is 1.8333h. 1.8333 + 6.2 = 8.0333, which is not 8.0 and is not what this balance saves.');
+  }
+  if(bal.cashJobs&&bal.cashJobs.length){
+    lines.push('A cash job is still omitted from the payroll worksheet. Balancing does not put cash hours on that worksheet.');
+  }
+  note.textContent=lines.join(' ');
+}
+function jcPreviewMinuteCredit(ds, idx){
+  const key=ds.replace(/-/g,'');
+  const note=document.getElementById('jccn-'+key+'-'+idx);
+  const raw=document.getElementById('jccm-'+key+'-'+idx);
+  const job=getJobRecord(_jcId);
+  const log=job&&job.dayLogs&&job.dayLogs[ds];
+  const c=log&&log.crewPresent&&log.crewPresent[idx];
+  if(!note||!c) return;
+  const mins=jcParseCreditMinutes(raw&&raw.value);
+  if(mins==null){ note.textContent='Type a duration like 1:50. It will not be saved until you pick a 0.1h credit.'; return; }
+  const other=jcBalanceCreditTenths(c, ds, job.id).otherTenths;
+  const ex=jcExplainMinuteCredit(mins, other);
+  _jcCreditUi.set(_jcCreditUiKey(ds, idx), {balanceArmed:false, requestedMinutes:mins, otherTenths:other});
+  const exactTxt=jcFormatUnroundedHours(ex.exactHours);
+  const dayTxt=jcFormatUnroundedHours(ex.dayHoursIfExact);
+  if(ex.isTenth){
+    note.textContent=jcFormatClockMinutes(mins)+' is exactly '+exactTxt+'h, which is a 0.1h step. Save credit stores that step. The clock is not changed.';
+    const input=document.getElementById('jcct-'+key+'-'+idx);
+    if(input) input.value=(ex.lowerTenths/10).toFixed(1);
+    return;
+  }
+  note.textContent=jcFormatClockMinutes(mins)+' is '+mins+' minutes = '+exactTxt+'h. Counted hours use 0.1h steps. '+exactTxt+'h is not one of those steps, so it is not saved. Added to the other jobs\' counted '+(other/10).toFixed(1)+'h, that duration would total '+dayTxt+'h, not '+((ex.dayTenthsIfLower)/10).toFixed(1)+'h. Choose '+(ex.lowerTenths/10).toFixed(1)+'h (day '+(ex.dayTenthsIfLower/10).toFixed(1)+'h) or '+(ex.upperTenths/10).toFixed(1)+'h (day '+(ex.dayTenthsIfUpper/10).toFixed(1)+'h). Neither choice rewrites the clock.';
+}
+function jcApplyLowerExplained(ds, idx){
+  const ui=_jcCreditUi.get(_jcCreditUiKey(ds, idx))||{};
+  const note=document.getElementById('jccn-'+ds.replace(/-/g,'')+'-'+idx);
+  if(ui.requestedMinutes==null){
+    if(note) note.textContent='Explain a duration first. These buttons only pick a 0.1h step next to that duration. They do not save 1h 50m as 1.8h on their own.';
+    return;
+  }
+  jcApplyExplainedTenth(ds, idx, jcExplainMinuteCredit(ui.requestedMinutes, ui.otherTenths||0).lowerTenths);
+}
+function jcApplyUpperExplained(ds, idx){
+  const ui=_jcCreditUi.get(_jcCreditUiKey(ds, idx))||{};
+  const note=document.getElementById('jccn-'+ds.replace(/-/g,'')+'-'+idx);
+  if(ui.requestedMinutes==null){
+    if(note) note.textContent='Explain a duration first. These buttons only pick a 0.1h step next to that duration.';
+    return;
+  }
+  jcApplyExplainedTenth(ds, idx, jcExplainMinuteCredit(ui.requestedMinutes, ui.otherTenths||0).upperTenths);
+}
+function jcApplyExplainedTenth(ds, idx, tenths){
+  const input=document.getElementById('jcct-'+ds.replace(/-/g,'')+'-'+idx);
+  if(input) input.value=(tenths/10).toFixed(1);
+  const ui=_jcCreditUi.get(_jcCreditUiKey(ds, idx))||{};
+  ui.balanceArmed=false;
+  _jcCreditUi.set(_jcCreditUiKey(ds, idx), ui);
+}
+function jcSaveHourCreditFromInputs(ds, idx){
+  const key=ds.replace(/-/g,'');
+  const note=document.getElementById('jccn-'+key+'-'+idx);
+  const tenths=jcParseCreditTenths((document.getElementById('jcct-'+key+'-'+idx)||{}).value);
+  const reason=(document.getElementById('jccr-'+key+'-'+idx)||{}).value;
+  const ui=_jcCreditUi.get(_jcCreditUiKey(ds, idx))||{};
+  if(tenths==null){
+    if(note) note.textContent='Credited hours must be a 0.1h step, such as 1.8 or 8.0. 1.83 and 1:50 are not saved as-is.';
+    return {ok:false, error:'tenths'};
+  }
+  const job=getJobRecord(_jcId);
+  const c=job&&job.dayLogs&&job.dayLogs[ds]&&job.dayLogs[ds].crewPresent&&job.dayLogs[ds].crewPresent[idx];
+  const bal=c?jcBalanceCreditTenths(c, ds, job.id):null;
+  const opts={creditedTenths:tenths, reason};
+  if(ui.balanceArmed&&bal&&tenths===bal.creditedTenths) opts.balance={otherJobsTenths:bal.otherTenths};
+  if(ui.requestedMinutes!=null){
+    opts.requestedMinutes=ui.requestedMinutes;
+    opts.otherTenths=Number.isInteger(ui.otherTenths)?ui.otherTenths:(bal?bal.otherTenths:0);
+  }
+  const result=jcSetHourCredit(ds, idx, opts);
+  if(!result.ok&&note){
+    const msg={reason:'A reason is required.', 'office-only':'Only the office can set a credit.', tenths:'Credited hours must be a 0.1h step.', 'not-a-tenth-choice':'That 0.1h step is not the one next to the duration you typed.', name:'Choose a person before crediting hours.', over:'Other jobs already total more than 8.0h.'};
+    note.textContent=msg[result.error]||'Credit was not saved.';
+  } else if(result.ok){
+    _jcCreditUi.delete(_jcCreditUiKey(ds, idx));
+  }
+  return result;
 }
 
 function jcToggleFullDay(ds){
@@ -8602,8 +9082,10 @@ function jcJobCostLines(job,mode){
     });
     let dayPeople=0, dayHasOwner=false;
     grouped.forEach(({name,rows})=>{
-      // Two Full Day rows are the day-level flag repeated — count 8 once. Otherwise add both rows.
-      const hrs=log.fullDay?8:rows.reduce((s,c)=>s+(parseFloat(jcGetCrewMemberHrs(c,log))||0),0);
+      // A credit replaces this person's rows. Full Day is still 8 once per person with no
+      // credit. Otherwise the rows add, including a split shift.
+      const counted=jcCountedHoursForPerson(rows, log);
+      const hrs=counted.hours;
       if(hrs<=0) return;
       const c=rows[0];
       const r=jcEntryRate(c,job,log,ds,mode);
@@ -8618,11 +9100,13 @@ function jcJobCostLines(job,mode){
       if(r.kind==='pw') pwHrs+=hrs;
       if(r.kind==='legacy'||(r.kind==='live'&&!recost&&!_csIsModel(costingSetFor(ds).entry))) legacyOhHrs+=hrs;
       const rk=r.overhead.toFixed(2); ohByRate[rk]=(ohByRate[rk]||0)+hrs;
-      laborRows.push({ds,name,hrs,rate:r.labor,cost,ohRate:r.overhead,ohCost:oh,kind:r.kind,ot:r.ot,cash:r.cash,isOwner,estimated});
+      laborRows.push({ds,name,hrs,tenths:counted.tenths,clockTenths:counted.clockTenths,credited:counted.source==='credit',rate:r.labor,cost,ohRate:r.overhead,ohCost:oh,kind:r.kind,ot:r.ot,cash:r.cash,isOwner,estimated});
     });
     if(dayPeople===1&&!dayHasOwner&&ownerIdx>=0) soloDays.push(ds);
   });
   labor=Math.round(labor*100)/100; overhead=Math.round(overhead*100)/100;
+  const countedTenths=laborRows.reduce((s,r)=>s+(r.tenths||0),0);
+  hours=countedTenths/10;
   // ── MATERIALS ──
   let matCost=0;
   const matTotals={};
@@ -8661,7 +9145,7 @@ function jcJobCostLines(job,mode){
   const cons=jcConsumablesPct(job,mode);
   const consumables=Math.round(materials*cons.pct/100*100)/100;
   // ── MILEAGE (per work day at that day's IRS rate, unless the job has its own rate) ──
-  const workDates=allDates.filter(ds=>{ const l=logs[ds]; if(!l||l.noWork) return false; if(jcGetLogHrs(l)>0) return true; return (Array.isArray(l.crewPresent)?l.crewPresent:[]).some(c=>jcGetCrewMemberHrs(c,l)>0); });
+  const workDates=allDates.filter(ds=>{ const l=logs[ds]; return jcLogHasCountedTime(l); });
   const workDays=workDates.length;
   const mileageOneWay=parseFloat(job.mileageOneWay)||0;
   const mileCustomRate=_jcMileageCustomRate(job);
@@ -8703,7 +9187,7 @@ function jcJobCostLines(job,mode){
     const crew=Array.isArray(log.crewPresent)?log.crewPresent:[];
     const filled=!!(crew.some(c=>c.name)||log.task||(Array.isArray(log.materialsUsed)?log.materialsUsed:[]).some(m=>m.name||m.qty));
     if(!filled) return false;
-    return !(log.fullDay||jcGetLogHrs(log)>0||crew.some(c=>jcGetCrewMemberHrs(c,log)>0));
+    return !jcLogHasCountedTime(log);
   });
   const finishDate=[...(job.endDate?[job.endDate]:[]),...(job.extraDays||[]),...Object.keys(logs)].reduce((mx,d)=>(d>mx?d:mx),'');
   return {mode:recost?'recost':'recorded',allDates,laborRows,labor,overhead,hours:Math.round(hours*10)/10,ownerHours,ohByRate,estimatedRows,
@@ -8925,9 +9409,9 @@ function _payrollCompute(offset){
       const ot=(log.overtimeWage!==undefined)?!!log.overtimeWage:!!job.overtimeWage;
       const cash=(log.cashWages!==undefined)?!!log.cashWages:!!job.cashWages;
       const prevailing=!!job.prevailingWage;
-      // Same person can have multiple crewPresent rows for one day (a split shift). Two Full Day
-      // rows share the day-level flag, so count 8 once. Otherwise add the hours of both rows.
-      // Overtime stays the whole-day checkbox (log.overtimeWage / job.overtimeWage) — unchanged.
+      // Same person can have multiple crewPresent rows for one day (a split shift). A credit
+      // replaces that person's rows. Full Day still counts 8 once when that person has no credit.
+      // Otherwise the rows add. Overtime stays the whole-day checkbox.
       const grouped=new Map();
       (Array.isArray(log.crewPresent)?log.crewPresent:[]).forEach(c=>{
         const hasCrew=c.crewIdx>=0&&CREW_DATA[c.crewIdx];
@@ -8940,7 +9424,8 @@ function _payrollCompute(offset){
       grouped.forEach(({label, rows})=>{
         const c=rows[0];
         const hasCrew=c.crewIdx>=0&&CREW_DATA[c.crewIdx];
-        const hrs=log.fullDay?8:rows.reduce((s,row)=>s+(parseFloat(jcGetCrewMemberHrs(row,log))||0),0);
+        const counted=jcCountedHoursForPerson(rows, log);
+        const hrs=counted.hours;
         if(hrs<=0) return;
         if(cash&&!prevailing) return; // off-payroll — not sent to payroll, so not shown here
         const key=hasCrew?('c'+c.crewIdx):('n:'+label.toLowerCase());
@@ -8950,19 +9435,24 @@ function _payrollCompute(offset){
         // No stamp yet: still pay the current base hourly (never $0), and flag the day.
         // The overtime checkbox is unchanged — a weekend is not overtime unless it is checked.
         const estimated=_jcShowEstimated(c);
+        const addCounted=(field)=>{
+          const tKey=field+'Tenths';
+          b[tKey]=(b[tKey]||0)+counted.tenths;
+          b[field]=b[tKey]/10;
+        };
         if(prevailing){
           const rate=(parseFloat(job.prevailingWageRate)||0)*(ot?1.5:1);
           const pay=hrs*rate;
-          b.pwHrs+=hrs; b.pwPay+=pay;
-          if(!b.pwByJob[jobLabel]) b.pwByJob[jobLabel]={hrs:0,pay:0};
-          b.pwByJob[jobLabel].hrs+=hrs; b.pwByJob[jobLabel].pay+=pay;
-          b.days.push({date:ds,job:jobLabel,hrs,type:'Prevailing Wage',estimated});
+          addCounted('pwHrs'); b.pwPay+=pay;
+          if(!b.pwByJob[jobLabel]) b.pwByJob[jobLabel]={hrs:0,pay:0,tenths:0};
+          b.pwByJob[jobLabel].tenths+=counted.tenths; b.pwByJob[jobLabel].hrs=b.pwByJob[jobLabel].tenths/10; b.pwByJob[jobLabel].pay+=pay;
+          b.days.push({date:ds,job:jobLabel,hrs,tenths:counted.tenths,type:'Prevailing Wage',estimated,credited:counted.source==='credit'});
         } else if(ot){
-          b.otHrs+=hrs; b.otPay+=hrs*baseRate*1.5;
-          b.days.push({date:ds,job:jobLabel,hrs,type:'Overtime',estimated});
+          addCounted('otHrs'); b.otPay+=hrs*baseRate*1.5;
+          b.days.push({date:ds,job:jobLabel,hrs,tenths:counted.tenths,type:'Overtime',estimated,credited:counted.source==='credit'});
         } else {
-          b.regHrs+=hrs; b.regPay+=hrs*baseRate;
-          b.days.push({date:ds,job:jobLabel,hrs,type:'Regular',estimated});
+          addCounted('regHrs'); b.regPay+=hrs*baseRate;
+          b.days.push({date:ds,job:jobLabel,hrs,tenths:counted.tenths,type:'Regular',estimated,credited:counted.source==='credit'});
         }
       });
     });
@@ -8986,8 +9476,9 @@ function _payrollCompute(offset){
         const baseRate=parseFloat(CREW_DATA[ci].hourly)||0;
         let hrs=8;
         if(pto.partial&&pto.from&&pto.to){ const h=parseFloat(jcCalcHrs(pto.from,pto.to)); if(h>0) hrs=h; }
-        b.ptoHrs+=hrs; b.ptoPay+=hrs*baseRate;
-        b.days.push({date:ds,job:'PTO',hrs,type:'PTO'});
+        const ptoTenths=jcLegacyTenths(hrs);
+        b.ptoTenths=(b.ptoTenths||0)+ptoTenths; b.ptoHrs=b.ptoTenths/10; b.ptoPay+=hrs*baseRate;
+        b.days.push({date:ds,job:'PTO',hrs:ptoTenths/10,tenths:ptoTenths,type:'PTO'});
       });
     });
   });
@@ -9015,8 +9506,8 @@ function _payrollCompute(offset){
       if(isCrewInactive(ci)&&ds>=(crewInactiveSince(ci)||'0000-00-00')) return;
       const b=bucket(key,cd.full);
       const baseRate=parseFloat(cd.hourly)||0;
-      b.holHrs+=8; b.holPay+=8*baseRate;
-      b.days.push({date:ds,job:'Holiday Pay',hrs:8,type:'Holiday'});
+      b.holTenths=(b.holTenths||0)+80; b.holHrs=b.holTenths/10; b.holPay+=8*baseRate;
+      b.days.push({date:ds,job:'Holiday Pay',hrs:8,tenths:80,type:'Holiday'});
     });
   });
 
@@ -9080,21 +9571,24 @@ function renderPayroll(){
       const dayRow=(e,indent)=>{
         const tag=(e.type==='Overtime'||e.type==='Prevailing Wage')?` <span style="color:${dayTypeColor[e.type]};font-size:10.5px;font-weight:600;">(${e.type})</span>`:'';
         const est=e.estimated?' <span style="color:#b45309;font-size:10.5px;font-weight:600;">estimated</span>':'';
+        const cred=e.credited?' <span style="color:var(--accent);font-size:10.5px;font-weight:600;">credited</span>':'';
         return `<div style="display:flex;justify-content:space-between;gap:10px;${indent?'padding-left:14px;font-size:12px;color:var(--text2);':''}">
-          <span>${e.job}${tag}${est}</span><span style="font-family:'DM Mono',monospace;flex-shrink:0;">${fmtH(e.hrs)}</span>
+          <span>${e.job}${tag}${cred}${est}</span><span style="font-family:'DM Mono',monospace;flex-shrink:0;">${fmtH(e.hrs)}</span>
         </div>`;
       };
       const dayGroups=dateKeys.map(ds=>{
         const entries=byDate[ds];
-        const dayTotal=entries.reduce((a,e)=>a+e.hrs,0);
-        const flag=Math.abs(dayTotal-8)>0.05;
+        const dayTenths=entries.reduce((a,e)=>a+(Number.isInteger(e.tenths)?e.tenths:jcLegacyTenths(e.hrs)),0);
+        const dayTotal=dayTenths/10;
+        const flag=dayTenths!==80;
         const flagStyle=flag?'background:var(--red-dim);border-radius:6px;padding:4px 6px;margin:0 -6px;':'padding:2px 0;';
         if(entries.length===1){
           const e=entries[0];
           const tag=(e.type==='Overtime'||e.type==='Prevailing Wage')?` <span style="color:${dayTypeColor[e.type]};font-size:10.5px;font-weight:600;">(${e.type})</span>`:'';
           const est=e.estimated?' <span style="color:#b45309;font-size:10.5px;font-weight:600;">estimated</span>':'';
+          const cred=e.credited?' <span style="color:var(--accent);font-size:10.5px;font-weight:600;">credited</span>':'';
           return `<div style="display:flex;justify-content:space-between;gap:10px;${flagStyle}">
-            <span><span style="font-family:'DM Mono',monospace;color:var(--text3);">${fmtDay(ds)}</span> — ${e.job}${tag}${est}</span>
+            <span><span style="font-family:'DM Mono',monospace;color:var(--text3);">${fmtDay(ds)}</span> — ${e.job}${tag}${cred}${est}</span>
             <span style="font-family:'DM Mono',monospace;flex-shrink:0;${flag?'color:var(--red);font-weight:700;':''}">${fmtH(dayTotal)}${flag?' ⚠':''}</span>
           </div>`;
         }
@@ -9320,7 +9814,7 @@ function renderJobCosting(){
         </span>
       </div>`;
       rows.forEach(r=>{
-        const tags=[r.estimated?'estimated':'',r.kind==='pw'?'prevailing wage':'',r.kind==='cash'?'cash':'',r.ot?'1.5×':'',r.kind==='legacy'?'stored rate − $'+r.ohRate.toFixed(2)+' overhead':'',r.isOwner&&r.kind!=='pw'?'owner':''].filter(Boolean);
+        const tags=[r.credited?(r.clockTenths!=null&&r.clockTenths!==r.tenths?('credited · clock counts as '+(r.clockTenths/10).toFixed(1)+'h'):'credited'):'',r.estimated?'estimated':'',r.kind==='pw'?'prevailing wage':'',r.kind==='cash'?'cash':'',r.ot?'1.5×':'',r.kind==='legacy'?'stored rate − $'+r.ohRate.toFixed(2)+' overhead':'',r.isOwner&&r.kind!=='pw'?'owner':''].filter(Boolean);
         html+=`<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);padding:2px 0 2px 10px;">
           <span>${r.name}${r.rate>0?' <span style="color:var(--text3);">× '+r.hrs.toFixed(1)+'h @ $'+r.rate.toFixed(2)+'/hr'+(tags.length?' · '+tags.join(' · '):'')+'</span>':' <span style="color:var(--text3);">(no rate set)</span>'}</span>
           <span style="font-family:'DM Mono',monospace;">${r.rate>0?fmt(r.cost):'—'}</span>
