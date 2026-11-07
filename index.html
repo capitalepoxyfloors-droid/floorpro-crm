@@ -487,13 +487,30 @@
     #modal-jobcard .modal{width:100%;height:100dvh;max-height:100dvh;max-width:100vw!important;border-radius:0;margin:0;}
     #jc-pane-messages{max-height:none;}
     #sync-status{top:auto !important;bottom:14px;right:12px;}
-    .cv-topbar{flex-direction:column;align-items:stretch;justify-content:flex-start;padding:6px 12px 8px;gap:6px;}
+    .cv-topbar{flex-direction:column;align-items:stretch;justify-content:flex-start;padding:8px 12px 10px;gap:8px;}
     .cv-topbar-main,.cv-topbar-actions{flex:0 0 auto;width:100%;}
-    .cv-month-label{font-size:15px;}
-    .cv-nav-btn{width:30px;height:30px;font-size:17px;}
-    .cv-today-btn{font-size:11px;padding:4px 9px;}
+    .cv-topbar-main{justify-content:center;flex-wrap:wrap;row-gap:8px;}
+    .cv-topbar-main>.cv-nav-btn:nth-child(1){order:1;}
+    .cv-month-label{order:2;font-size:16px;text-align:center;white-space:nowrap;}
+    .cv-topbar-main>.cv-nav-btn:nth-child(2){order:3;}
+    .cv-topbar-main>.cv-today-btn{order:4;}
+    .cv-nav-btn{width:44px;height:44px;font-size:22px;flex:0 0 44px;}
+    .cv-topbar .cv-today-btn{min-height:44px;font-size:13px;padding:8px 12px;line-height:1.15;}
+    .cv-topbar-actions{
+      display:grid;grid-template-columns:repeat(2,minmax(0,max-content));justify-content:center;
+      align-items:center;column-gap:8px;row-gap:8px;max-width:100%;
+    }
+    .cv-topbar-actions>.cv-today-btn{min-width:0;max-width:100%;text-align:center;white-space:normal;}
+    .cv-topbar-actions>.cv-lock-btn,
+    .cv-topbar-actions>#cv-back-manager,
+    .cv-topbar-actions>#cv-sign-out{grid-column:1 / -1;justify-self:center;width:auto;white-space:nowrap;}
     .cv-crew-row{padding:7px 10px;gap:6px;}
     .cv-crew-chip{font-size:11.5px;padding:4px 11px;}
+    @media(max-width:360px){
+      .cv-topbar .cv-today-btn{font-size:12.5px;padding:8px 10px;}
+      .cv-topbar-actions{column-gap:6px;}
+      .cv-month-label{font-size:15px;}
+    }
     .cv-dow{font-size:10px;padding:6px 0 5px;letter-spacing:.2px;}
     .cv-day-cell{padding:4px 0 0;}
     .cv-cell-num{width:24px;height:24px;font-size:11px;}
