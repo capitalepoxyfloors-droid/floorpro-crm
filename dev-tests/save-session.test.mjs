@@ -16,6 +16,8 @@ const DAY = '2026-11-02';
 const state = {
   settings: {},
   rpc: [],
+  calls: [],
+  writes: [],
   patch: null,
   hold: null,
   whoami: 'ok',
@@ -29,6 +31,8 @@ function jobOf(note, stamp) {
     id: 'north',
     customer: 'North Warehouse',
     value: '18500',
+    startDate: DAY,
+    endDate: DAY,
     updated_at: stamp,
     dayLogs: { [DAY]: { notes: note, startTime: '7:50 AM', endTime: '3:10 PM', crewPresent: [{ crewIdx: 0, name: 'Avery Cole', startTime: '7:50 AM', endTime: '3:10 PM' }] } },
   };
@@ -51,12 +55,14 @@ function mockFetch(url, opts = {}) {
     }
     return Promise.resolve(jsonResponse({ kind: 'office', display_name: 'Ops Reviewer', office_id: 'ops' }));
   }
+  if (u.includes('/rest/v1/rpc/')) state.calls.push(u);
   if (u.includes('/rest/v1/rpc/fp_patch_job_records')) {
     state.rpc.push(body);
     const reply = () => {
       if (state.patch === 'stale') return jsonResponse({ message: 'stale_job' }, 409);
       if (state.patch === 'down') return jsonResponse({ message: 'no' }, 500);
       if (state.patch === 'deny') return jsonResponse({ message: 'no' }, 403);
+      if (state.patch === 'missing') return jsonResponse({ code: 'PGRST202', message: 'Could not find the function public.fp_patch_job_records' }, 404);
       if (state.patch === 'offline') return Promise.reject(new TypeError('offline'));
       const sent = body && body.patches && body.patches[0];
       const note = sent && sent.patch && sent.patch.dayLogs && sent.patch.dayLogs[DAY] && sent.patch.dayLogs[DAY].notes;
@@ -77,6 +83,11 @@ function mockFetch(url, opts = {}) {
         return Promise.resolve(jsonResponse([{ key: 'job_records', value: state.settings.job_records }]));
       }
       return Promise.resolve(jsonResponse([]));
+    }
+    if (method === 'POST' && body && body.key) {
+      state.writes.push(body.key);
+      state.settings[body.key] = body.value;
+      return Promise.resolve(jsonResponse([body]));
     }
   }
   if (method === 'GET') return Promise.resolve(jsonResponse([]));
@@ -104,9 +115,13 @@ function openLog(note) {
   call('openJobCard', 'north');
   call('jcTab', 'log');
 }
+function notesBox() {
+  const boxes = [...w.document.querySelectorAll('#jc-day-logs textarea')];
+  return boxes.find(el => (el.getAttribute('placeholder') || '').toLowerCase().includes('noting')) || null;
+}
 function typeNote(note) {
   call('jcLogSet', DAY, 'notes', note);
-  const box = w.document.querySelector('#jc-day-logs textarea');
+  const box = notesBox();
   if (box) box.value = note;
 }
 
@@ -215,22 +230,86 @@ test('a double tap sends one patch', async () => {
   assert.equal(state.rpc.length, 1);
 });
 
-test('a stale server write keeps the draft and explains it', async () => {
+test('a stale save lists the conflict and does not overwrite the other edit', async () => {
   state.patch = 'stale';
+  state.rpc.length = 0;
+  state.calls.length = 0;
   openLog('old note');
+  ev(`JOB_RECORDS[0].dayLogs['${DAY}'].task='Prime'; _jrBaseline[0].dayLogs['${DAY}'].task='Prime';`);
   typeNote('my version');
-  await call('saveJobCard');
+  const server = jobOf('their version', '2026-11-07T18:05:00.000Z');
+  server.dayLogs[DAY].task = 'Second coat';
+  state.settings.job_records = JSON.stringify([server]);
+  const noteField = notesBox();
+  if (!noteField) throw new Error('notes box missing: ' + (w.document.getElementById('jc-day-logs')?.innerHTML || '').slice(0, 240));
+  noteField.value = 'my version';
+  noteField.dispatchEvent(new w.Event('input', { bubbles: true }));
+  w.document.querySelector('.jc-save-row .btn-primary').click();
+  await new Promise(r => setTimeout(r, 40));
   assert.match(statusText(), /someone else saved this job/);
-  assert.equal(ev('JOB_RECORDS[0].dayLogs["' + DAY + '"].notes'), 'my version');
-  assert.equal(ev('JOB_RECORDS[0].dayLogs["' + DAY + '"].startTime'), '7:50 AM');
-  state.settings.job_records = JSON.stringify([jobOf('their version', '2026-11-07T18:05:00.000Z')]);
+  assert.equal(ev(`JOB_RECORDS[0].dayLogs['${DAY}'].notes`), 'my version');
+  const writesBefore = state.calls.length;
+  w.document.querySelector('[data-jc-save-retry]').click();
+  await new Promise(r => setTimeout(r, 40));
+  assert.equal(state.calls.length, writesBefore);
+  const shown = w.document.body.textContent;
+  assert.match(shown, /my version/);
+  assert.match(shown, /their version/);
+  assert.match(shown, /Second coat/);
+  [...w.document.querySelectorAll('button')].find(b => b.textContent === 'Keep yours').click();
   state.patch = 'ok';
-  await call('_jrRebaseOpenDraft');
-  assert.equal(statusText(), 'Saved 5:30 PM');
+  [...w.document.querySelectorAll('button')].find(b => b.textContent === 'Save this choice').click();
+  await new Promise(r => setTimeout(r, 40));
   const sent = state.rpc.at(-1).patches[0];
   assert.equal(sent.expected.updated_at, '2026-11-07T18:05:00.000Z');
   assert.equal(sent.patch.dayLogs[DAY].notes, 'my version');
+  assert.equal(sent.patch.dayLogs[DAY].task, 'Second coat');
+  assert.equal(sent.patch.dayLogs[DAY].startTime, '7:50 AM');
   assert.equal(ev('_jrLastSave.conflictProtected'), true);
+  assert.equal(state.calls.some(u => u.includes('fp_crew_write_job_records')), false);
+});
+
+test('typing in the notes box and clicking Save log uses that text', async () => {
+  state.patch = 'ok';
+  state.rpc.length = 0;
+  openLog('old note');
+  const box = notesBox();
+  if (!box) throw new Error('notes box missing: ' + (w.document.getElementById('jc-day-logs')?.innerHTML || '').slice(0, 240));
+  box.value = 'typed in the box';
+  box.dispatchEvent(new w.Event('input', { bubbles: true }));
+  assert.equal(statusText(), 'Unsaved changes');
+  assert.equal(ev(`JOB_RECORDS[0].dayLogs['${DAY}'].notes`), 'typed in the box');
+  w.document.querySelector('#jc-day-logs .jc-save-row .btn-primary').click();
+  await new Promise(r => setTimeout(r, 250));
+  assert.equal(statusText(), 'Saved 5:30 PM');
+  assert.equal(state.rpc[0].patches[0].patch.dayLogs[DAY].notes, 'typed in the box');
+  assert.equal(ev(`JOB_RECORDS[0].dayLogs['${DAY}'].startTime`), '7:50 AM');
+});
+
+test('a missing conditional write keeps the draft and does not merge', async () => {
+  state.patch = 'missing';
+  state.calls.length = 0;
+  state.writes.length = 0;
+  openLog('old note');
+  typeNote('keep me');
+  const stored = state.settings.job_records;
+  await call('saveJobCard');
+  assert.match(statusText(), /review needed/);
+  assert.match(statusText(), /Nothing was overwritten/);
+  assert.equal(ev(`JOB_RECORDS[0].dayLogs['${DAY}'].notes`), 'keep me');
+  assert.equal(state.settings.job_records, stored);
+  assert.equal(state.writes.length, 0);
+  assert.equal(state.calls.some(u => u.includes('fp_crew_write_job_records')), false);
+});
+
+test('leaving with unsaved changes can be cancelled', async () => {
+  openLog('old note');
+  typeNote('still typing');
+  w.confirm = () => false;
+  call('showPage', 'jobs');
+  assert.equal(w.document.getElementById('page-jobs').classList.contains('active'), false);
+  assert.equal(w.document.getElementById('modal-jobcard').classList.contains('open'), true);
+  w.confirm = () => true;
 });
 
 test('sign-out drops the open draft and does not keep it for the next person', async () => {
@@ -276,4 +355,20 @@ test('a slow restore says Restoring session, and a network error is Retry rather
   assert.ok(w.localStorage.getItem('fpAuth_v2'));
   assert.equal(w.document.getElementById('fp-test-banner').textContent.includes('floorpro-crm-test'), true);
   assert.equal(ev('SUPABASE_URL'), 'https://nndjnywtkgxwvxajwztg.supabase.co');
+});
+
+test('the test preview cannot address the live project', async () => {
+  const { buildTestPreview } = await import('./build-test-preview.mjs');
+  const built = buildTestPreview(html);
+  assert.doesNotMatch(built, /const _fpLiveUrl/);
+  assert.doesNotMatch(built, /const SUPABASE_URL = _fpUseTest/);
+  assert.match(built, /const SUPABASE_URL = 'https:\/\/nndjnywtkgxwvxajwztg\.supabase\.co'/);
+  assert.match(built, /Blocked live project from the test preview/);
+  assert.match(built, /fpTestNnd:/);
+  assert.match(built, /fpAuth_test_nndjnywtkgxwvxajwztg/);
+  assert.match(built, /TEST PROJECT — floorpro-crm-test, not the live app/);
+  const guard = built.slice(built.indexOf('Blocked live project') - 400, built.indexOf('Blocked live project') + 80);
+  assert.match(guard, /cngbsmmdfxmerlqnkate/);
+  const outside = built.replace(guard, '');
+  assert.equal(outside.includes('cngbsmmdfxmerlqnkate'), false);
 });

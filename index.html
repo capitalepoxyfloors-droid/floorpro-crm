@@ -586,7 +586,10 @@
   .jc-save-status[data-state="saved"]{color:var(--green);}
   .jc-save-status[data-state="error"]{color:var(--red);}
   .jc-save-status[data-state="saving"]{color:var(--text2);}
-  #jc-save-btn,.jc-save-row .btn{min-height:44px;}
+  .jc-save-conflicts{flex:1 1 100%;display:flex;flex-direction:column;gap:8px;}
+  .jc-conflict{border:1px solid var(--border);border-radius:10px;padding:8px 10px;font-size:13px;line-height:1.35;}
+  .jc-conflict-title{font-weight:700;margin-bottom:4px;}
+  #jc-save-btn,.jc-save-row .btn,.jc-conflict .btn,.jc-save-conflicts .btn{min-height:44px;}
   #fp-test-banner{position:sticky;top:0;z-index:80;background:#b45309;color:#fff;text-align:center;font-size:13px;font-weight:700;padding:8px 12px;letter-spacing:.2px;}
   #login-restore{display:none;margin-top:18px;}
   #login-restore-msg{font-size:16px;font-weight:700;margin-bottom:12px;}
@@ -2840,7 +2843,8 @@ function _jrStatusCopy(){
   if(_jrForm.phase==='saved'&&_jrForm.ackedAt) return {state:'saved', text:'Saved '+_jrFormatCt(_jrForm.ackedAt), retry:false, label:'Retry'};
   if(_jrForm.phase==='error'){
     if(_jrForm.errorKind==='offline') return {state:'error', text:'Not saved — offline', retry:true, label:'Retry'};
-    if(_jrForm.errorKind==='stale') return {state:'error', text:'Not saved — someone else saved this job. Your edits are still here.', retry:true, label:'Keep my edits'};
+    if(_jrForm.errorKind==='stale') return {state:'error', text:'Not saved — someone else saved this job. Your edits are still here.', retry:true, label:'Review changes'};
+    if(_jrForm.errorKind==='review') return {state:'error', text:'Not saved — review needed. Nothing was overwritten.', retry:false, label:'Retry'};
     return {state:'error', text:'Not saved — Save failed', retry:true, label:'Retry'};
   }
   return {state:'clean', text:'', retry:false, label:'Retry'};
@@ -2855,6 +2859,7 @@ function _jrPaintSaveStatus(){
     el.style.display=copy.retry?'inline-flex':'none';
     el.textContent=copy.label;
   });
+  _jrPaintConflicts();
 }
 function _jrFinishExplicitSave(recordId, rev){
   if(String(_jrForm.recordId)!==String(recordId)||_jrForm.rev!==rev) return;
@@ -2874,47 +2879,196 @@ function _jrFinishExplicitSave(recordId, rev){
     return;
   }
   _jrForm.phase='error';
-  _jrForm.errorKind=result.stale?'stale':(result.offline?'offline':'failed');
+  _jrForm.errorKind=result.stale?'stale':(result.review?'review':(result.offline?'offline':'failed'));
   _jrPaintSaveStatus();
 }
 function jcSaveRetry(){
-  if(_jrForm.errorKind==='stale'){ _jrRebaseOpenDraft(); return; }
+  if(_jrForm.errorKind==='stale'){ _jrReviewConflict(); return; }
   saveJobCard();
 }
-async function _jrRebaseOpenDraft(){
+const _JR_TOP_FIELDS=['customer','phone','address','scope','notes','jobType','value','startDate','endDate'];
+const _JR_DAY_FIELDS=['task','notes','startTime','endTime','fullDay','noWork','crewPresent','hourAdjustments','materialsUsed'];
+let _jrReview=null;
+function _jrLeafMap(job){
+  const out=new Map();
+  if(!job||typeof job!=='object') return out;
+  _JR_TOP_FIELDS.forEach(k=>{ if(_jrHas(job,k)) out.set(k, job[k]); });
+  const days=(job.dayLogs&&typeof job.dayLogs==='object')?job.dayLogs:{};
+  Object.keys(days).forEach(date=>{
+    const log=days[date]||{};
+    _JR_DAY_FIELDS.forEach(field=>{
+      if(_jrHas(log,field)) out.set('dayLogs.'+date+'.'+field, log[field]);
+    });
+  });
+  return out;
+}
+function _jrClassifyLeaves(baseJob, localJob, serverJob){
+  const base=_jrLeafMap(baseJob), local=_jrLeafMap(localJob), server=_jrLeafMap(serverJob);
+  const keys=new Set([...base.keys(), ...local.keys(), ...server.keys()]);
+  const conflicts=[], ours=[], theirs=[];
+  keys.forEach(k=>{
+    const b=base.has(k)?base.get(k):undefined;
+    const l=local.has(k)?local.get(k):undefined;
+    const s=server.has(k)?server.get(k):undefined;
+    const localChanged=!_jrEqCanon(l, b);
+    const serverChanged=!_jrEqCanon(s, b);
+    if(!localChanged&&!serverChanged) return;
+    if(localChanged&&serverChanged&&!_jrEqCanon(l, s)) conflicts.push({path:k, mine:l, theirs:s, choice:''});
+    else if(localChanged) ours.push({path:k, value:l});
+    else theirs.push({path:k, value:s});
+  });
+  return {conflicts, ours, theirs};
+}
+function _jrSetLeaf(job, path, value){
+  if(!path.startsWith('dayLogs.')){
+    if(value===undefined) delete job[path];
+    else job[path]=_jrClone(value);
+    return;
+  }
+  const parts=path.split('.');
+  const date=parts[1], field=parts[2];
+  if(!job.dayLogs||typeof job.dayLogs!=='object') job.dayLogs={};
+  if(!job.dayLogs[date]||typeof job.dayLogs[date]!=='object') job.dayLogs[date]={};
+  if(value===undefined) delete job.dayLogs[date][field];
+  else job.dayLogs[date][field]=_jrClone(value);
+}
+function _jrPathLabel(path){
+  if(!path.startsWith('dayLogs.')) return path;
+  const parts=path.split('.');
+  const date=parts[1], field=parts[2];
+  const nice={task:'Task', notes:'Notes', startTime:'Start', endTime:'End', fullDay:'Full day', noWork:'No work', crewPresent:'Crew', hourAdjustments:'Credited hours', materialsUsed:'Materials'}[field]||field;
+  let when=date;
+  try{ if(typeof jcFmtDate==='function') when=jcFmtDate(date); }catch(e){}
+  return nice+' — '+when;
+}
+function _jrLeafText(path, value){
+  if(path.endsWith('.crewPresent')&&Array.isArray(value)){
+    return value.map(c=>((c&&c.name)||'Someone')+' '+((c&&c.startTime)||'')+'–'+((c&&c.endTime)||'')).join(', ')||'(empty)';
+  }
+  if(path.endsWith('.hourAdjustments')&&typeof _jcFormatHourAdjustments==='function') return _jcFormatHourAdjustments(value);
+  return _jrValStr(value);
+}
+function _jrPaintConflicts(){
+  document.querySelectorAll('[data-jc-save-conflicts]').forEach(host=>{
+    host.replaceChildren();
+    const rev=_jrReview;
+    if(!rev||String(rev.id)!==String(_jcId||'')) return;
+    rev.conflicts.forEach(c=>{
+      const row=document.createElement('div');
+      row.className='jc-conflict';
+      const title=document.createElement('div');
+      title.className='jc-conflict-title';
+      title.textContent=_jrPathLabel(c.path);
+      const mine=document.createElement('div');
+      mine.textContent='Yours: '+_jrLeafText(c.path, c.mine);
+      const theirs=document.createElement('div');
+      theirs.textContent='Theirs: '+_jrLeafText(c.path, c.theirs);
+      const keepMine=document.createElement('button');
+      keepMine.type='button';
+      keepMine.className='btn btn-ghost';
+      keepMine.textContent=c.choice==='mine'?'Keeping yours':'Keep yours';
+      keepMine.onclick=()=>{ c.choice='mine'; _jrPaintSaveStatus(); };
+      const keepTheirs=document.createElement('button');
+      keepTheirs.type='button';
+      keepTheirs.className='btn btn-ghost';
+      keepTheirs.textContent=c.choice==='theirs'?'Keeping theirs':'Keep theirs';
+      keepTheirs.onclick=()=>{ c.choice='theirs'; _jrPaintSaveStatus(); };
+      row.append(title, mine, theirs, keepMine, keepTheirs);
+      host.appendChild(row);
+    });
+    if(rev.theirs.length){
+      const kept=document.createElement('div');
+      kept.textContent='Left as they saved: '+rev.theirs.map(t=>_jrPathLabel(t.path)+' ('+_jrLeafText(t.path, t.value)+')').join('; ');
+      host.appendChild(kept);
+    }
+    const note=document.createElement('div');
+    note.textContent=rev.conflicts.length
+      ? 'Choose each conflict. Their other edits stay. Nothing is saved until you confirm.'
+      : 'No field is in conflict. Saving sends only your edits, checked against their latest version.';
+    const go=document.createElement('button');
+    go.type='button';
+    go.className='btn btn-primary';
+    go.textContent='Save this choice';
+    go.disabled=rev.conflicts.some(c=>!c.choice);
+    go.onclick=()=>{ _jrSaveReconciled(); };
+    host.append(note, go);
+  });
+}
+async function _jrReviewConflict(){
   const id=String(_jcId||'');
   if(!id) return;
   const read=await _jobRecordsRead();
   if(!read.ok||read.value==null){
-    _jrForm.phase='error';
-    _jrForm.errorKind='offline';
-    _jrPaintSaveStatus();
-    return;
+    _jrForm.phase='error'; _jrForm.errorKind='offline'; _jrPaintSaveStatus(); return;
   }
   let server=[];
   try{ server=JSON.parse(read.value); }catch(e){ server=null; }
-  if(!Array.isArray(server)){
-    _jrForm.phase='error';
-    _jrForm.errorKind='failed';
-    _jrPaintSaveStatus();
-    return;
-  }
-  const srv=server.find(j=>String(j.id)===id);
+  const srv=Array.isArray(server)?server.find(j=>String(j.id)===id):null;
   const local=JOB_RECORDS.find(j=>String(j.id)===id);
-  if(!srv||!local){
-    _jrForm.phase='error';
-    _jrForm.errorKind='failed';
-    _jrPaintSaveStatus();
+  const base=(_jrBaseline||[]).find(j=>String(j.id)===id);
+  if(!srv||!local||!base){
+    _jrForm.phase='error'; _jrForm.errorKind='review'; _jrPaintSaveStatus(); return;
+  }
+  const found=_jrClassifyLeaves(base, local, srv);
+  _jrReview={id, server:_jrClone(srv), conflicts:found.conflicts, ours:found.ours, theirs:found.theirs};
+  _jrForm.phase='error';
+  _jrForm.errorKind='stale';
+  _jrPaintSaveStatus();
+}
+function _jrMergedReviewJob(){
+  const merged=_jrClone(_jrReview.server);
+  _jrReview.ours.forEach(o=>_jrSetLeaf(merged, o.path, o.value));
+  _jrReview.conflicts.forEach(c=>{ if(c.choice==='mine') _jrSetLeaf(merged, c.path, c.mine); });
+  return merged;
+}
+function _jrReconcilePatch(server, merged){
+  const expected={updated_at:server.updated_at??null};
+  const patch={};
+  let changed=false;
+  if(!_jrEqCanon(merged.dayLogs, server.dayLogs)){
+    changed=true;
+    expected.dayLogs=_jrHas(server,'dayLogs')?_jrCanon(server.dayLogs):null;
+    patch.dayLogs=_jrCanon(merged.dayLogs||{});
+  }
+  _JR_TOP_FIELDS.forEach(k=>{
+    if(_jrEqCanon(merged[k], server[k])) return;
+    changed=true;
+    expected[k]=_jrHas(server,k)?_jrCanon(server[k]):null;
+    if(_jrHas(merged,k)&&merged[k]!==undefined) patch[k]=_jrCanon(merged[k]);
+  });
+  if(!changed) return null;
+  return {id:String(server.id), op:'patch', expected, patch, drop:[]};
+}
+async function _jrSaveReconciled(){
+  const rev=_jrReview;
+  if(!rev||String(rev.id)!==String(_jcId||'')) return;
+  if(rev.conflicts.some(c=>!c.choice)) return;
+  if(_jrForm.phase==='saving') return;
+  const recordId=String(rev.id);
+  const saveRev=_jrForm.rev;
+  const preLocal=_jrClone(JOB_RECORDS);
+  const merged=_jrMergedReviewJob();
+  const patch=_jrReconcilePatch(rev.server, merged);
+  _jrForm.recordId=recordId;
+  _jrForm.submittedRev=saveRev;
+  _jrForm.phase='saving';
+  _jrForm.errorKind='';
+  _jrPaintSaveStatus();
+  if(!patch){
+    const local=JOB_RECORDS.find(j=>String(j.id)===recordId);
+    if(local) _jrCopyOnto(local, merged);
+    const idx=(_jrBaseline||[]).findIndex(j=>String(j.id)===recordId);
+    if(idx>=0) _jrBaseline[idx]=_jrClone(rev.server); else _jrBaseline.push(_jrClone(rev.server));
+    _jrReview=null;
+    _jrSaveResult({ok:true, noop:true});
+    _jrFinishExplicitSave(recordId, saveRev);
+    if(typeof jcRenderDayLogs==='function') jcRenderDayLogs();
     return;
   }
-  if(!_jrBaseline) _jrBaseline=[];
-  const idx=_jrBaseline.findIndex(j=>String(j.id)===id);
-  if(idx>=0) _jrBaseline[idx]=_jrClone(srv);
-  else _jrBaseline.push(_jrClone(srv));
-  _jrForm.errorKind='';
-  _jrForm.phase='dirty';
-  _jrPaintSaveStatus();
-  await saveJobCard();
+  await _jrCommitConditional([patch], preLocal);
+  if(_jrLastSave.ok&&_jrLastSave.acked) _jrReview=null;
+  _jrFinishExplicitSave(recordId, saveRev);
+  if(_jrLastSave.ok&&typeof jcRenderDayLogs==='function') jcRenderDayLogs();
 }
 function _fpSessionPanel(mode){
   const panel=document.getElementById('login-restore');
@@ -5205,12 +5359,11 @@ async function _jobRecordsRead(){
   if(legacy.ok&&legacy.value!=null) return legacy;
   return {ok:false, value:null};
 }
-async function _jobRecordsWrite(text){
-  if(_isOwnerSession()) return sb.setKV('job_records', text);
-  let payload;
-  try{ payload=JSON.parse(text); }catch(e){ return null; }
-  const r=await sb.rpc('fp_crew_write_job_records',{payload});
-  return r.ok?r.data:null;
+async function _jobRecordsWrite(){
+  // A whole-blob write, and fp_crew_write_job_records, can overwrite another save.
+  // Daily-log saves go through fp_patch_job_records only.
+  console.error('job_records blob write is disabled');
+  return null;
 }
 async function loadJobRecords(){
   _jobRecordsLoadOk=false;
@@ -5431,6 +5584,22 @@ function _jrStaleSaveMessage(){
 function _jrPatchResultOk(data){
   return !!(data&&data.ok===true&&Array.isArray(data.jobs)&&_jobRecordsLookReal(data.jobs));
 }
+// The only accepted daily-log write. fp_crew_write_job_records merges without
+// comparing updated_at, and a whole-blob settings write can race, so neither is used.
+async function _jrCommitConditional(patches, preLocal){
+  const rpc=await sb.rpc('fp_patch_job_records',{patches});
+  if(_jrPatchResultOk(rpc.data)){
+    _jrDataGen++;
+    const keepEdits=_jrKeepEditsSince(preLocal);
+    _jrInstallSavedJobs(rpc.data.jobs, patches.map(p=>p.id));
+    keepEdits();
+    return _jrSaveResult({ok:true, acked:true, conflictProtected:true, status:rpc.status||200});
+  }
+  if(rpc.stale) return _jrSaveResult({ok:false, stale:true, status:rpc.status||409});
+  const unrecognized=rpc.ok&&!_jrPatchResultOk(rpc.data);
+  if(rpc.missing||unrecognized) return _jrSaveResult({ok:false, review:true, status:rpc.status||0});
+  return _jrSaveResult({ok:false, offline:!!rpc.offline||rpc.status===0, status:rpc.status||0});
+}
 let _jrLastSave={ok:false,noop:false,stale:false,acked:false,conflictProtected:false,status:0,offline:false};
 function _jrSaveResult(partial){
   _jrLastSave=Object.assign({ok:false,noop:false,stale:false,acked:false,conflictProtected:false,status:0,offline:false}, partial||{});
@@ -5439,7 +5608,6 @@ function _jrSaveResult(partial){
 async function _saveJobRecordsNow(onlyId){
   ++_jrDataGen;
   _jrSaving=true;
-  const fail=(partial)=>_jrSaveResult(Object.assign({ok:false}, partial||{}, {offline:!!(partial&&partial.offline)}));
   try{
     // Crew sessions cannot change credited hours. Put the loaded credits back before the
     // patch is built, then omit the key on the wire so a newer office credit is not
@@ -5455,103 +5623,18 @@ async function _saveJobRecordsNow(onlyId){
     if(!patches.length){
       return _jrSaveResult({ok:true, noop:true});
     }
-    const rpc=await sb.rpc('fp_patch_job_records',{patches});
-    if(_jrPatchResultOk(rpc.data)){
-      _jrDataGen++;
-      const keepEdits=_jrKeepEditsSince(preLocal);
-      _jrInstallSavedJobs(rpc.data.jobs, patches.map(p=>p.id));
-      keepEdits();
+    const saved=await _jrCommitConditional(patches, preLocal);
+    if(saved){
       _jrLogFieldChanges(priorBaseline, preLocal);
       showSyncStatus('✓ Saved');
-      return _jrSaveResult({ok:true, acked:true, conflictProtected:true, status:rpc.status||200});
-    }
-    if(rpc.stale){
+    }else if(_jrLastSave.stale){
       _jrStaleSaveMessage();
-      return fail({stale:true, status:rpc.status||409});
-    }
-    // A real refusal (not signed in, or the function said no) must not fall through
-    // to a blob write. A missing function, or a test double that isn't this RPC,
-    // still uses the re-read-and-patch path.
-    const unrecognized=rpc.ok&&!_jrPatchResultOk(rpc.data);
-    if(!rpc.missing&&!unrecognized){
+    }else if(_jrLastSave.review){
+      showSyncStatus('⚠ Not saved — review needed. Nothing was overwritten.','var(--red)');
+    }else{
       showSyncStatus('⚠ Save failed — check your connection. Your edits are still here; try again.','var(--red)');
-      return fail({status:rpc.status||0, offline:!!rpc.offline||rpc.status===0});
     }
-    if(!_isOwnerSession()){
-      const payload=patches.map(p=>{
-        if(p.op==='insert') return _jcJobWithoutHourAdjustments(p.patch);
-        if(p.op==='delete') return null;
-        const partial={id:p.id};
-        Object.keys(p.patch||{}).forEach(k=>{ partial[k]=k==='dayLogs'?_jcDayLogsWithoutCredits(p.patch[k]):p.patch[k]; });
-        return partial;
-      }).filter(Boolean);
-      const r=await sb.rpc('fp_crew_write_job_records',{payload});
-      if(!r.ok){
-        showSyncStatus('⚠ Save failed — check your connection. Your edits are still here; try again.','var(--red)');
-        return fail({status:r.status||0, offline:!!r.offline||r.status===0});
-      }
-      _jrDataGen++;
-      _jrLogFieldChanges(priorBaseline, preLocal);
-      const patchedIds=new Set(patches.map(p=>String(p.id)));
-      const next=(_jrBaseline||[]).filter(b=>!(patchedIds.has(String(b.id))&&!JOB_RECORDS.some(j=>String(j.id)===String(b.id))));
-      patchedIds.forEach(id=>{
-        const local=JOB_RECORDS.find(j=>String(j.id)===id);
-        const idx=next.findIndex(j=>String(j.id)===id);
-        if(!local){ if(idx>=0) next.splice(idx,1); return; }
-        if(idx>=0) next[idx]=_jrClone(local); else next.push(_jrClone(local));
-      });
-      _jrBaseline=next;
-      showSyncStatus('✓ Saved');
-      // This fallback merges onto the stored job and does not compare updated_at.
-      // A Saved mark here is a write acknowledgement, not a conflict check.
-      return _jrSaveResult({ok:true, acked:Array.isArray(r.data), conflictProtected:false, status:r.status||200});
-    }
-    const read=await _jobRecordsRead();
-    if(!read.ok){
-      showSyncStatus('⚠ Could not re-read the server copy — nothing was saved. Your edits are still here; try again.','var(--red)');
-      return fail({offline:true});
-    }
-    let serverArr=[];
-    if(read.value!=null){
-      try{
-        serverArr=JSON.parse(read.value);
-        if(!Array.isArray(serverArr)) throw new Error('job_records is not an array');
-      }catch(e){
-        console.error('job_records re-read was not valid JSON — refusing to overwrite:',e);
-        showSyncStatus('⚠ Server copy looks damaged — nothing was saved. Your edits are still here; try again.','var(--red)');
-        return fail();
-      }
-    }
-    let patched;
-    try{ patched=_jrApplyPatchesToServer(serverArr, patches); }
-    catch(e){
-      if(e&&e.stale){ _jrStaleSaveMessage(); return fail({stale:true, status:409}); }
-      console.error('job_records patch failed — nothing was saved:',e);
-      showSyncStatus('⚠ Could not merge with the server copy — nothing was saved. Your edits are still here; try again.','var(--red)');
-      return fail();
-    }
-    let wrote;
-    try{ wrote=await sb.setKV('job_records', JSON.stringify(patched)); }
-    catch(e){
-      showSyncStatus('⚠ '+((e&&e.message)||'Save failed')+' Your edits are still here; try again.','var(--red)');
-      return fail({offline:true});
-    }
-    if(!wrote){
-      showSyncStatus('⚠ Save failed — check your connection. Your edits are still here; try again.','var(--red)');
-      return fail({offline:true});
-    }
-    let stored=patched;
-    const row=Array.isArray(wrote)?wrote[0]:wrote;
-    if(row&&typeof row.value==='string'){
-      try{ const parsed=JSON.parse(row.value); if(Array.isArray(parsed)) stored=parsed; }catch(e){}
-    }
-    _jrDataGen++;
-    const keepEdits=_jrKeepEditsSince(preLocal);
-    _jrInstallSavedJobs(stored, patches.map(p=>p.id));
-    keepEdits();
-    _jrLogFieldChanges(priorBaseline, preLocal);
-    showSyncStatus('✓ Saved');
-    return _jrSaveResult({ok:true, acked:true, conflictProtected:true, status:200});
+    return saved;
   }finally{
     _jrSaving=false;
   }
@@ -7536,7 +7619,7 @@ function jcRenderDayLogs(){
   // Inline save button — always visible on mobile without needing to scroll to the modal footer
   const saveWrap=document.createElement('div');
   saveWrap.style.cssText='padding:16px 0 4px;';
-  saveWrap.innerHTML=`<div class="jc-save-row"><div data-jc-save-status class="jc-save-status" data-state="clean"></div><button type="button" data-jc-save-retry class="btn btn-ghost" style="display:none;" onclick="jcSaveRetry()">Retry</button><button onclick="saveJobCard()" class="btn btn-primary" style="flex:1 1 140px;font-size:15px;padding:13px;border-radius:10px;letter-spacing:.3px;min-height:44px;">Save log</button></div>`;
+  saveWrap.innerHTML=`<div class="jc-save-row"><div data-jc-save-status class="jc-save-status" data-state="clean"></div><button type="button" data-jc-save-retry class="btn btn-ghost" style="display:none;" onclick="jcSaveRetry()">Retry</button><div data-jc-save-conflicts class="jc-save-conflicts"></div><button onclick="saveJobCard()" class="btn btn-primary" style="flex:1 1 140px;font-size:15px;padding:13px;border-radius:10px;letter-spacing:.3px;min-height:44px;">Save log</button></div>`;
   _jrPaintSaveStatus();
   container.appendChild(saveWrap);
   // Scroll to today's day section if it's in the job's date range
@@ -21083,6 +21166,7 @@ async function deleteMaintEntry(id){
       <div class="jc-save-row">
         <div data-jc-save-status class="jc-save-status" data-state="clean"></div>
         <button type="button" data-jc-save-retry class="btn btn-ghost" style="display:none;" onclick="jcSaveRetry()">Retry</button>
+        <div data-jc-save-conflicts class="jc-save-conflicts"></div>
       </div>
       <button class="btn btn-ghost" onclick="closeModal('jobcard')">Close</button>
       <button id="jc-save-btn" class="btn btn-primary" onclick="saveJobCard()">Save</button>

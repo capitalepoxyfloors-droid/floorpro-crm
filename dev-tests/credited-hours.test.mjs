@@ -418,13 +418,12 @@ test('a crew save cannot change a credit and does not send one back', async () =
   assert.equal(J()[0].dayLogs[DAY].hourAdjustments[0].creditedTenths, 80);
   assert.equal(J()[0].dayLogs[DAY].hourAdjustments[0].reason, 'office credit');
   assert.equal(J()[0].dayLogs[DAY].notes, 'crew note');
+  assert.equal(J()[0].dayLogs[DAY].crewPresent[0].endTime, '4:00 PM');
   const crewWrite = state.rpcBodies.find(c => c.url.includes('fp_crew_write_job_records'));
-  assert.ok(crewWrite, 'crew write was sent');
-  const payload = JSON.stringify(crewWrite.body);
-  assert.equal(payload.includes('hourAdjustments'), false);
-  assert.equal(payload.includes('forged'), false);
-  assert.match(payload, /crew note/);
-  assert.match(payload, /4:00 PM/);
+  assert.equal(crewWrite, undefined);
+  assert.equal(state.settings.job_records, JSON.stringify([job]));
+  assert.equal(w.eval('_jrLastSave.acked'), false);
+  assert.equal(w.eval('_jrLastSave.review'), true);
 });
 
 function showEntry(id) {
