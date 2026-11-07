@@ -581,6 +581,16 @@
     body.mgr-phone-crew #jc-open-calc,
     body.mgr-phone-crew .jc-pay-fields{display:none !important;}
   }
+  .jc-save-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;width:100%;}
+  .jc-save-status{flex:1 1 180px;min-width:0;font-size:13px;line-height:1.35;color:var(--text2);}
+  .jc-save-status[data-state="saved"]{color:var(--green);}
+  .jc-save-status[data-state="error"]{color:var(--red);}
+  .jc-save-status[data-state="saving"]{color:var(--text2);}
+  #jc-save-btn,.jc-save-row .btn{min-height:44px;}
+  #fp-test-banner{position:sticky;top:0;z-index:80;background:#b45309;color:#fff;text-align:center;font-size:13px;font-weight:700;padding:8px 12px;letter-spacing:.2px;}
+  #login-restore{display:none;margin-top:18px;}
+  #login-restore-msg{font-size:16px;font-weight:700;margin-bottom:12px;}
+  #login-restore-retry{min-height:44px;padding:10px 18px;}
 </style>
 </head>
 <body>
@@ -591,6 +601,10 @@
     <div style="font-size:11px;letter-spacing:2.5px;text-transform:uppercase;color:var(--text3);font-family:'DM Mono',monospace;margin-bottom:6px;">FloorPro</div>
     <div style="font-size:26px;font-weight:800;letter-spacing:-.5px;margin-bottom:2px;">CRM</div>
     <div id="login-env" style="display:none;font-size:11px;letter-spacing:.4px;color:#d97706;margin:6px 0 2px;font-family:'DM Mono',monospace;">Test project</div>
+    <div id="login-restore">
+      <div id="login-restore-msg">Restoring session</div>
+      <button type="button" id="login-restore-retry" class="btn btn-primary" onclick="fpBootAuth()">Retry</button>
+    </div>
     <!-- Name list plus one PIN box. A password manager can fill #username and #password. -->
     <form id="pin-login-form" class="pin-login-form" method="post" action="#" autocomplete="on" novalidate>
       <div class="pin-name">
@@ -2366,6 +2380,10 @@ const SUPABASE_KEY = _fpUseTest ? _fpTestKey : _fpLiveKey;
 if (_fpUseTest) {
   const _fpEnvNote = document.getElementById('login-env');
   if (_fpEnvNote) _fpEnvNote.style.display = 'block';
+  const _fpTestBanner = document.createElement('div');
+  _fpTestBanner.id = 'fp-test-banner';
+  _fpTestBanner.textContent = 'TEST PROJECT — floorpro-crm-test, not the live app';
+  document.body.insertBefore(_fpTestBanner, document.body.firstChild);
 }
 let _fpOpenIntent=null,_fpOpenApplied=false,_fpSkipTeamOpen=false;
 (function(){
@@ -2529,7 +2547,7 @@ const sb = {
         headers:this.headers,
         body:JSON.stringify(args||{})
       },25000);
-    }catch(e){ return {ok:false, data:null}; }
+    }catch(e){ return {ok:false, data:null, offline:true, status:0}; }
     if((authed&&_sbRejectStatus(res))||!res.ok){
       let error=null;
       try{ error=await res.json(); }catch(e){}
@@ -2738,6 +2756,181 @@ function showSaveBadge(msg='Saved',color='var(--green)'){
   el.innerHTML='<div style="font-size:48px;line-height:1;margin-bottom:10px;">✓</div><div style="font-size:19px;font-weight:700;letter-spacing:.4px;">'+msg+'</div>';
   document.body.appendChild(el);
   el._t=setTimeout(()=>{el.style.opacity='0';setTimeout(()=>el.remove(),380);},1500);
+}
+
+// Open daily-log form only. Nothing here is written to localStorage.
+let _jrForm={recordId:'', rev:0, submittedRev:0, phase:'clean', ackedAt:null, ackedRecord:'', errorKind:''};
+let _jrMemoryReady=false;
+let _jrQuiet=false;
+function _jrNow(){ return new Date(); }
+function _jrFormatCt(d){
+  try{
+    return new Intl.DateTimeFormat('en-US',{timeZone:'America/Chicago',hour:'numeric',minute:'2-digit'}).format(d);
+  }catch(e){
+    return d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+  }
+}
+function _jrNoteEdit(id){
+  if(_jrQuiet||!id) return;
+  _jrForm.recordId=String(id);
+  _jrForm.rev+=1;
+  _jrForm.phase='dirty';
+  _jrForm.errorKind='';
+  _jrPaintSaveStatus();
+}
+function _jrWatchCard(){
+  const card=document.getElementById('modal-jobcard');
+  if(!card||card.dataset.jrWatch==='1') return;
+  card.dataset.jrWatch='1';
+  const mark=(e)=>{
+    if(_jrQuiet||!_jcId) return;
+    if(!e.isTrusted) return;
+    if(e.target&&e.target.id==='jc-extra-date') return;
+    _jrNoteEdit(_jcId);
+  };
+  card.addEventListener('input', mark);
+  card.addEventListener('change', mark);
+}
+function _jrAdoptOpenJob(id, before){
+  const sid=String(id||'');
+  _jrForm.recordId=sid;
+  _jrForm.errorKind='';
+  const base=(_jrBaseline||[]).find(j=>String(j.id)===sid);
+  // Opening the card can fill empty display fields. That is not an edit.
+  const wasDirty=before?(base?!_jrEqCanon(before, base):true):false;
+  if(!wasDirty&&_jrForm.ackedAt&&_jrForm.ackedRecord===sid) _jrForm.phase='saved';
+  else _jrForm.phase=wasDirty?'dirty':'clean';
+  _jrPaintSaveStatus();
+}
+function _jrFormBlocksLeave(){
+  const card=document.getElementById('modal-jobcard');
+  if(!card||!card.classList.contains('open')) return false;
+  return _jrForm.phase==='dirty'||_jrForm.phase==='saving'||_jrForm.phase==='error';
+}
+function _jrAllowLeave(){
+  if(!_jrFormBlocksLeave()) return true;
+  const saving=_jrForm.phase==='saving';
+  const msg=saving
+    ? 'A save is still running. Leave this job without waiting?'
+    : 'You have unsaved changes on this job. Leave without saving?';
+  return typeof confirm==='function'?confirm(msg):false;
+}
+function _jrDropOpenDraft(){
+  _jrForm={recordId:'', rev:0, submittedRev:0, phase:'clean', ackedAt:null, ackedRecord:'', errorKind:''};
+  if(_jrMemoryReady){
+    JOB_RECORDS=[];
+    _jrBaseline=[];
+  }
+  _jcId=null;
+  const modal=document.getElementById('modal-jobcard');
+  if(modal) modal.classList.remove('open');
+  ['jc-name','jc-customer','jc-phone','jc-address','jc-scope'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(!el) return;
+    if('value' in el) el.value='';
+    else el.textContent='';
+  });
+  const logs=document.getElementById('jc-day-logs');
+  if(logs) logs.innerHTML='';
+  _jrPaintSaveStatus();
+}
+function _jrStatusCopy(){
+  if(_jrForm.phase==='dirty') return {state:'dirty', text:'Unsaved changes', retry:false, label:'Retry'};
+  if(_jrForm.phase==='saving') return {state:'saving', text:'Saving…', retry:false, label:'Retry'};
+  if(_jrForm.phase==='saved'&&_jrForm.ackedAt) return {state:'saved', text:'Saved '+_jrFormatCt(_jrForm.ackedAt), retry:false, label:'Retry'};
+  if(_jrForm.phase==='error'){
+    if(_jrForm.errorKind==='offline') return {state:'error', text:'Not saved — offline', retry:true, label:'Retry'};
+    if(_jrForm.errorKind==='stale') return {state:'error', text:'Not saved — someone else saved this job. Your edits are still here.', retry:true, label:'Keep my edits'};
+    return {state:'error', text:'Not saved — Save failed', retry:true, label:'Retry'};
+  }
+  return {state:'clean', text:'', retry:false, label:'Retry'};
+}
+function _jrPaintSaveStatus(){
+  const copy=_jrStatusCopy();
+  document.querySelectorAll('[data-jc-save-status]').forEach(el=>{
+    el.dataset.state=copy.state;
+    el.textContent=copy.text;
+  });
+  document.querySelectorAll('[data-jc-save-retry]').forEach(el=>{
+    el.style.display=copy.retry?'inline-flex':'none';
+    el.textContent=copy.label;
+  });
+}
+function _jrFinishExplicitSave(recordId, rev){
+  if(String(_jrForm.recordId)!==String(recordId)||_jrForm.rev!==rev) return;
+  const result=_jrLastSave||{};
+  if(result.noop){
+    _jrForm.phase=_jrForm.ackedAt&&_jrForm.ackedRecord===String(recordId)?'saved':'clean';
+    _jrForm.errorKind='';
+    _jrPaintSaveStatus();
+    return;
+  }
+  if(result.ok&&result.acked){
+    _jrForm.ackedAt=_jrNow();
+    _jrForm.ackedRecord=String(recordId);
+    _jrForm.phase='saved';
+    _jrForm.errorKind='';
+    _jrPaintSaveStatus();
+    return;
+  }
+  _jrForm.phase='error';
+  _jrForm.errorKind=result.stale?'stale':(result.offline?'offline':'failed');
+  _jrPaintSaveStatus();
+}
+function jcSaveRetry(){
+  if(_jrForm.errorKind==='stale'){ _jrRebaseOpenDraft(); return; }
+  saveJobCard();
+}
+async function _jrRebaseOpenDraft(){
+  const id=String(_jcId||'');
+  if(!id) return;
+  const read=await _jobRecordsRead();
+  if(!read.ok||read.value==null){
+    _jrForm.phase='error';
+    _jrForm.errorKind='offline';
+    _jrPaintSaveStatus();
+    return;
+  }
+  let server=[];
+  try{ server=JSON.parse(read.value); }catch(e){ server=null; }
+  if(!Array.isArray(server)){
+    _jrForm.phase='error';
+    _jrForm.errorKind='failed';
+    _jrPaintSaveStatus();
+    return;
+  }
+  const srv=server.find(j=>String(j.id)===id);
+  const local=JOB_RECORDS.find(j=>String(j.id)===id);
+  if(!srv||!local){
+    _jrForm.phase='error';
+    _jrForm.errorKind='failed';
+    _jrPaintSaveStatus();
+    return;
+  }
+  if(!_jrBaseline) _jrBaseline=[];
+  const idx=_jrBaseline.findIndex(j=>String(j.id)===id);
+  if(idx>=0) _jrBaseline[idx]=_jrClone(srv);
+  else _jrBaseline.push(_jrClone(srv));
+  _jrForm.errorKind='';
+  _jrForm.phase='dirty';
+  _jrPaintSaveStatus();
+  await saveJobCard();
+}
+function _fpSessionPanel(mode){
+  const panel=document.getElementById('login-restore');
+  const form=document.getElementById('pin-login-form');
+  const msg=document.getElementById('login-restore-msg');
+  const retry=document.getElementById('login-restore-retry');
+  if(!panel) return;
+  if(mode==='off'){
+    panel.style.display='none';
+    if(form) form.style.display='';
+    return;
+  }
+  panel.style.display='block';
+  if(form) form.style.display='none';
+  if(msg) msg.textContent=mode==='retry'?"Can't reach the server. Your session is still here.":'Restoring session';
+  if(retry) retry.style.display=mode==='retry'?'inline-flex':'none';
 }
 
 // ── DATA — CREW_DATA is the source of truth, CREW is derived from it ──────────
@@ -4974,6 +5167,7 @@ async function deleteSlotEdit(){
 // ── JOB RECORDS — full job detail, materials & daily log ──────────────────────
 let JOB_RECORDS = [];
 let _jrBaseline = [];      // deep copy of JOB_RECORDS as last synced with the server (3-way-merge ancestor)
+_jrMemoryReady=true;
 let _jrSaveChain = Promise.resolve(); // serializes saves within this tab so they can't collide
 let SLOT_JOB_MAP = {}; // "ci_w_d" → job_id
 let _jcId = null;
@@ -5213,6 +5407,23 @@ function _jrInstallSavedJobs(serverJobs, patchedIds){
   });
   _jrBaseline=next;
 }
+// A save that was already sent must not wipe keystrokes that landed after that snapshot.
+function _jrKeepEditsSince(preLocal){
+  const preBy=new Map((preLocal||[]).map(j=>[String(j.id), j]));
+  const during=_jrClone(JOB_RECORDS);
+  return function restore(){
+    during.forEach(d=>{
+      const id=String(d.id);
+      const pre=preBy.get(id);
+      const local=JOB_RECORDS.find(j=>String(j.id)===id);
+      if(!pre||!local) return;
+      Object.keys(d).forEach(k=>{
+        if(k==='id'||k==='updated_at') return;
+        if(!_jrEqCanon(d[k], pre[k])) local[k]=_jrClone(d[k]);
+      });
+    });
+  };
+}
 function _jrStaleSaveMessage(){
   showSyncStatus('⚠ This job was changed somewhere else — nothing was saved. Reload the page, then save again. Your edits are still here.','var(--red)');
   if(typeof showToast==='function') showToast('This job changed on another screen. Reload before saving.');
@@ -5220,9 +5431,15 @@ function _jrStaleSaveMessage(){
 function _jrPatchResultOk(data){
   return !!(data&&data.ok===true&&Array.isArray(data.jobs)&&_jobRecordsLookReal(data.jobs));
 }
+let _jrLastSave={ok:false,noop:false,stale:false,acked:false,conflictProtected:false,status:0,offline:false};
+function _jrSaveResult(partial){
+  _jrLastSave=Object.assign({ok:false,noop:false,stale:false,acked:false,conflictProtected:false,status:0,offline:false}, partial||{});
+  return !!_jrLastSave.ok;
+}
 async function _saveJobRecordsNow(onlyId){
   ++_jrDataGen;
   _jrSaving=true;
+  const fail=(partial)=>_jrSaveResult(Object.assign({ok:false}, partial||{}, {offline:!!(partial&&partial.offline)}));
   try{
     // Crew sessions cannot change credited hours. Put the loaded credits back before the
     // patch is built, then omit the key on the wire so a newer office credit is not
@@ -5236,20 +5453,21 @@ async function _saveJobRecordsNow(onlyId){
     try{ _jcStampMissingRates(only); }catch(e){ console.error('rate stamping skipped:',e); }
     const patches=_jrBuildPatches(priorBaseline, JOB_RECORDS, onlyId!=null&&onlyId!==''?onlyId:null);
     if(!patches.length){
-      showSyncStatus('✓ Saved');
-      return true;
+      return _jrSaveResult({ok:true, noop:true});
     }
     const rpc=await sb.rpc('fp_patch_job_records',{patches});
     if(_jrPatchResultOk(rpc.data)){
       _jrDataGen++;
+      const keepEdits=_jrKeepEditsSince(preLocal);
       _jrInstallSavedJobs(rpc.data.jobs, patches.map(p=>p.id));
+      keepEdits();
       _jrLogFieldChanges(priorBaseline, preLocal);
       showSyncStatus('✓ Saved');
-      return true;
+      return _jrSaveResult({ok:true, acked:true, conflictProtected:true, status:rpc.status||200});
     }
     if(rpc.stale){
       _jrStaleSaveMessage();
-      return false;
+      return fail({stale:true, status:rpc.status||409});
     }
     // A real refusal (not signed in, or the function said no) must not fall through
     // to a blob write. A missing function, or a test double that isn't this RPC,
@@ -5257,7 +5475,7 @@ async function _saveJobRecordsNow(onlyId){
     const unrecognized=rpc.ok&&!_jrPatchResultOk(rpc.data);
     if(!rpc.missing&&!unrecognized){
       showSyncStatus('⚠ Save failed — check your connection. Your edits are still here; try again.','var(--red)');
-      return false;
+      return fail({status:rpc.status||0, offline:!!rpc.offline||rpc.status===0});
     }
     if(!_isOwnerSession()){
       const payload=patches.map(p=>{
@@ -5270,7 +5488,7 @@ async function _saveJobRecordsNow(onlyId){
       const r=await sb.rpc('fp_crew_write_job_records',{payload});
       if(!r.ok){
         showSyncStatus('⚠ Save failed — check your connection. Your edits are still here; try again.','var(--red)');
-        return false;
+        return fail({status:r.status||0, offline:!!r.offline||r.status===0});
       }
       _jrDataGen++;
       _jrLogFieldChanges(priorBaseline, preLocal);
@@ -5284,12 +5502,14 @@ async function _saveJobRecordsNow(onlyId){
       });
       _jrBaseline=next;
       showSyncStatus('✓ Saved');
-      return true;
+      // This fallback merges onto the stored job and does not compare updated_at.
+      // A Saved mark here is a write acknowledgement, not a conflict check.
+      return _jrSaveResult({ok:true, acked:Array.isArray(r.data), conflictProtected:false, status:r.status||200});
     }
     const read=await _jobRecordsRead();
     if(!read.ok){
       showSyncStatus('⚠ Could not re-read the server copy — nothing was saved. Your edits are still here; try again.','var(--red)');
-      return false;
+      return fail({offline:true});
     }
     let serverArr=[];
     if(read.value!=null){
@@ -5299,26 +5519,26 @@ async function _saveJobRecordsNow(onlyId){
       }catch(e){
         console.error('job_records re-read was not valid JSON — refusing to overwrite:',e);
         showSyncStatus('⚠ Server copy looks damaged — nothing was saved. Your edits are still here; try again.','var(--red)');
-        return false;
+        return fail();
       }
     }
     let patched;
     try{ patched=_jrApplyPatchesToServer(serverArr, patches); }
     catch(e){
-      if(e&&e.stale){ _jrStaleSaveMessage(); return false; }
+      if(e&&e.stale){ _jrStaleSaveMessage(); return fail({stale:true, status:409}); }
       console.error('job_records patch failed — nothing was saved:',e);
       showSyncStatus('⚠ Could not merge with the server copy — nothing was saved. Your edits are still here; try again.','var(--red)');
-      return false;
+      return fail();
     }
     let wrote;
     try{ wrote=await sb.setKV('job_records', JSON.stringify(patched)); }
     catch(e){
       showSyncStatus('⚠ '+((e&&e.message)||'Save failed')+' Your edits are still here; try again.','var(--red)');
-      return false;
+      return fail({offline:true});
     }
     if(!wrote){
       showSyncStatus('⚠ Save failed — check your connection. Your edits are still here; try again.','var(--red)');
-      return false;
+      return fail({offline:true});
     }
     let stored=patched;
     const row=Array.isArray(wrote)?wrote[0]:wrote;
@@ -5326,10 +5546,12 @@ async function _saveJobRecordsNow(onlyId){
       try{ const parsed=JSON.parse(row.value); if(Array.isArray(parsed)) stored=parsed; }catch(e){}
     }
     _jrDataGen++;
+    const keepEdits=_jrKeepEditsSince(preLocal);
     _jrInstallSavedJobs(stored, patches.map(p=>p.id));
+    keepEdits();
     _jrLogFieldChanges(priorBaseline, preLocal);
     showSyncStatus('✓ Saved');
-    return true;
+    return _jrSaveResult({ok:true, acked:true, conflictProtected:true, status:200});
   }finally{
     _jrSaving=false;
   }
@@ -6126,7 +6348,10 @@ function jcFmtDate(ds){ return new Date(ds+'T00:00:00').toLocaleDateString('en-U
 
 function openJobCard(jobId){
   const job=getJobRecord(jobId); if(!job) return;
+  const beforeOpen=_jrClone(job);
   _jcId=jobId;
+  _jrQuiet=true;
+  _jrWatchCard();
   _jcConflicts=[];  // clear any stale conflicts from previous card
   _jcUpdateConflictWarn();
   // Opening a card does not write schedule slots. Repairs run from an owner/manager load
@@ -6168,6 +6393,8 @@ function openJobCard(jobId){
   jcRenderJobDocs();
   jcTab('info');
   openModal('jobcard');
+  _jrQuiet=false;
+  _jrAdoptOpenJob(jobId, beforeOpen);
   // Apply lock state after modal is open so elements exist
   setTimeout(()=>jcApplyLockState(job),0);
 }
@@ -7309,7 +7536,8 @@ function jcRenderDayLogs(){
   // Inline save button — always visible on mobile without needing to scroll to the modal footer
   const saveWrap=document.createElement('div');
   saveWrap.style.cssText='padding:16px 0 4px;';
-  saveWrap.innerHTML=`<button onclick="saveJobCard()" class="btn btn-primary" style="width:100%;font-size:15px;padding:13px;border-radius:10px;letter-spacing:.3px;">💾 Save Log</button>`;
+  saveWrap.innerHTML=`<div class="jc-save-row"><div data-jc-save-status class="jc-save-status" data-state="clean"></div><button type="button" data-jc-save-retry class="btn btn-ghost" style="display:none;" onclick="jcSaveRetry()">Retry</button><button onclick="saveJobCard()" class="btn btn-primary" style="flex:1 1 140px;font-size:15px;padding:13px;border-radius:10px;letter-spacing:.3px;min-height:44px;">Save log</button></div>`;
+  _jrPaintSaveStatus();
   container.appendChild(saveWrap);
   // Scroll to today's day section if it's in the job's date range
   const _todayKey=new Date().toISOString().slice(0,10).replace(/-/g,'');
@@ -7501,6 +7729,7 @@ function fmtTimeInput(el, ds, field){
 
 function jcLogSet(ds,field,val){
   const job=getJobRecord(_jcId); if(!job) return;
+  _jrNoteEdit(_jcId);
   if(!job.dayLogs) job.dayLogs={};
   if(!job.dayLogs[ds]) job.dayLogs[ds]={};
   job.dayLogs[ds][field]=val;
@@ -10062,9 +10291,13 @@ async function jcToggleLock(){
   showToast(job.locked?'Job locked':'Job unlocked');
 }
 
+let _jrCardSaveLock=false;
 async function saveJobCard(){
   const job=getJobRecord(_jcId); if(!job) return;
   if(job.locked){showToast('Job is locked — unlock it first.');return;}
+  if(_jrCardSaveLock) return;
+  _jrCardSaveLock=true;
+  try{
   const oldName=job.customer;
   job.customer=document.getElementById('jc-customer').value.trim();
   job.phone=document.getElementById('jc-phone').value.trim();
@@ -10141,8 +10374,16 @@ async function saveJobCard(){
     if(_tPatches.length) await Promise.all(_tPatches);
   }
   document.getElementById('jc-name').textContent=job.customer||'Unnamed Job';
+  if(_jrForm.phase==='saving'&&String(_jrForm.recordId)===String(job.id)) return;
+  const _saveRev=_jrForm.rev;
+  _jrForm.recordId=String(job.id);
+  _jrForm.submittedRev=_saveRev;
+  _jrForm.phase='saving';
+  _jrForm.errorKind='';
+  _jrPaintSaveStatus();
   const _saved=await saveJobRecords(job.id);
-  if(!_saved) return;
+  _jrFinishExplicitSave(job.id, _saveRev);
+  if(!_saved||(_jrLastSave&&_jrLastSave.noop)) return;
   // ── Sync value back to the board card ────────────────────────────────────
   // Reconciles against the loaded data cache (_lastJobRows), NOT the DOM — matching by raw
   // `.lead-name` textContent breaks whenever the board customer field carries a baked-in
@@ -10161,9 +10402,8 @@ async function saveJobCard(){
   }
   if(_jcRows.length){ await loadJobs(); if(_jobsListActive()) renderJobsListView(); }
   _jcApplyOpenConflicts(job, await jcSyncCrewSlots(job));   // heal any missing slots after date/crew changes
-  showSaveBadge('Saved');
-  closeModal('jobcard');
   renderSchedule();
+  } finally { _jrCardSaveLock=false; }
 }
 
 async function _flagSettledBoardCard(row, job){
@@ -11503,6 +11743,7 @@ function _clearPinField(){
 
 function fpClearLocalAuth(){
   _authEpoch++;
+  try{ if(typeof _jrDropOpenDraft==='function') _jrDropOpenDraft(); }catch(e){}
   _accessToken='';
   _refreshToken='';
   _accessExp=0;
@@ -11524,6 +11765,7 @@ function fpClearLocalAuth(){
 // Leave that stored session alone (it may be the other person's) and ask for a PIN.
 function _abandonStaleTab(){
   _authEpoch++;
+  try{ if(typeof _jrDropOpenDraft==='function') _jrDropOpenDraft(); }catch(e){}
   _accessToken='';
   _refreshToken='';
   _accessExp=0;
@@ -11636,7 +11878,10 @@ async function _fpEnsureSessionInner(){
       }
       return false;
     }
-    if(!res.ok) return _accessStillFresh();
+    if(!res.ok){
+      if(!_accessStillFresh()) _authNetworkDown=true;
+      return _accessStillFresh();
+    }
     const data=await res.json();
     if(epoch!==_authEpoch) return false;
     if(!data||!data.access_token) return _accessStillFresh();
@@ -11651,6 +11896,7 @@ async function _fpEnsureSessionInner(){
     if(wrote&&wrote.conflict){ _abandonStaleTab(); return false; }
     return true;
   }catch(e){
+    if(!_accessStillFresh()) _authNetworkDown=true;
     return _accessStillFresh();
   }
 }
@@ -11839,12 +12085,13 @@ async function fpWhoAmI(){
     });
     // Anything other than a confirmed account is not a session. Falling back to
     // the stored name is what painted Will Bradford over an empty board.
-    if(res.status===401||res.status===403||!res.ok) return null;
+    if(res.status===401||res.status===403) return null;
+    if(!res.ok) return {__net:true};
     const data=await res.json();
     if(!data||!data.kind) return null;
     return data;
   }catch(e){
-    return null;
+    return {__net:true};
   }
 }
 function _cachedIdentityConflicts(who){
@@ -11906,26 +12153,35 @@ function fpApplyAccount(account){
   }
 }
 
+let _authNetworkDown=false;
 async function fpBootAuth(){
   const blob=_readAuthBlob();
   const fresh=!!(blob && blob.refresh_token && (Date.now()-(blob.ts||0) < _sessionLimitMs(blob)));
   if(!fresh){
+    _fpSessionPanel('off');
     if(blob && blob.refresh_token) fpClearLocalAuth();
     else _applySignedInUserUi(null);
     showLoginScreen();
     return;
   }
+  _fpSessionPanel('restoring');
+  const ls=document.getElementById('login-screen');
+  if(ls) ls.style.display='flex';
   _accessToken=blob.access_token||'';
   _refreshToken=blob.refresh_token||'';
   _accessExp=blob.expires_at||0;
   _sessionUserId=blob.user_id||_jwtSub(_accessToken);
+  _authNetworkDown=false;
   const tokenOk=await fpEnsureSession();
   if(!tokenOk||!_accessToken){
+    if(_authNetworkDown){ _fpSessionPanel('retry'); return; }
+    _fpSessionPanel('off');
     _dropFailedBoot(blob);
     return;
   }
   const who=await fpWhoAmI();
-  if(!who||_cachedIdentityConflicts(who)){ _dropFailedBoot(blob); return; }
+  if(who&&who.__net){ _sessionAuthed=false; _applySignedInUserUi(null); _fpSessionPanel('retry'); return; }
+  if(!who||_cachedIdentityConflicts(who)){ _fpSessionPanel('off'); _dropFailedBoot(blob); return; }
   _rejectingAuth=false;
   _sessionAuthed=true;
   const sub=_jwtSub(_accessToken);
@@ -11934,6 +12190,8 @@ async function fpBootAuth(){
   if(_sessionUserId) patch.user_id=_sessionUserId;
   _writeAuthBlob(patch);
   _resetAutoLockTimer();
+  _fpSessionPanel('off');
+  _jrDropOpenDraft();
   fpApplyAccount(who);
   _applySignedInUserUi(who);
   _hideLoginScreen();
@@ -11953,6 +12211,12 @@ async function fpBootAuth(){
     });
   }
 }
+window.addEventListener('beforeunload', function(e){
+  if(typeof _jrFormBlocksLeave==='function'&&_jrFormBlocksLeave()){
+    e.preventDefault();
+    e.returnValue='';
+  }
+});
 window.addEventListener('storage', function(e){
   if(!e||e.key!==_pinAuthKey()||!_sessionAuthed) return;
   const next=_readAuthBlob();
@@ -12382,6 +12646,17 @@ async function pinLogout(ev){
     _armSignOut(el);
     return;
   }
+  if(_jrFormBlocksLeave()){
+    const saving=_jrForm.phase==='saving';
+    const msg=saving
+      ? 'A save is still running. Sign out and discard this log?'
+      : 'You have unsaved changes. Sign out and discard them?';
+    if(!(typeof confirm==='function'?confirm(msg):false)){
+      _clearSignOutArm();
+      return;
+    }
+  }
+  _jrDropOpenDraft();
   // Drop every saved session before any network call. A refresh used to run
   // first and could leave another office login in storage; the next load then
   // opened that person instead of the PIN screen.
@@ -12580,6 +12855,7 @@ function mgrPhoneSync(){
 })();
 
 function showPage(id){
+  if(!_jrAllowLeave()) return;
   const mapBox=document.getElementById('slot-map-cleanup-block');
   if(mapBox&&!msgOwnerLogin()) mapBox.style.display='none';
   // Crew mode — block all navigation except Crew View
@@ -17585,7 +17861,10 @@ If any field is not found, use an empty string.`
   }
 }
 
-function closeModal(id){document.getElementById('modal-'+id).classList.remove('open');}
+function closeModal(id){
+  if(id==='jobcard'&&!_jrAllowLeave()) return;
+  document.getElementById('modal-'+id).classList.remove('open');
+}
 function showToast(msg){
   const t=document.createElement('div');
   t.style.cssText='position:fixed;bottom:24px;right:24px;background:#1a73e8;color:#fff;padding:11px 20px;border-radius:8px;font-size:13px;font-weight:500;z-index:9999;font-family:DM Sans,sans-serif;max-width:320px;box-shadow:0 4px 20px rgba(0,0,0,.18);';
@@ -20801,7 +21080,10 @@ async function deleteMaintEntry(id){
       <button type="button" class="btn btn-ghost" id="jc-open-calc" onclick="jcOpenMaterialCalc()">Material Calculator</button>
       <button id="jc-delete-btn" class="btn btn-ghost" style="color:var(--red);" onclick="deleteJobRecord()">🗑 Delete</button>
       <button id="jc-reschedule-btn" class="btn btn-ghost" style="color:var(--blue);" onclick="jcReschedule()">📅 Reschedule</button>
-      <div style="flex:1"></div>
+      <div class="jc-save-row">
+        <div data-jc-save-status class="jc-save-status" data-state="clean"></div>
+        <button type="button" data-jc-save-retry class="btn btn-ghost" style="display:none;" onclick="jcSaveRetry()">Retry</button>
+      </div>
       <button class="btn btn-ghost" onclick="closeModal('jobcard')">Close</button>
       <button id="jc-save-btn" class="btn btn-primary" onclick="saveJobCard()">Save</button>
     </div>
