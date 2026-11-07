@@ -2775,7 +2775,7 @@ function showSaveBadge(msg='Saved',color='var(--green)'){
 }
 
 // Open daily-log form only. Nothing here is written to localStorage.
-let _jrForm={recordId:'', rev:0, submittedRev:0, phase:'clean', ackedAt:null, ackedRecord:'', errorKind:''};
+let _jrForm={recordId:'', rev:0, submittedRev:0, phase:'clean', ackedAt:null, ackedRecord:'', errorKind:'', holdText:''};
 let _jrMemoryReady=false;
 let _jrQuiet=false;
 function _jrNow(){ return new Date(); }
@@ -2792,6 +2792,7 @@ function _jrNoteEdit(id){
   _jrForm.rev+=1;
   _jrForm.phase='dirty';
   _jrForm.errorKind='';
+  _jrForm.holdText='';
   _jrPaintSaveStatus();
 }
 function _jrWatchCard(){
@@ -2809,6 +2810,7 @@ function _jrWatchCard(){
 }
 function _jrAdoptOpenJob(id, before){
   const sid=String(id||'');
+  _jrReview=null;
   _jrForm.recordId=sid;
   _jrForm.errorKind='';
   const base=(_jrBaseline||[]).find(j=>String(j.id)===sid);
@@ -2851,20 +2853,34 @@ function _jrDropOpenDraft(){
   _jrPaintSaveStatus();
 }
 function _jrStatusCopy(){
+  if(_jrForm.holdText&&_jrForm.phase==='clean') return {state:'saved', text:_jrForm.holdText, retry:false, label:''};
   if(_jrForm.phase==='dirty') return {state:'dirty', text:'Unsaved changes', retry:false, label:'Retry'};
   if(_jrForm.phase==='saving') return {state:'saving', text:'Saving…', retry:false, label:'Retry'};
   if(_jrForm.phase==='saved'&&_jrForm.ackedAt) return {state:'saved', text:'Saved '+_jrFormatCt(_jrForm.ackedAt), retry:false, label:'Retry'};
   if(_jrForm.phase==='error'){
-    if(_jrForm.errorKind==='offline') return {state:'error', text:'Not saved — offline', retry:true, label:'Retry'};
-    if(_jrForm.errorKind==='stale') return {state:'error', text:'Not saved — someone else saved this job. Your edits are still here.', retry:true, label:'Review changes'};
-    if(_jrForm.errorKind==='review') return {state:'error', text:'Not saved — review needed. Nothing was overwritten.', retry:false, label:'Retry'};
-    return {state:'error', text:'Not saved — Save failed', retry:true, label:'Retry'};
+    if(_jrForm.errorKind==='offline') return {state:'error', text:'Not saved. You’re offline. Your note is still here.', retry:true, label:'Retry'};
+    if(_jrForm.errorKind==='stale'){
+      const plain=_jrReview?_jrPlainConflict(_jrReview):null;
+      if(plain&&plain.notes.length>1) return {state:'error', text:'Someone else changed more than one note. Your notes are still here. Ask the office.', retry:false, label:''};
+      if(plain&&!plain.notes.length&&plain.sensitive.length) return {state:'error', text:'Someone else changed the hours on this day. Your hours are still on this screen and were not saved.', retry:false, label:''};
+      if(plain&&!plain.notes.length) return {state:'error', text:'Someone else changed this log. Your changes are still here. Ask the office.', retry:false, label:''};
+      return {state:'error', text:'Someone else changed this log. Your note hasn’t been saved.', retry:false, label:''};
+    }
+    if(_jrForm.errorKind==='review') return {state:'error', text:'Not saved. Your note is still here.', retry:true, label:'Retry'};
+    return {state:'error', text:'Not saved. Your note is still here.', retry:true, label:'Retry'};
   }
   return {state:'clean', text:'', retry:false, label:'Retry'};
 }
 function _jrPaintSaveStatus(){
   const copy=_jrStatusCopy();
+  const showing=!!(_jrReview&&String(_jrReview.id)===String(_jcId||''));
+  const logStatus=document.querySelector('#jc-day-logs [data-jc-save-status]');
   document.querySelectorAll('[data-jc-save-status]').forEach(el=>{
+    if(showing&&logStatus&&el!==logStatus){
+      el.dataset.state='clean';
+      el.textContent='';
+      return;
+    }
     el.dataset.state=copy.state;
     el.textContent=copy.text;
   });
@@ -2894,6 +2910,7 @@ function _jrFinishExplicitSave(recordId, rev){
   _jrForm.phase='error';
   _jrForm.errorKind=result.stale?'stale':(result.review?'review':(result.offline?'offline':'failed'));
   _jrPaintSaveStatus();
+  if(result.stale) _jrReviewConflict();
 }
 function jcSaveRetry(){
   if(_jrForm.errorKind==='stale'){ _jrReviewConflict(); return; }
@@ -2945,6 +2962,41 @@ function _jrSetLeaf(job, path, value){
   if(value===undefined) delete job.dayLogs[date][field];
   else job.dayLogs[date][field]=_jrClone(value);
 }
+const _JR_SENSITIVE_FIELDS={startTime:1,endTime:1,fullDay:1,noWork:1,crewPresent:1,hourAdjustments:1};
+function _jrFieldOf(path){ const parts=String(path||'').split('.'); return parts[parts.length-1]; }
+function _jrIsNotePath(path){ return String(path).indexOf('dayLogs.')===0 && _jrFieldOf(path)==='notes'; }
+function _jrIsSensitivePath(path){ return !!_JR_SENSITIVE_FIELDS[_jrFieldOf(path)]; }
+function _jrPlainConflict(rev){
+  const conflicts=(rev&&rev.conflicts)||[];
+  return {
+    notes:conflicts.filter(c=>_jrIsNotePath(c.path)),
+    sensitive:conflicts.filter(c=>_jrIsSensitivePath(c.path)),
+    other:conflicts.filter(c=>!_jrIsNotePath(c.path)&&!_jrIsSensitivePath(c.path))
+  };
+}
+function _jrNoteText(value){
+  const s=value==null?'':String(value);
+  return s.trim()?s:'(empty)';
+}
+function _jrDayWords(path){
+  const date=String(path||'').split('.')[1]||'';
+  try{ if(date && typeof jcFmtDate==='function') return jcFmtDate(date); }catch(e){}
+  return date;
+}
+function _jrMainSaveVisible(show){
+  const saveBtn=document.getElementById('jc-save-btn');
+  if(saveBtn) saveBtn.style.display=show?'':'none';
+  document.querySelectorAll('.jc-save-row .btn-primary').forEach(el=>{
+    const label=(el.textContent||'').replace(/\s+/g,' ').trim();
+    if(label==='Save log'||label==='Save') el.style.display=show?'':'none';
+  });
+}
+function _jrDismissNoteChoice(){
+  _jrReview=null;
+  _jrForm.phase='dirty';
+  _jrForm.errorKind='';
+  _jrPaintSaveStatus();
+}
 function _jrPathLabel(path){
   if(!path.startsWith('dayLogs.')) return path;
   const parts=path.split('.');
@@ -2961,51 +3013,76 @@ function _jrLeafText(path, value){
   if(path.endsWith('.hourAdjustments')&&typeof _jcFormatHourAdjustments==='function') return _jcFormatHourAdjustments(value);
   return _jrValStr(value);
 }
+function _jrAddNoteBlock(host, label, text){
+  const name=document.createElement('div');
+  name.style.cssText='font-weight:700;margin-top:10px;';
+  name.textContent=label;
+  const body=document.createElement('div');
+  body.style.cssText='font-size:15px;line-height:1.4;white-space:pre-wrap;';
+  body.textContent=text;
+  host.append(name, body);
+}
 function _jrPaintConflicts(){
-  document.querySelectorAll('[data-jc-save-conflicts]').forEach(host=>{
-    host.replaceChildren();
-    const rev=_jrReview;
-    if(!rev||String(rev.id)!==String(_jcId||'')) return;
-    rev.conflicts.forEach(c=>{
-      const row=document.createElement('div');
-      row.className='jc-conflict';
-      const title=document.createElement('div');
-      title.className='jc-conflict-title';
-      title.textContent=_jrPathLabel(c.path);
-      const mine=document.createElement('div');
-      mine.textContent='Yours: '+_jrLeafText(c.path, c.mine);
-      const theirs=document.createElement('div');
-      theirs.textContent='Theirs: '+_jrLeafText(c.path, c.theirs);
-      const keepMine=document.createElement('button');
-      keepMine.type='button';
-      keepMine.className='btn btn-ghost';
-      keepMine.textContent=c.choice==='mine'?'Keeping yours':'Keep yours';
-      keepMine.onclick=()=>{ c.choice='mine'; _jrPaintSaveStatus(); };
-      const keepTheirs=document.createElement('button');
-      keepTheirs.type='button';
-      keepTheirs.className='btn btn-ghost';
-      keepTheirs.textContent=c.choice==='theirs'?'Keeping theirs':'Keep theirs';
-      keepTheirs.onclick=()=>{ c.choice='theirs'; _jrPaintSaveStatus(); };
-      row.append(title, mine, theirs, keepMine, keepTheirs);
-      host.appendChild(row);
+  const showing=!!(_jrReview&&String(_jrReview.id)===String(_jcId||''));
+  _jrMainSaveVisible(!showing);
+  const hosts=[...document.querySelectorAll('[data-jc-save-conflicts]')];
+  const primary=document.querySelector('#jc-day-logs [data-jc-save-conflicts]')||hosts[0]||null;
+  hosts.forEach(host=>{ if(host!==primary) host.replaceChildren(); });
+  if(!primary) return;
+  primary.replaceChildren();
+  if(!showing) return;
+  const plain=_jrPlainConflict(_jrReview);
+  const say=(text)=>{
+    const el=document.createElement('div');
+    el.style.cssText='color:var(--text2);font-size:14px;line-height:1.4;margin:10px 0;';
+    el.textContent=text;
+    primary.appendChild(el);
+  };
+  if(plain.notes.length>1){
+    plain.notes.forEach(c=>{
+      const day=document.createElement('div');
+      day.style.cssText='font-weight:700;margin-top:12px;';
+      day.textContent=_jrDayWords(c.path);
+      primary.appendChild(day);
+      _jrAddNoteBlock(primary, 'Your note', _jrNoteText(c.mine));
+      _jrAddNoteBlock(primary, 'Saved note', _jrNoteText(c.theirs));
     });
-    if(rev.theirs.length){
-      const kept=document.createElement('div');
-      kept.textContent='Left as they saved: '+rev.theirs.map(t=>_jrPathLabel(t.path)+' ('+_jrLeafText(t.path, t.value)+')').join('; ');
-      host.appendChild(kept);
-    }
-    const note=document.createElement('div');
-    note.textContent=rev.conflicts.length
-      ? 'Choose each conflict. Their other edits stay. Nothing is saved until you confirm.'
-      : 'No field is in conflict. Saving sends only your edits, checked against their latest version.';
-    const go=document.createElement('button');
-    go.type='button';
-    go.className='btn btn-primary';
-    go.textContent='Save this choice';
-    go.disabled=rev.conflicts.some(c=>!c.choice);
-    go.onclick=()=>{ _jrSaveReconciled(); };
-    host.append(note, go);
-  });
+    say('More than one note changed. Ask the office. Your notes stay on this screen.');
+  }else if(plain.notes.length===1){
+    const c=plain.notes[0];
+    _jrAddNoteBlock(primary, 'Your note', _jrNoteText(c.mine));
+    _jrAddNoteBlock(primary, 'Saved note', _jrNoteText(c.theirs));
+    say('Save my note keeps your note and replaces the saved one. Use saved note puts the saved note in the box. Your note stays until that save finishes.');
+    const saveMine=document.createElement('button');
+    saveMine.type='button';
+    saveMine.className='btn btn-primary';
+    saveMine.style.cssText='min-height:44px;width:100%;margin-bottom:8px;';
+    saveMine.textContent='Save my note';
+    saveMine.onclick=()=>{ _jrSaveNoteChoice('mine'); };
+    const useSaved=document.createElement('button');
+    useSaved.type='button';
+    useSaved.className='btn btn-ghost';
+    useSaved.style.cssText='min-height:44px;width:100%;';
+    useSaved.textContent='Use saved note';
+    useSaved.onclick=()=>{ _jrSaveNoteChoice('theirs'); };
+    primary.append(saveMine, useSaved);
+  }else if(!plain.sensitive.length&&plain.other.length){
+    say('Someone else changed this log. Your changes are still here. Ask the office.');
+  }
+  if(plain.sensitive.length){
+    say(plain.notes.length===1
+      ? 'The hours stay as they were saved. Saving your note does not change the clocks or credited hours.'
+      : 'Ask the office to look at the hours. This screen will not change them.');
+  }else if(plain.other.length&&plain.notes.length===1){
+    say('Other saved details stay as they are.');
+  }
+  const notNow=document.createElement('button');
+  notNow.type='button';
+  notNow.className='btn btn-ghost';
+  notNow.style.cssText='min-height:44px;width:100%;margin-top:8px;';
+  notNow.textContent='Not now';
+  notNow.onclick=()=>{ _jrDismissNoteChoice(); };
+  primary.appendChild(notNow);
 }
 async function _jrReviewConflict(){
   const id=String(_jcId||'');
@@ -3052,11 +3129,16 @@ function _jrReconcilePatch(server, merged){
   if(!changed) return null;
   return {id:String(server.id), op:'patch', expected, patch, drop:[]};
 }
-async function _jrSaveReconciled(){
+async function _jrSaveNoteChoice(which){
   const rev=_jrReview;
   if(!rev||String(rev.id)!==String(_jcId||'')) return;
-  if(rev.conflicts.some(c=>!c.choice)) return;
   if(_jrForm.phase==='saving') return;
+  const plain=_jrPlainConflict(rev);
+  if(plain.notes.length!==1) return;
+  plain.notes.forEach(c=>{ c.choice=which==='mine'?'mine':'theirs'; });
+  plain.sensitive.forEach(c=>{ c.choice='theirs'; });
+  plain.other.forEach(c=>{ c.choice='theirs'; });
+  const revCopy=rev;
   const recordId=String(rev.id);
   const saveRev=_jrForm.rev;
   const preLocal=_jrClone(JOB_RECORDS);
@@ -3068,20 +3150,37 @@ async function _jrSaveReconciled(){
   _jrForm.errorKind='';
   _jrPaintSaveStatus();
   if(!patch){
-    const local=JOB_RECORDS.find(j=>String(j.id)===recordId);
-    if(local) _jrCopyOnto(local, merged);
-    const idx=(_jrBaseline||[]).findIndex(j=>String(j.id)===recordId);
-    if(idx>=0) _jrBaseline[idx]=_jrClone(rev.server); else _jrBaseline.push(_jrClone(rev.server));
+    if(which==='theirs'){
+      const local=JOB_RECORDS.find(j=>String(j.id)===recordId);
+      if(local) _jrCopyOnto(local, merged);
+      if(!_jrBaseline) _jrBaseline=[];
+      const idx=_jrBaseline.findIndex(j=>String(j.id)===recordId);
+      if(idx>=0) _jrBaseline[idx]=_jrClone(revCopy.server); else _jrBaseline.push(_jrClone(revCopy.server));
+      _jrReview=null;
+      _jrSaveResult({ok:true, noop:true});
+      _jrForm.phase='clean';
+      _jrForm.errorKind='';
+      _jrForm.holdText='The saved note is in the box.';
+      _jrPaintSaveStatus();
+      if(typeof jcRenderDayLogs==='function') jcRenderDayLogs();
+    }
+    return;
+  }
+  await _jrCommitConditional([patch], preLocal);
+  if(_jrLastSave.ok&&_jrLastSave.acked){
     _jrReview=null;
-    _jrSaveResult({ok:true, noop:true});
     _jrFinishExplicitSave(recordId, saveRev);
     if(typeof jcRenderDayLogs==='function') jcRenderDayLogs();
     return;
   }
-  await _jrCommitConditional([patch], preLocal);
-  if(_jrLastSave.ok&&_jrLastSave.acked) _jrReview=null;
-  _jrFinishExplicitSave(recordId, saveRev);
-  if(_jrLastSave.ok&&typeof jcRenderDayLogs==='function') jcRenderDayLogs();
+  _jrReview=revCopy;
+  _jrForm.phase='error';
+  _jrForm.errorKind='stale';
+  _jrForm.rev=saveRev;
+  _jrPaintSaveStatus();
+  document.querySelectorAll('[data-jc-save-status]').forEach(el=>{
+    el.textContent='Your note hasn’t been saved. Try again.';
+  });
 }
 function _fpSessionPanel(mode){
   const panel=document.getElementById('login-restore');
@@ -5591,8 +5690,7 @@ function _jrKeepEditsSince(preLocal){
   };
 }
 function _jrStaleSaveMessage(){
-  showSyncStatus('⚠ This job was changed somewhere else — nothing was saved. Reload the page, then save again. Your edits are still here.','var(--red)');
-  if(typeof showToast==='function') showToast('This job changed on another screen. Reload before saving.');
+  showSyncStatus('Someone else changed this log. Your note hasn’t been saved.','var(--red)');
 }
 function _jrPatchResultOk(data){
   return !!(data&&data.ok===true&&Array.isArray(data.jobs)&&_jobRecordsLookReal(data.jobs));
@@ -5643,9 +5741,9 @@ async function _saveJobRecordsNow(onlyId){
     }else if(_jrLastSave.stale){
       _jrStaleSaveMessage();
     }else if(_jrLastSave.review){
-      showSyncStatus('⚠ Not saved — review needed. Nothing was overwritten.','var(--red)');
+      showSyncStatus('Not saved. Your note is still here.','var(--red)');
     }else{
-      showSyncStatus('⚠ Save failed — check your connection. Your edits are still here; try again.','var(--red)');
+      showSyncStatus('Not saved. Your note is still here.','var(--red)');
     }
     return saved;
   }finally{
@@ -7633,8 +7731,8 @@ function jcRenderDayLogs(){
   const saveWrap=document.createElement('div');
   saveWrap.style.cssText='padding:16px 0 4px;';
   saveWrap.innerHTML=`<div class="jc-save-row"><div data-jc-save-status class="jc-save-status" data-state="clean"></div><button type="button" data-jc-save-retry class="btn btn-ghost" style="display:none;" onclick="jcSaveRetry()">Retry</button><div data-jc-save-conflicts class="jc-save-conflicts"></div><button onclick="saveJobCard()" class="btn btn-primary" style="flex:1 1 140px;font-size:15px;padding:13px;border-radius:10px;letter-spacing:.3px;min-height:44px;">Save log</button></div>`;
-  _jrPaintSaveStatus();
   container.appendChild(saveWrap);
+  _jrPaintSaveStatus();
   // Scroll to today's day section if it's in the job's date range
   const _todayKey=new Date().toISOString().slice(0,10).replace(/-/g,'');
   const _todayEl=document.getElementById('jcday-'+_todayKey);
