@@ -6139,7 +6139,9 @@ function openJobCard(jobId){
   scopeEl.style.height='auto';
   scopeEl.style.height=scopeEl.scrollHeight+'px';
   document.getElementById('jc-jobtype').value=job.jobType||'epoxy';
-  document.getElementById('jc-value').value=job.value||'';
+  // A hidden price box still sits in the page. Leave it empty for crew, and for
+  // office or owner while the Crew screen is what opened the card.
+  document.getElementById('jc-value').value=hideValue?'':(job.value||'');
   document.getElementById('jc-map-btn').style.display=job.address?'':'none';
   document.getElementById('jc-dates-row').textContent='📅 '+(job.startDate?jcFmtDate(job.startDate):'—')+' – '+(job.endDate?jcFmtDate(job.endDate):'—');
   jcRenderCrewPicker();

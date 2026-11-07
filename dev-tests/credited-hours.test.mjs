@@ -438,8 +438,11 @@ function creditEditor(html) {
 test('office and owner can credit from the crew screen, and a crew sign-in cannot', () => {
   useFakeCrew();
   putJobs([{
-    id: 'entry', customer: 'Entry Hall', startDate: DAY, endDate: DAY, value: '100', status: 'scheduled',
-    dayLogs: { [DAY]: { startTime: '7:50 AM', endTime: '3:10 PM', crewPresent: [row(0, '7:50 AM', '3:10 PM')] } },
+    id: 'entry', customer: 'Entry Hall', startDate: DAY, endDate: DAY, value: '18500', displayVal: '$18,500', status: 'scheduled',
+    dayLogs: { [DAY]: {
+      startTime: '7:50 AM', endTime: '3:10 PM', overtimeWage: true, cashWages: false,
+      crewPresent: [{ ...row(0, '7:50 AM', '3:10 PM'), burdenedRate: '41.50', directRate: '30.25', hourly: '30.25' }],
+    } },
   }]);
   ev(`_jcId='entry'`);
   w.localStorage.setItem('fpOfficeUser', 'PM Salvation');
@@ -481,20 +484,38 @@ test('office and owner can credit from the crew screen, and a crew sign-in canno
   assert.equal(J()[0].dayLogs[DAY].hourAdjustments[0].creditedTenths, 75);
 
   w.localStorage.setItem('fpRole', 'crew');
-  html = call('jcDayCrewHtml', DAY, J()[0].dayLogs[DAY]);
-  assert.equal(html.includes('Save credit'), false);
-  assert.equal(html.includes('Why the credit differs from the clock'), false);
-  assert.match(html, /7:50 AM/);
+  w.document.body.classList.add('crew-mode');
+  for (const route of ['crewview', 'jobs']) {
+    showEntry(route);
+    html = call('jcDayCrewHtml', DAY, J()[0].dayLogs[DAY]);
+    assert.equal(html.includes('Save credit'), false, route);
+    assert.equal(html.includes('Why the credit differs from the clock'), false, route);
+    assert.equal(html.includes('18500'), false, route);
+    assert.equal(html.includes('41.50'), false, route);
+    assert.equal(html.includes('30.25'), false, route);
+    assert.equal(html.includes('Pay for this day'), false, route);
+    assert.match(html, /7:50 AM/);
+    call('openJobCard', 'entry');
+    call('jcTab', 'log');
+    const crewRendered = w.document.getElementById('jc-day-logs').innerHTML
+      + w.document.getElementById('jc-value-group').outerHTML
+      + w.document.getElementById('jc-pane-costing').innerHTML;
+    assert.equal(crewRendered.includes('Save credit'), false, route);
+    assert.equal(crewRendered.includes('18500'), false, route);
+    assert.equal(crewRendered.includes('41.50'), false, route);
+    assert.equal(crewRendered.includes('30.25'), false, route);
+    assert.equal(crewRendered.includes('Pay for this day'), false, route);
+    assert.equal(w.document.getElementById('jc-tab-costing').style.display, 'none', route);
+    assert.equal(w.document.getElementById('jc-value-group').style.display, 'none', route);
+    assert.equal(w.document.getElementById('jc-value').value, '', route);
+  }
+  showEntry('crewview');
+  call('showPage', 'jobs');
+  assert.equal(w.document.getElementById('page-crewview').classList.contains('active'), true);
+  assert.equal(w.document.getElementById('page-jobs').classList.contains('active'), false);
   assert.equal(call('jcSetHourCredit', DAY, 0, { creditedTenths: 10, reason: 'crew attempt' }).error, 'office-only');
   assert.equal(call('jcClearHourCredit', DAY, 0).error, 'office-only');
   assert.equal(J()[0].dayLogs[DAY].hourAdjustments[0].creditedTenths, 75);
-
-  showEntry('jobs');
-  html = call('jcDayCrewHtml', DAY, J()[0].dayLogs[DAY]);
-  assert.equal(html.includes('Save credit'), false);
-  assert.equal(call('jcSetHourCredit', DAY, 0, { creditedTenths: 10, reason: 'crew from jobs' }).error, 'office-only');
-  assert.equal(J()[0].dayLogs[DAY].hourAdjustments[0].creditedTenths, 75);
-  assert.equal(J()[0].dayLogs[DAY].crewPresent[0].startTime, '7:50 AM');
 
   w.localStorage.removeItem('fpRole');
   showEntry('dashboard');
