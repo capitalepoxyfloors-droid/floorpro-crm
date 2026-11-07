@@ -8184,6 +8184,8 @@ function jcSetHourCredit(ds, idx, opts){
     if(!allowed.includes(tenths)) return {ok:false, error:'not-a-tenth-choice'};
     requestedMinutes=mins;
   }
+  // by/at here are only a local draft. The database trigger replaces them with
+  // the signed-in pin account and the database clock, and ignores these values.
   const row={
     crewIdx:identity.crewIdx,
     name:identity.name,
