@@ -181,6 +181,7 @@ GRANT USAGE ON SCHEMA private TO authenticated;
   psql(db, fs.readFileSync(path.join(root, 'supabase/migrations/20261024140000_role_split_rls.sql'), 'utf8'));
   psql(db, fs.readFileSync(path.join(root, 'supabase/migrations/20261027120000_patch_job_records.sql'), 'utf8'));
   psql(db, fs.readFileSync(path.join(root, 'supabase/migrations/20261107134106_guard_credited_hours.sql'), 'utf8'));
+  psql(db, fs.readFileSync(path.join(root, 'supabase/migrations/20261107143000_fix_patch_job_insert.sql'), 'utf8'));
 
   psql(db, `
 INSERT INTO public.pin_accounts (kind, label, auth_user_id, office_id, session_nonce)
@@ -342,4 +343,107 @@ WHERE key = 'job_records';
   assert.equal(credits('harbor', DAY)[0].creditedTenths, 75);
   assert.equal(jobs()[0].dayLogs[DAY].startTime, '9:00 AM');
   assert.equal(jobs()[0].dayLogs[DAY].endTime, '3:10 PM');
+
+  assert.equal(psqlTuples("SELECT count(*) FROM public.settings WHERE key = 'job_records'"), '1');
+  const harborBeforeInsert = jobs()[0];
+  asRole(OFFICE, 'office', `
+SELECT public.fp_patch_job_records($payload$${rawJson([{
+    id: 'ridge', op: 'insert',
+    patch: {
+      customer: 'Ridge Hall',
+      status: 'scheduled',
+      dayLogs: {
+        [DAY]: {
+          fullDay: false, noWork: false,
+          crewPresent: [{ crewIdx: 1, name: 'Blake Diaz', startTime: '7:45 AM', endTime: '8:15 AM' }],
+          hourAdjustments: [{ crewIdx: 1, name: 'Blake Diaz', creditedTenths: 18, reason: 'Balance to 8.0h', by: 'Impersonator', at: '2000-01-01T00:00:00.000Z' }],
+        },
+      },
+    },
+  }])}$payload$::jsonb);
+`, { commit: true });
+  assert.equal(psqlTuples("SELECT count(*) FROM public.settings WHERE key = 'job_records'"), '1');
+  const ridge = jobs().find(j => j.id === 'ridge');
+  const harbor = jobs().find(j => j.id === 'harbor');
+  assert.ok(ridge);
+  assert.equal(ridge.customer, 'Ridge Hall');
+  assert.equal(ridge.dayLogs[DAY].crewPresent[0].startTime, '7:45 AM');
+  assert.equal(ridge.dayLogs[DAY].hourAdjustments[0].creditedTenths, 18);
+  assert.equal(ridge.dayLogs[DAY].hourAdjustments[0].by, 'Ops Reviewer');
+  assert.notEqual(ridge.dayLogs[DAY].hourAdjustments[0].at, '2000-01-01T00:00:00.000Z');
+  assert.equal(harbor.dayLogs[DAY].notes, 'office note');
+  assert.equal(harbor.dayLogs[DAY].hourAdjustments[0].creditedTenths, 75);
+  assert.equal(harbor.dayLogs[DAY].hourAdjustments[0].at, sealed[0].at);
+  assert.equal(harbor.updated_at, harborBeforeInsert.updated_at);
+
+  asRole(OFFICE, 'office', `
+SELECT public.fp_patch_job_records($payload$${rawJson([{
+    id: 'harbor', op: 'patch',
+    expected: { updated_at: harbor.updated_at || null, notes: harbor.notes },
+    patch: { notes: 'patched after the insert' },
+    drop: [],
+  }])}$payload$::jsonb);
+`, { commit: true });
+  assert.equal(jobs().find(j => j.id === 'harbor').notes, 'patched after the insert');
+  assert.equal(jobs().find(j => j.id === 'harbor').dayLogs[DAY].hourAdjustments[0].creditedTenths, 75);
+  assert.equal(jobs().find(j => j.id === 'ridge').dayLogs[DAY].hourAdjustments[0].creditedTenths, 18);
+  assert.equal(psqlTuples("SELECT count(*) FROM public.settings WHERE key = 'job_records'"), '1');
+
+  const crewFlags = JSON.parse(JSON.stringify(jobs().find(j => j.id === 'harbor').dayLogs));
+  crewFlags[DAY].fullDay = true;
+  crewFlags[DAY].noWork = true;
+  crewFlags[DAY].notes = 'crew flags';
+  crewFlags[DAY].hourAdjustments = [{ crewIdx: 0, name: 'Avery Cole', creditedTenths: 10, reason: 'crew wipe', by: 'Impersonator', at: '2000-01-01T00:00:00.000Z' }];
+  const harborNow = jobs().find(j => j.id === 'harbor');
+  asRole(CREW_USER, 'crew', `
+SELECT public.fp_patch_job_records($payload$${rawJson([{
+    id: 'harbor', op: 'patch',
+    expected: { updated_at: harborNow.updated_at || null, dayLogs: harborNow.dayLogs, notes: harborNow.notes },
+    patch: { dayLogs: crewFlags, notes: 'crew flags' },
+    drop: [],
+  }])}$payload$::jsonb);
+`, { commit: true });
+  const flagged = jobs().find(j => j.id === 'harbor').dayLogs[DAY];
+  assert.equal(flagged.fullDay, true);
+  assert.equal(flagged.noWork, true);
+  assert.equal(flagged.notes, 'crew flags');
+  assert.equal(flagged.hourAdjustments[0].creditedTenths, 75);
+  assert.equal(flagged.hourAdjustments[0].by, 'Ops Reviewer');
+  assert.equal(flagged.crewPresent[0].startTime, '7:50 AM');
+
+  asRole(CREW_USER, 'crew', `
+SELECT public.fp_patch_job_records($payload$${rawJson([{
+    id: 'meadow', op: 'insert',
+    patch: {
+      customer: 'Meadow Hall',
+      dayLogs: {
+        [DAY]: {
+          fullDay: true, noWork: false, notes: 'crew created',
+          crewPresent: [{ crewIdx: 0, name: 'Avery Cole', startTime: '8:00 AM', endTime: '4:00 PM' }],
+          hourAdjustments: [{ crewIdx: 0, name: 'Avery Cole', creditedTenths: 80, reason: 'crew insert', by: 'Impersonator', at: '2000-01-01T00:00:00.000Z' }],
+        },
+      },
+    },
+  }])}$payload$::jsonb);
+`, { commit: true });
+  const meadow = jobs().find(j => j.id === 'meadow');
+  assert.equal(meadow.dayLogs[DAY].notes, 'crew created');
+  assert.equal(meadow.dayLogs[DAY].fullDay, true);
+  assert.equal(meadow.dayLogs[DAY].crewPresent[0].endTime, '4:00 PM');
+  assert.equal(meadow.dayLogs[DAY].hourAdjustments, undefined);
+  assert.equal(psqlTuples("SELECT count(*) FROM public.settings WHERE key = 'job_records'"), '1');
+  assert.equal(jobs().filter(j => j.id === 'harbor' || j.id === 'ridge' || j.id === 'meadow').length, 3);
+
+  const roleless = JSON.parse(JSON.stringify(jobs()));
+  const rolelessHarbor = roleless.find(j => j.id === 'harbor');
+  rolelessHarbor.dayLogs[DAY].hourAdjustments[0].creditedTenths = 10;
+  rolelessHarbor.dayLogs[DAY].hourAdjustments[0].by = 'Script';
+  rolelessHarbor.dayLogs[DAY].hourAdjustments[0].at = '2001-01-01T00:00:00.000Z';
+  psql(db, `
+UPDATE public.settings SET value = '${sqlJson(roleless)}' WHERE key = 'job_records';
+`);
+  assert.equal(psqlTuples("SELECT count(*) FROM public.settings WHERE key = 'job_records'"), '1');
+  assert.equal(credits('harbor', DAY)[0].creditedTenths, 10);
+  assert.equal(credits('harbor', DAY)[0].by, 'Script');
+  assert.equal(credits('harbor', DAY)[0].at, '2001-01-01T00:00:00.000Z');
 });
