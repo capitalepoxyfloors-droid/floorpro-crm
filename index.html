@@ -589,6 +589,13 @@
   .jc-save-conflicts{flex:1 1 100%;display:flex;flex-direction:column;gap:8px;}
   .jc-conflict{border:1px solid var(--border);border-radius:10px;padding:8px 10px;font-size:13px;line-height:1.35;}
   .jc-conflict-title{font-weight:700;margin-bottom:4px;}
+  .fp-overview,.fp-plan-card,.fp-checks{border:1px solid var(--border);border-radius:12px;background:var(--surface);padding:12px;}
+  .fp-overview{margin:0 0 12px;}
+  .fp-plan-card{margin:0 12px 8px;display:flex;gap:8px;align-items:center;}
+  .fp-plan-card .fp-plan-open{flex:1;min-height:44px;text-align:left;border:none;background:none;font:inherit;font-weight:700;cursor:pointer;color:var(--text);}
+  .fp-plan-move{min-width:44px;min-height:44px;padding:0 10px;}
+  .fp-muted{color:var(--text3);font-size:13px;line-height:1.4;}
+  .fp-check-btn{min-height:44px;}
   #jc-save-btn,.jc-save-row .btn,.jc-conflict .btn,.jc-save-conflicts .btn{min-height:44px;}
   #fp-test-banner{position:sticky;top:0;z-index:80;background:#b45309;color:#fff;text-align:center;font-size:13px;font-weight:700;padding:8px 12px;letter-spacing:.2px;}
   #login-restore{display:none;margin-top:18px;}
@@ -904,6 +911,7 @@
         </div>
       </div>
       <div class="content">
+        <div id="fp-daily-checks" class="fp-checks" style="margin-bottom:14px;"></div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
           <div class="legend">
             <div class="legend-item"><div class="legend-dot" style="background:var(--accent)"></div>Epoxy</div>
@@ -1369,6 +1377,7 @@
       </div>
       <!-- Crew selector -->
       <div class="cv-crew-row" id="cv-crew-row"></div>
+      <div id="cv-today-plan" style="padding-top:8px;"></div>
       <!-- Calendar grid (dow headers + weeks injected by JS) -->
       <div id="cv-cal"></div>
       <!-- Manager access link — only visible in crew mode, very subtle -->
@@ -7603,12 +7612,387 @@ function svPickAddr(addr){
 }
 
 // ── DAILY LOG TAB ─────────────────────────────────────────────────────────────
+let _fpTodayOverride='';
+const _fpStopOrder={};
+function _fpTodayIso(){
+  if(_fpTodayOverride) return _fpTodayOverride;
+  const t=new Date();
+  return t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0')+'-'+String(t.getDate()).padStart(2,'0');
+}
+function _fpIsCrew(){
+  return localStorage.getItem('fpRole')==='crew'||document.body.classList.contains('crew-mode');
+}
+function _fpScheduledDates(job){
+  if(!job||!job.startDate||!job.endDate) return [];
+  const start=new Date(job.startDate+'T00:00:00').getDay();
+  const end=new Date(job.endDate+'T00:00:00').getDay();
+  const weekend=start===0||start===6||end===0||end===6;
+  const days=weekend?jcAllDays(job.startDate,job.endDate):jcWeekdays(job.startDate,job.endDate);
+  return [...new Set([...(days||[]),...(job.extraDays||[])])];
+}
+function _fpLogTouched(log){
+  if(!log) return false;
+  if((log.task||'').trim()||(log.notes||'').trim()||log.fullDay||log.noWork) return true;
+  if((log.startTime||'').trim()||(log.endTime||'').trim()) return true;
+  return (log.crewPresent||[]).some(c=>c&&(String(c.name||'').trim()||(c.startTime||'').trim()||(c.endTime||'').trim()));
+}
+function _fpHasProgress(log){
+  return !!(log&&((log.task||'').trim()||(log.notes||'').trim()));
+}
+function _fpNamedCrew(log){
+  return !!(log&&(log.crewPresent||[]).some(c=>c&&String(c.name||'').trim()));
+}
+function _fpHasClock(log){
+  if(!log||log.noWork) return false;
+  if(log.fullDay) return true;
+  if((log.startTime||'').trim()&&(log.endTime||'').trim()) return true;
+  return (log.crewPresent||[]).some(c=>c&&((c.startTime||'').trim()||(c.endTime||'').trim()));
+}
+function _fpStopsFor(ci, dateStr){
+  const pos=typeof seDateToPos==='function'?seDateToPos(dateStr):null;
+  if(!pos) return [];
+  const out=[];
+  const primary=newSlots[ci]?.[pos.w]?.[pos.d]||getSlot(ci,pos.w,pos.d);
+  if(primary&&primary.l&&primary.t!=='pto'){
+    const job=resolveSlotJob(ci,pos.w,pos.d,primary.l,dateStr);
+    out.push({key:'p:'+(job?.id||primary.l), label:primary.l, jobId:job?.id||'', ci, w:pos.w, d:pos.d, dateStr, pto:false});
+  }
+  getExtraSlots(ci,pos.w,pos.d).forEach((slot,i)=>{
+    if(!slot||!slot.l) return;
+    const job=slot.jobId?getJobRecord(slot.jobId):resolveSlotJob(ci,pos.w,pos.d,slot.l,dateStr);
+    out.push({key:'x'+i+':'+(job?.id||slot.jobId||slot.l), label:slot.l, jobId:job?.id||slot.jobId||'', ci, w:pos.w, d:pos.d, dateStr, pto:false});
+  });
+  if(ptoSlots[ci]?.[pos.w]?.[pos.d]) out.push({key:'pto', label:'PTO', jobId:'', ci, w:pos.w, d:pos.d, dateStr, pto:true});
+  return out;
+}
+function _fpOrderedStops(ci, dateStr){
+  const stops=_fpStopsFor(ci, dateStr);
+  const saved=_fpStopOrder[ci+'|'+dateStr]||[];
+  const byKey=new Map(stops.map(s=>[s.key,s]));
+  const ordered=[];
+  saved.forEach(k=>{ if(byKey.has(k)){ ordered.push(byKey.get(k)); byKey.delete(k); } });
+  const rest=[...byKey.values()].sort((a,b)=>(a.label||'').localeCompare(b.label)||String(a.jobId).localeCompare(String(b.jobId))||a.key.localeCompare(b.key));
+  return ordered.concat(rest);
+}
+function _fpMoveStop(ci, dateStr, key, dir){
+  if(_fpIsCrew()) return;
+  const keys=_fpOrderedStops(ci, dateStr).map(s=>s.key);
+  const i=keys.indexOf(key);
+  const j=i+dir;
+  if(i<0||j<0||j>=keys.length) return;
+  const tmp=keys[i]; keys[i]=keys[j]; keys[j]=tmp;
+  _fpStopOrder[ci+'|'+dateStr]=keys;
+  _fpPaintTodayPlan();
+}
+function _fpOpenStop(jobId, dateStr){
+  if(!jobId||typeof openJobCard!=='function'||!getJobRecord(jobId)) return;
+  openJobCard(jobId);
+  setTimeout(()=>{
+    if(typeof jcTab==='function') jcTab('log');
+    setTimeout(()=>{
+      const el=document.getElementById('jcday-'+String(dateStr||'').replace(/-/g,''));
+      if(el&&el.scrollIntoView) el.scrollIntoView({block:'start'});
+    }, 30);
+  }, 30);
+}
+function _fpPaintTodayPlan(){
+  const host=document.getElementById('cv-today-plan');
+  if(!host) return;
+  host.replaceChildren();
+  const dateStr=_fpTodayIso();
+  const heading=document.createElement('div');
+  heading.style.cssText='font-weight:700;padding:4px 12px 8px;';
+  heading.textContent='Today’s plan — '+(typeof jcFmtDate==='function'?jcFmtDate(dateStr):dateStr);
+  host.appendChild(heading);
+  const crews=cvCrewIdx===-1?CREW.map((_,i)=>i).filter(i=>!(typeof isCrewInactive==='function'&&isCrewInactive(i))):[cvCrewIdx];
+  let any=false;
+  crews.forEach(ci=>{
+    const stops=_fpOrderedStops(ci, dateStr);
+    if(!stops.length) return;
+    any=true;
+    if(crews.length>1){
+      const who=document.createElement('div');
+      who.className='fp-muted';
+      who.style.padding='0 12px';
+      who.textContent=(CREW[ci]&&(CREW[ci].full||CREW[ci].name))||'Crew';
+      host.appendChild(who);
+    }
+    stops.forEach((stop,idx)=>{
+      const card=document.createElement('div');
+      card.className='fp-plan-card';
+      const open=document.createElement('button');
+      open.type='button';
+      open.className='fp-plan-open';
+      open.textContent=(idx===0?'First stop':'Next stop')+' '+(idx+1)+'. '+(stop.pto?'PTO':stop.label);
+      if(!stop.pto&&stop.jobId) open.onclick=()=>{ _fpOpenStop(stop.jobId, dateStr); };
+      card.appendChild(open);
+      if(!_fpIsCrew()&&stops.length>1){
+        if(idx>0){
+          const up=document.createElement('button');
+          up.type='button';
+          up.className='btn btn-ghost fp-plan-move';
+          up.textContent='Move up';
+          up.onclick=()=>{ _fpMoveStop(ci, dateStr, stop.key, -1); };
+          card.appendChild(up);
+        }
+        if(idx<stops.length-1){
+          const down=document.createElement('button');
+          down.type='button';
+          down.className='btn btn-ghost fp-plan-move';
+          down.textContent='Move down';
+          down.onclick=()=>{ _fpMoveStop(ci, dateStr, stop.key, 1); };
+          card.appendChild(down);
+        }
+      }
+      host.appendChild(card);
+    });
+  });
+  if(!any){
+    const empty=document.createElement('div');
+    empty.className='fp-muted';
+    empty.style.padding='0 12px 8px';
+    empty.textContent='No stops on this day.';
+    host.appendChild(empty);
+  }else if(!_fpIsCrew()&&crews.some(ci=>_fpOrderedStops(ci, dateStr).length>1)){
+    const note=document.createElement('div');
+    note.className='fp-muted';
+    note.style.padding='0 12px 8px';
+    note.textContent='This order stays on this screen. It is not saved.';
+    host.appendChild(note);
+  }
+}
+function _fpJobsForChecks(dateStr){
+  const ids=new Set();
+  const add=job=>{ if(job&&job.id!=null) ids.add(String(job.id)); };
+  (JOB_RECORDS||[]).forEach(job=>{
+    if(_fpScheduledDates(job).includes(dateStr)||_fpLogTouched(job.dayLogs&&job.dayLogs[dateStr])) add(job);
+  });
+  const pos=typeof seDateToPos==='function'?seDateToPos(dateStr):null;
+  if(pos){
+    CREW.forEach((_,ci)=>{
+      const slots=[newSlots[ci]?.[pos.w]?.[pos.d]||getSlot(ci,pos.w,pos.d), ...getExtraSlots(ci,pos.w,pos.d)].filter(Boolean);
+      slots.forEach(slot=>{
+        if(!slot.l) return;
+        const mappedId=SLOT_JOB_MAP[jcSlotKey(ci,pos.w,pos.d)];
+        const mapped=mappedId?getJobRecord(mappedId):null;
+        if(mapped) add(mapped);
+        const job=slot.jobId?getJobRecord(slot.jobId):resolveSlotJob(ci,pos.w,pos.d,slot.l,dateStr);
+        add(job);
+      });
+    });
+  }
+  return [...ids].map(id=>(JOB_RECORDS||[]).find(j=>String(j.id)===id)).filter(Boolean);
+}
+function _fpDetailMismatches(job, dateStr){
+  const pos=typeof seDateToPos==='function'?seDateToPos(dateStr):null;
+  if(!pos||!job) return [];
+  const out=[];
+  const seen=new Set();
+  CREW.forEach((_,ci)=>{
+    const primary=newSlots[ci]?.[pos.w]?.[pos.d]||getSlot(ci,pos.w,pos.d);
+    const mapped=getJobRecord(SLOT_JOB_MAP[jcSlotKey(ci,pos.w,pos.d)]);
+    if(primary&&mapped&&String(mapped.id)===String(job.id)){
+      const schedule=(primary.l||'').trim();
+      const name=(job.customer||'').trim();
+      if(schedule&&name&&schedule!==name&&!seen.has(schedule+'|'+name)){
+        seen.add(schedule+'|'+name);
+        out.push({schedule, job:name});
+      }
+    }
+    getExtraSlots(ci,pos.w,pos.d).forEach(slot=>{
+      if(!slot||!slot.jobId||String(slot.jobId)!==String(job.id)) return;
+      const schedule=(slot.l||'').trim();
+      const name=(job.customer||'').trim();
+      if(schedule&&name&&schedule!==name&&!seen.has(schedule+'|'+name)){
+        seen.add(schedule+'|'+name);
+        out.push({schedule, job:name});
+      }
+    });
+  });
+  return out;
+}
+function _fpDailyChecks(dateStr){
+  const missing=[];
+  const time=[];
+  const details=[];
+  _fpJobsForChecks(dateStr).forEach(job=>{
+    const log=(job.dayLogs&&job.dayLogs[dateStr])||null;
+    const name=job.customer||'This job';
+    if(!(log&&log.noWork)&&!_fpHasProgress(log)){
+      missing.push({jobId:job.id, customer:name, date:dateStr, text:name+' has no update for this day.'});
+    }
+    if(log&&!log.noWork&&_fpHasClock(log)&&!_fpNamedCrew(log)){
+      time.push({jobId:job.id, customer:name, date:dateStr, text:'Who worked '+name+'?'});
+    }else if(log&&!log.noWork&&_fpHasProgress(log)&&!_fpHasClock(log)){
+      time.push({jobId:job.id, customer:name, date:dateStr, text:name+' has an update and no time.'});
+    }
+    _fpDetailMismatches(job, dateStr).forEach(row=>{
+      details.push({jobId:job.id, customer:name, date:dateStr, text:'The schedule says “'+row.schedule+'”. The job is named “'+row.job+'”.'});
+    });
+  });
+  return {missing, time, details};
+}
+let _fpChecksDate='';
+function _fpPaintDailyChecks(){
+  const host=document.getElementById('fp-daily-checks');
+  if(!host) return;
+  host.replaceChildren();
+  if(_fpIsCrew()) return;
+  const dateStr=_fpChecksDate||_fpTodayIso();
+  _fpChecksDate=dateStr;
+  const title=document.createElement('div');
+  title.style.cssText='font-weight:700;margin-bottom:8px;';
+  title.textContent='Daily checks';
+  const date=document.createElement('input');
+  date.type='date';
+  date.className='form-input fp-check-btn';
+  date.value=dateStr;
+  date.style.maxWidth='220px';
+  date.onchange=()=>{ _fpChecksDate=date.value||_fpTodayIso(); _fpPaintDailyChecks(); };
+  host.append(title, date);
+  const report=_fpDailyChecks(dateStr);
+  const groups=[['Missing job updates', report.missing],['Time to review', report.time],['Job details to review', report.details]];
+  groups.forEach(([label, rows])=>{
+    const h=document.createElement('div');
+    h.style.cssText='font-weight:700;margin-top:12px;';
+    h.textContent=label;
+    host.appendChild(h);
+    if(!rows.length){
+      const none=document.createElement('div');
+      none.className='fp-muted';
+      none.textContent='None.';
+      host.appendChild(none);
+      return;
+    }
+    rows.forEach(row=>{
+      const btn=document.createElement('button');
+      btn.type='button';
+      btn.className='btn btn-ghost fp-check-btn';
+      btn.style.cssText='width:100%;text-align:left;margin-top:6px;';
+      btn.textContent=row.text;
+      btn.onclick=()=>{ _fpOpenStop(row.jobId, row.date); };
+      host.appendChild(btn);
+    });
+  });
+}
+function _fpOverviewNode(job){
+  const root=document.createElement('section');
+  root.className='fp-overview';
+  root.id='fp-job-overview';
+  const title=document.createElement('div');
+  title.style.fontWeight='700';
+  title.textContent='Job overview';
+  root.appendChild(title);
+  const add=(label, value)=>{
+    const row=document.createElement('div');
+    row.style.cssText='margin-top:6px;font-size:14px;line-height:1.4;';
+    const name=document.createElement('span');
+    name.style.fontWeight='700';
+    name.textContent=label+': ';
+    row.append(name, document.createTextNode(value));
+    root.appendChild(row);
+  };
+  add('Scope', (job.scope||'').trim()||'Not specified');
+  const sys=JOB_SYSTEMS&&JOB_SYSTEMS[job.jobType];
+  const hasSource=!!(sys&&(sys.label||(sys.steps||[]).length||(sys.materials||[]).length));
+  add('System', hasSource?(sys.label||'Not specified'):'Not specified');
+  add('Approval', 'Not reviewed');
+  add('Color', 'Not specified');
+  add('Access', 'Not specified');
+  add('Critical notes', 'Not specified');
+  if(hasSource&&((sys.steps||[]).length||(sys.materials||[]).length)){
+    const details=document.createElement('details');
+    const sum=document.createElement('summary');
+    sum.textContent='Technical details';
+    sum.style.cssText='min-height:44px;display:flex;align-items:center;cursor:pointer;';
+    details.appendChild(sum);
+    const note=document.createElement('div');
+    note.className='fp-muted';
+    note.textContent='Not reviewed. These are the stored steps. They are not an approval.';
+    const list=document.createElement('ol');
+    (sys.steps||[]).forEach(step=>{
+      const li=document.createElement('li');
+      li.textContent=step&&step.name?step.name:'';
+      list.appendChild(li);
+    });
+    details.append(note, list);
+    const mats=document.createElement('details');
+    const sum2=document.createElement('summary');
+    sum2.textContent='Materials and equipment';
+    sum2.style.cssText='min-height:44px;display:flex;align-items:center;cursor:pointer;';
+    mats.appendChild(sum2);
+    const note2=document.createElement('div');
+    note2.className='fp-muted';
+    note2.textContent='Not reviewed. Names only.';
+    const ul=document.createElement('ul');
+    (sys.materials||[]).forEach(mat=>{
+      const li=document.createElement('li');
+      li.textContent=mat&&mat.name?mat.name:'';
+      ul.appendChild(li);
+    });
+    mats.append(note2, ul);
+    root.append(details, mats);
+  }
+  return root;
+}
+function _fpNeedsWho(log){
+  return !!(log&&!log.noWork&&_fpHasClock(log)&&!_fpNamedCrew(log));
+}
+function _fpSuggestCrew(ds, ci){
+  const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
+  const log=job.dayLogs[ds];
+  if(typeof _jcMigrateCrewPresent==='function') _jcMigrateCrewPresent(log);
+  const name=(CREW_DATA[ci]&&CREW_DATA[ci].full)||'';
+  if(!name) return;
+  if((log.crewPresent||[]).some(c=>c&&(parseInt(c.crewIdx)===ci||c.name===name))) return;
+  const row={crewIdx:ci, name, startTime:'', endTime:''};
+  try{ if(typeof jcStampEntryRates==='function') jcStampEntryRates(row, ds); }catch(e){}
+  log.crewPresent.push(row);
+  if(typeof _jrNoteEdit==='function') _jrNoteEdit(job.id);
+  jcRenderDayLogs();
+}
+function _fpWhoNode(job, ds, log){
+  if(!_fpNeedsWho(log)) return null;
+  const wrap=document.createElement('div');
+  wrap.style.cssText='padding:10px 16px 0;';
+  const label=document.createElement('div');
+  label.style.fontWeight='700';
+  label.textContent='Who worked this?';
+  const hint=document.createElement('div');
+  hint.className='fp-muted';
+  hint.textContent='A name is added only if you tap it.';
+  wrap.append(label, hint);
+  const pos=typeof seDateToPos==='function'?seDateToPos(ds):null;
+  if(pos){
+    CREW.forEach((crew,ci)=>{
+      const slot=newSlots[ci]?.[pos.w]?.[pos.d]||getSlot(ci,pos.w,pos.d);
+      const extra=getExtraSlots(ci,pos.w,pos.d);
+      const onSlot=(slot&&((resolveSlotJob(ci,pos.w,pos.d,slot.l||'',ds)?.id===job.id)||slot.l===job.customer))
+        || extra.some(x=>x&&(String(x.jobId||'')===String(job.id)||x.l===job.customer));
+      if(!onSlot) return;
+      const btn=document.createElement('button');
+      btn.type='button';
+      btn.className='btn btn-ghost';
+      btn.style.cssText='min-height:44px;margin:8px 8px 0 0;';
+      btn.textContent=crew.full||crew.name||'Crew';
+      btn.onclick=()=>{ _fpSuggestCrew(ds, ci); };
+      wrap.appendChild(btn);
+    });
+  }
+  return wrap;
+}
 function jcRenderDayLogs(){
   const job=getJobRecord(_jcId); if(!job) return;
   const container=document.getElementById('jc-day-logs');
+  if(!container) return;
   container.innerHTML='';
+  container.appendChild(_fpOverviewNode(job));
   if(!job.startDate||!job.endDate){
-    container.innerHTML='<div style="text-align:center;color:var(--text3);font-size:13px;padding:24px;">No dates set for this job.</div>'; return;
+    const empty=document.createElement('div');
+    empty.style.cssText='text-align:center;color:var(--text3);font-size:13px;padding:24px;';
+    empty.textContent='No dates set for this job.';
+    container.appendChild(empty);
+    return;
   }
   if(!job.dayLogs) job.dayLogs={};
   if(!job.extraDays) job.extraDays=[];
@@ -7707,6 +8091,12 @@ function jcRenderDayLogs(){
           <textarea class="form-textarea" placeholder="Anything worth noting — issues, decisions, next steps..." oninput="jcLogSet('${ds}','notes',this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'" onblur="jcLogSet('${ds}','notes',this.value)" style="min-height:52px;font-size:13px;overflow-y:auto;resize:none;">${log.notes||''}</textarea>
         </div>
       </div>`;
+    const who=_fpWhoNode(job, ds, log);
+    if(who){
+      const header=sec.firstElementChild;
+      if(header) header.insertAdjacentElement('afterend', who);
+      else sec.prepend(who);
+    }
     container.appendChild(sec);
   });
   // Auto-size all textareas now that content is rendered
@@ -8799,8 +9189,22 @@ function jcToggleFullDay(ds){
 function jcToggleNoWork(ds){
   const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
   const log=job.dayLogs[ds];
-  log.noWork=!log.noWork;
-  if(log.noWork) log.fullDay=false; // mutually exclusive with Full Day
+  const turningOn=!log.noWork;
+  if(turningOn){
+    const when=typeof jcFmtDate==='function'?jcFmtDate(ds):ds;
+    const who=job.customer||'this job';
+    const ok=typeof confirm==='function'?confirm('Mark no work on '+when+' for '+who+'? The clocks stay.'):false;
+    if(!ok) return;
+  }
+  const start=log.startTime||'';
+  const end=log.endTime||'';
+  const clocks=(log.crewPresent||[]).map(c=>({startTime:(c&&c.startTime)||'', endTime:(c&&c.endTime)||''}));
+  log.noWork=turningOn;
+  if(log.noWork) log.fullDay=false;
+  log.startTime=start;
+  log.endTime=end;
+  (log.crewPresent||[]).forEach((c,i)=>{ if(!c||!clocks[i]) return; c.startTime=clocks[i].startTime; c.endTime=clocks[i].endTime; });
+  if(turningOn&&typeof logAudit==='function') logAudit('no_work', job.customer||'', 'No work on '+ds+' for '+(job.customer||'this job')+'. Clocks kept.');
   jcRenderDayLogs();
   saveJobRecords();
 }
@@ -11266,6 +11670,7 @@ function renderCrewView(){
   }
 
   elCal.innerHTML=`<div class="cv-dow-row">${dowHdr}</div>${weeksHtml}`;
+  _fpPaintTodayPlan();
   _updateMyPtoBadge();
   if(typeof msgPaintBadges==='function') msgPaintBadges();
 }
@@ -18497,6 +18902,7 @@ function renderSchedule(){
   const endMon=getMonday(weekOffset+schedViewWeeks-1);
   const end0=new Date(endMon); end0.setDate(end0.getDate()+5);
   document.getElementById('week-label').textContent=fmtDate(start0)+' – '+fmtDate(end0);
+  _fpPaintDailyChecks();
 
 }
 
