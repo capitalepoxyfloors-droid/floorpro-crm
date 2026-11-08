@@ -928,6 +928,7 @@
         </div>
       </div>
       <div class="content">
+        <div id="fp-open-issues" class="fp-checks" style="margin-bottom:14px;"></div>
         <div id="fp-daily-checks" class="fp-checks" style="margin-bottom:14px;"></div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
           <div class="legend">
@@ -6558,6 +6559,8 @@ function openJobCard(jobId){
   document.getElementById('jc-value-group').style.display = hideValue ? 'none' : '';
   document.getElementById('jc-tab-costing').style.display = hideValue ? 'none' : '';
   document.getElementById('jc-invoice-section').style.display = hideValue ? 'none' : '';
+  const oldDocUpload=document.getElementById('jc-doc-upload-btn');
+  if(oldDocUpload) oldDocUpload.style.display = localStorage.getItem('fpRole')==='crew' ? 'none' : '';
   // Header
   document.getElementById('jc-name').textContent=job.customer||'Unnamed Job';
   const meta=[];
@@ -7351,6 +7354,7 @@ function jcTab(name){
   if(name==='messages') msgOpenJob();
   if(name==='costing') renderJobCosting();
   if(name==='materials') jcRenderMaterials();
+  if(name==='info') _fpPaintCurrentPlans();
   if(name==='log'){
     jcRenderDayLogs();
     // Pre-fill the "add day" picker with the next weekday after the job's last day
@@ -7733,6 +7737,26 @@ function _fpPaintTodayPlan(){
       open.textContent=stop.pto?'PTO':stop.label;
       if(!stop.pto&&stop.jobId) open.onclick=()=>{ _fpOpenStop(stop.jobId, dateStr); };
       card.appendChild(open);
+      if(_fpOpsReady()&&!_fpIsCrew()&&!stop.pto&&stops.filter(s=>!s.pto).length>1){
+        const ups=stops.filter(s=>!s.pto);
+        const at=ups.findIndex(s=>s.key===stop.key);
+        if(at>0){
+          const up=document.createElement('button');
+          up.type='button';
+          up.className='btn btn-ghost fp-plan-move';
+          up.textContent='Move up';
+          up.onclick=()=>{ _fpPersistMove(ci, dateStr, stop.key, -1); };
+          card.appendChild(up);
+        }
+        if(at>=0&&at<ups.length-1){
+          const down=document.createElement('button');
+          down.type='button';
+          down.className='btn btn-ghost fp-plan-move';
+          down.textContent='Move down';
+          down.onclick=()=>{ _fpPersistMove(ci, dateStr, stop.key, 1); };
+          card.appendChild(down);
+        }
+      }
       host.appendChild(card);
     });
   });
@@ -7742,7 +7766,7 @@ function _fpPaintTodayPlan(){
     empty.style.padding='0 12px 8px';
     empty.textContent='No stops on this day.';
     host.appendChild(empty);
-  }else if(!_fpIsCrew()){
+  }else if(!_fpIsCrew()&&!_fpOpsReady()){
     const note=document.createElement('div');
     note.className='fp-muted';
     note.style.padding='0 12px 8px';
@@ -7972,6 +7996,274 @@ function _fpWhoNode(job, ds, log){
   }
   return wrap;
 }
+let _fpOps={state:'unknown'};
+let _fpIssueDraft={note:'', key:'', status:''};
+let _fpStopAck={};
+function _fpOpsReady(){ return _fpOps.state==='ready'; }
+async function _fpOpsProbe(){
+  if(_fpOps.state==='ready'||_fpOps.state==='missing'||_fpOps.state==='pending') return;
+  _fpOps.state='pending';
+  let rpc={missing:true};
+  try{ if(typeof sb!=='undefined'&&sb.rpc) rpc=await sb.rpc('fp_field_ops_ready',{}); }catch(e){ rpc={missing:true}; }
+  const data=rpc&&rpc.data;
+  _fpOps.state=(rpc&&rpc.ok&&data&&data.documents&&data.issues&&data.stop_order)?'ready':'missing';
+  _fpPaintCurrentPlans();
+  _fpPaintIssueForm();
+  _fpPaintOpenIssues();
+  if(typeof _fpPaintTodayPlan==='function') _fpPaintTodayPlan();
+}
+function _fpOpsLine(host, text){
+  if(!host) return;
+  host.replaceChildren();
+  const el=document.createElement('div');
+  el.className='fp-muted';
+  el.textContent=text;
+  host.appendChild(el);
+}
+function _fpPaintCurrentPlans(){
+  const host=document.getElementById('fp-current-plans');
+  if(!host) return;
+  if(!_fpOpsReady()){
+    _fpOpsLine(host, 'Current plans are not on this test yet.');
+    _fpOpsProbe();
+    return;
+  }
+  host.replaceChildren();
+  const title=document.createElement('div');
+  title.style.fontWeight='700';
+  title.textContent='Current plans';
+  host.appendChild(title);
+  const list=document.createElement('div');
+  list.id='fp-plan-docs';
+  host.appendChild(list);
+  if(!_fpIsCrew()){
+    const row=document.createElement('div');
+    row.style.cssText='display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;';
+    const name=document.createElement('input');
+    name.id='fp-doc-title';
+    name.className='form-input';
+    name.placeholder='Plan name';
+    name.style.flex='1';
+    const file=document.createElement('input');
+    file.id='fp-doc-file';
+    file.type='file';
+    const btn=document.createElement('button');
+    btn.type='button';
+    btn.className='btn btn-primary';
+    btn.style.minHeight='44px';
+    btn.textContent='Save current plan';
+    btn.onclick=()=>{ _fpSaveCurrentPlan(); };
+    row.append(name, file, btn);
+    host.appendChild(row);
+  }
+  const msg=document.createElement('div');
+  msg.id='fp-doc-status';
+  msg.className='fp-muted';
+  host.appendChild(msg);
+  _fpLoadCurrentPlans();
+}
+async function _fpLoadCurrentPlans(){
+  const list=document.getElementById('fp-plan-docs');
+  if(!list||!_jcId) return;
+  const rpc=await sb.rpc('fp_documents_for_job',{p_job:String(_jcId)});
+  if(!rpc.ok){
+    list.textContent='Not loaded.';
+    return;
+  }
+  list.replaceChildren();
+  const rows=Array.isArray(rpc.data)?rpc.data:[];
+  if(!rows.length){
+    const empty=document.createElement('div');
+    empty.className='fp-muted';
+    empty.textContent='No current plan.';
+    list.appendChild(empty);
+    return;
+  }
+  rows.forEach(row=>{
+    const btn=document.createElement('button');
+    btn.type='button';
+    btn.className='btn btn-ghost';
+    btn.style.cssText='min-height:44px;width:100%;text-align:left;margin-top:6px;';
+    btn.textContent='Open '+(row.title||'plan');
+    btn.onclick=()=>{ _fpOpenCurrentPlan(row.revision_id); };
+    list.appendChild(btn);
+  });
+}
+async function _fpSaveCurrentPlan(){
+  const status=document.getElementById('fp-doc-status');
+  const title=(document.getElementById('fp-doc-title')?.value||'').trim();
+  const file=document.getElementById('fp-doc-file')?.files?.[0];
+  if(!title||!file){
+    if(status) status.textContent='Add a name and a file.';
+    return;
+  }
+  if(status) status.textContent='Saving…';
+  const created=await sb.rpc('fp_document_create',{p_job:String(_jcId), p_title:title});
+  if(!created.ok||!created.data){
+    if(status) status.textContent='Not saved. The file is still here.';
+    return;
+  }
+  const docId=created.data;
+  const key=(crypto.randomUUID?crypto.randomUUID():String(Date.now()));
+  const path='jobdocs-rev/'+docId+'/'+key;
+  let uploaded=false;
+  try{
+    const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${path}`,{
+      method:'POST',
+      headers:{ ...(await fpStorageHeaders()), 'Content-Type':file.type||'application/octet-stream' },
+      body:file
+    });
+    uploaded=!!res.ok;
+  }catch(e){ uploaded=false; }
+  if(!uploaded){
+    if(status) status.textContent='Not saved. The file is still here.';
+    return;
+  }
+  const staged=await sb.rpc('fp_document_stage_revision',{p_document:docId, p_key:key, p_path:path, p_bytes:file.size});
+  if(!staged.ok){
+    if(status) status.textContent='Not saved. The file is still here.';
+    return;
+  }
+  const promoted=await sb.rpc('fp_document_promote',{p_document:docId, p_revision:staged.data, p_expected:null});
+  if(!promoted.ok){
+    if(status) status.textContent=promoted.stale||(promoted.error&&/stale_revision/.test(JSON.stringify(promoted.error)))?'Not saved. Someone else updated this plan.':'Not saved. The file is still here.';
+    return;
+  }
+  if(status) status.textContent='Saved.';
+  _fpLoadCurrentPlans();
+}
+async function _fpOpenCurrentPlan(revisionId){
+  const status=document.getElementById('fp-doc-status');
+  const rpc=await sb.rpc('fp_document_open',{p_revision:revisionId});
+  if(!rpc.ok||!rpc.data){
+    if(status) status.textContent='Not opened.';
+    return;
+  }
+  try{ await fpSignPaths([rpc.data]); }catch(e){
+    if(status) status.textContent='Not opened.';
+  }
+}
+function _fpPaintIssueForm(){
+  const host=document.getElementById('fp-issue-form');
+  if(!host) return;
+  host.replaceChildren();
+  if(!_fpIsCrew()||!_fpOpsReady()){
+    if(_fpOps.state==='unknown'||_fpOps.state==='pending') _fpOpsProbe();
+    return;
+  }
+  const label=document.createElement('div');
+  label.style.cssText='font-weight:700;margin-top:12px;';
+  label.textContent='Report an issue';
+  const box=document.createElement('textarea');
+  box.id='fp-issue-note';
+  box.className='form-textarea';
+  box.maxLength=2000;
+  box.placeholder='Short note';
+  box.value=_fpIssueDraft.note||'';
+  box.oninput=()=>{ _fpIssueDraft.note=box.value; _fpIssueDraft.status=''; };
+  const btn=document.createElement('button');
+  btn.type='button';
+  btn.className='btn btn-primary';
+  btn.style.cssText='min-height:44px;margin-top:8px;';
+  btn.textContent='Record issue';
+  btn.onclick=()=>{ _fpRecordIssue(); };
+  const msg=document.createElement('div');
+  msg.id='fp-issue-status';
+  msg.className='fp-muted';
+  msg.textContent=_fpIssueDraft.status||'';
+  host.append(label, box, btn, msg);
+}
+async function _fpRecordIssue(){
+  const note=(_fpIssueDraft.note||'').trim();
+  const msg=document.getElementById('fp-issue-status');
+  if(!note){
+    _fpIssueDraft.status='Add a short note.';
+    if(msg) msg.textContent=_fpIssueDraft.status;
+    return;
+  }
+  if(!_fpIssueDraft.key) _fpIssueDraft.key=(crypto.randomUUID?crypto.randomUUID():String(Date.now()));
+  const day=_fpTodayIso();
+  const rpc=await sb.rpc('fp_issue_create',{p_job:String(_jcId), p_date:day, p_note:note, p_category:null, p_key:_fpIssueDraft.key, p_photo:null});
+  if(!rpc.ok||!rpc.data){
+    _fpIssueDraft.status='Not recorded. Your note is still here.';
+    if(msg) msg.textContent=_fpIssueDraft.status;
+    return;
+  }
+  _fpIssueDraft={note:'', key:'', status:'Issue recorded.'};
+  _fpPaintIssueForm();
+}
+function _fpPaintOpenIssues(){
+  const host=document.getElementById('fp-open-issues');
+  if(!host) return;
+  if(_fpIsCrew()){ host.replaceChildren(); return; }
+  host.replaceChildren();
+  const title=document.createElement('div');
+  title.style.fontWeight='700';
+  title.textContent='Open issues';
+  host.appendChild(title);
+  if(!_fpOpsReady()){
+    const line=document.createElement('div');
+    line.className='fp-muted';
+    line.textContent='Not available on this test yet.';
+    host.appendChild(line);
+    _fpOpsProbe();
+    return;
+  }
+  _fpLoadOpenIssues();
+}
+async function _fpLoadOpenIssues(){
+  const host=document.getElementById('fp-open-issues');
+  if(!host) return;
+  const rpc=await sb.rpc('fp_issues_open_unassigned',{});
+  if(!rpc.ok){
+    const line=document.createElement('div');
+    line.className='fp-muted';
+    line.textContent='Not loaded.';
+    host.appendChild(line);
+    return;
+  }
+  const rows=Array.isArray(rpc.data)?rpc.data:[];
+  if(!rows.length){
+    const line=document.createElement('div');
+    line.className='fp-muted';
+    line.textContent='None.';
+    host.appendChild(line);
+    return;
+  }
+  rows.forEach(row=>{
+    const btn=document.createElement('button');
+    btn.type='button';
+    btn.className='btn btn-ghost fp-check-btn';
+    btn.style.cssText='width:100%;text-align:left;margin-top:6px;';
+    btn.textContent=(row.note||'Issue');
+    if(row.job_id) btn.onclick=()=>{ _fpOpenStop(row.job_id, row.work_date); };
+    host.appendChild(btn);
+  });
+}
+async function _fpPersistMove(ci, dateStr, key, dir){
+  const ack=_fpStopAck[ci+'|'+dateStr]||{revision:0, ids:[]};
+  const ids=ack.ids.slice();
+  let i=ids.indexOf(key);
+  if(i<0){
+    const fresh=_fpOrderedStops(ci, dateStr).filter(s=>!s.pto&&s.jobId).map(s=>String(s.jobId));
+    fresh.forEach(id=>{ if(!ids.includes(id)) ids.push(id); });
+    i=ids.indexOf(key);
+  }
+  const j=i+dir;
+  if(i<0||j<0||j>=ids.length) return;
+  const tmp=ids[i]; ids[i]=ids[j]; ids[j]=tmp;
+  const rpc=await sb.rpc(ack.revision? 'fp_stop_order_set':'fp_stop_order_set',{p_idx:ci, p_date:dateStr, p_ids:ids, p_expected:ack.revision||0});
+  if(!rpc.ok){
+    const host=document.getElementById('cv-today-plan');
+    const line=document.createElement('div');
+    line.className='fp-muted';
+    line.textContent='Not saved.';
+    if(host) host.appendChild(line);
+    return;
+  }
+  _fpStopAck[ci+'|'+dateStr]={revision:rpc.data, ids};
+  _fpPaintTodayPlan();
+}
 function jcRenderDayLogs(){
   const job=getJobRecord(_jcId); if(!job) return;
   const container=document.getElementById('jc-day-logs');
@@ -8023,8 +8315,7 @@ function jcRenderDayLogs(){
         <div style="font-size:13px;font-weight:700;">Day ${idx+1} — ${jcFmtDate(ds)}</div>
         <div style="display:flex;align-items:center;gap:8px;">
           ${missingTime?`<div class="status-pill" style="font-size:10px;background:var(--red-dim,#fff0f0);color:var(--red,#e53e3e);" title="Logged but no start/end time (or Full Day) entered — this day won't count toward labor cost in Job Costing until a time is entered.">⚠ Missing Time</div>`:''}
-          ${log.noWork?`<div class="status-pill" style="font-size:10px;background:var(--surface3,#eee);color:var(--text2);" title="Marked as no work completed — excluded from labor cost and won't be flagged as missing time.">🚫 No Work</div>`:`<div class="status-pill ${filled?'pill-active':'pill-complete'}" style="font-size:10px;">${filled?'✓ Logged':'Not yet filled in'}</div>`}
-          ${_isOwnerView?`<button id="jcnw-${key}" onclick="jcToggleNoWork('${ds}')" title="Crew was pulled off / not on site this day — excludes it from labor cost without flagging it as a missing-time error." style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--text3);cursor:pointer;white-space:nowrap;background:${log.noWork?'var(--text3)':'none'};color:${log.noWork?'#fff':'var(--text3)'};">🚫 ${log.noWork?'No Work Completed':'No Work Completed?'}</button>`:''}
+          ${log.noWork?`<div class="status-pill" style="font-size:10px;background:var(--surface3,#eee);color:var(--text2);">No work</div>`:`<div class="status-pill ${filled?'pill-active':'pill-complete'}" style="font-size:10px;">${filled?'✓ Logged':'Not yet filled in'}</div>`}
           ${(idx===days.length-1||(!_scheduledSet.has(ds)&&job.extraDays.includes(ds)))&&_isOwnerView?`<button onclick="jcRemoveLastDay('${ds}')" style="background:none;border:1px solid var(--red);color:var(--red);font-size:10px;padding:2px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;">✕ Remove Day</button>`:''}
         </div>
       </div>
@@ -8100,6 +8391,10 @@ function jcRenderDayLogs(){
   saveWrap.style.cssText='padding:16px 0 4px;';
   saveWrap.innerHTML=`<div class="jc-save-row"><div data-jc-save-status class="jc-save-status" data-state="clean"></div><button type="button" data-jc-save-retry class="btn btn-ghost" style="display:none;" onclick="jcSaveRetry()">Retry</button><div data-jc-save-conflicts class="jc-save-conflicts"></div><button onclick="saveJobCard()" class="btn btn-primary" style="flex:1 1 140px;font-size:15px;padding:13px;border-radius:10px;letter-spacing:.3px;min-height:44px;">Save log</button></div>`;
   container.appendChild(saveWrap);
+  const issueHost=document.createElement('div');
+  issueHost.id='fp-issue-form';
+  container.appendChild(issueHost);
+  _fpPaintIssueForm();
   _jrPaintSaveStatus();
   // Scroll to today's day section if it's in the job's date range
   const _todayKey=new Date().toISOString().slice(0,10).replace(/-/g,'');
@@ -18895,6 +19190,7 @@ function renderSchedule(){
   const endMon=getMonday(weekOffset+schedViewWeeks-1);
   const end0=new Date(endMon); end0.setDate(end0.getDate()+5);
   document.getElementById('week-label').textContent=fmtDate(start0)+' – '+fmtDate(end0);
+  _fpPaintOpenIssues();
   _fpPaintDailyChecks();
 
 }
@@ -20589,8 +20885,10 @@ function jcRenderJobDocs(){
   const docs=(JOB_DOCS[job.id]||[]).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''));
   const isCrew=localStorage.getItem('fpRole')==='crew';
   const fmtD=d=>d?new Date(d+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'';
+  const zone=document.getElementById('jc-docs-dropzone');
+  if(zone) zone.style.pointerEvents=isCrew?'none':'';
   wrap.innerHTML = docs.length===0
-    ? `<div style="font-size:11.5px;color:var(--text3);">No documents yet — tap to upload or drag &amp; drop files here.</div>`
+    ? `<div style="font-size:11.5px;color:var(--text3);">${isCrew?'No documents yet.':'No documents yet — tap to upload or drag &amp; drop files here.'}</div>`
     : docs.map(d=>`<div style="display:flex;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px solid var(--border);">
         <span style="font-size:18px;flex-shrink:0;">${_vehDocIcon(d.name||'')}</span>
         <div style="flex:1;min-width:0;">
@@ -20626,6 +20924,10 @@ async function jcDocDrop(e){
 // Shared upload core — called by the file-input (click-to-browse) and the drag & drop zone.
 async function jcUploadJobDocFiles(files){
   const job=getJobRecord(_jcId); if(!job) return;
+  if(localStorage.getItem('fpRole')==='crew'){
+    if(typeof showToast==='function') showToast('Not saved.');
+    return;
+  }
   files=files||[];
   if(!files.length) return;
   const btn=document.getElementById('jc-doc-upload-btn');
@@ -21592,10 +21894,11 @@ async function deleteMaintEntry(id){
       <div class="form-group" id="jc-docs-group">
         <label class="form-label">📄 Job Documents</label>
         <div id="jc-docs-dropzone" ondragover="jcDocDragOver(event)" ondragleave="jcDocDragLeave(event)" ondrop="jcDocDrop(event)" style="border:1.5px dashed var(--border2);border-radius:10px;padding:10px;margin-top:4px;transition:border-color .15s,background .15s;">
-          <div id="jc-docs-list"></div>
+          <div id="jc-docs-list"><div style="font-size:11.5px;color:var(--text3);">No documents yet.</div></div>
           <input type="file" id="jc-doc-file" multiple style="display:none;" onchange="jcUploadJobDocs()"/>
           <button type="button" class="btn btn-ghost" id="jc-doc-upload-btn" style="width:100%;margin-top:8px;" onclick="document.getElementById('jc-doc-file').click()">📎 Upload Document</button>
         </div>
+        <div id="fp-current-plans" style="margin-top:12px;"></div>
       </div>
     </div>
     <!-- Materials Pane -->
