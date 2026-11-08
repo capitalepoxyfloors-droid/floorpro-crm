@@ -147,17 +147,32 @@ function inkOutsideSquircle(png) {
   return outside;
 }
 
-function inkOutsideCircle(png) {
-  const a = png.width / 2;
+function furthestInkFraction(png) {
   const cx = png.width / 2;
   const cy = png.height / 2;
+  const limit = png.width / 2;
+  let far = 0;
+  for (let y = 0; y < png.height; y++) {
+    for (let x = 0; x < png.width; x++) {
+      if (!isInk(png, x, y)) continue;
+      const dist = Math.hypot(x + 0.5 - cx, y + 0.5 - cy);
+      if (dist > far) far = dist;
+    }
+  }
+  return far / limit;
+}
+
+function inkOutsideRadius(png, radiusFraction) {
+  const cx = png.width / 2;
+  const cy = png.height / 2;
+  const radius = png.width * radiusFraction;
   let outside = 0;
   for (let y = 0; y < png.height; y++) {
     for (let x = 0; x < png.width; x++) {
       if (!isInk(png, x, y)) continue;
       const dx = x + 0.5 - cx;
       const dy = y + 0.5 - cy;
-      if (dx * dx + dy * dy > a * a) outside += 1;
+      if (dx * dx + dy * dy > radius * radius) outside += 1;
     }
   }
   return outside;
@@ -345,11 +360,16 @@ test('manifests install on the GitHub Pages path, and the worker does not cache 
   const maskable = readPng(fs.readFileSync(path.join(root, 'icon-maskable.png')));
   assert.deepEqual([plain.width, plain.height], [512, 512]);
   assert.deepEqual([maskable.width, maskable.height], [512, 512]);
-  assert.ok(wordmarkHeight(plain) >= 0.85, 'the plain icon should use most of the square height');
+  assert.ok(wordmarkHeight(plain) >= 0.85, 'the Apple icon should use most of the square height');
   assert.ok(wordmarkWidth(plain) <= 0.75, 'a portrait wordmark cannot fill the square width');
-  assert.ok(wordmarkHeight(maskable) >= 0.85);
-  assert.equal(inkOutsideSquircle(maskable), 0, 'squircle and rounded-square masks must keep the letters');
-  assert.ok(inkOutsideCircle(maskable) > 0, 'a circle still crops this portrait mark');
+  assert.ok(wordmarkHeight(plain) > wordmarkHeight(maskable));
+  const reach = furthestInkFraction(maskable);
+  assert.ok(reach <= 0.80, 'maskable ink must stay inside the safe circle');
+  assert.ok(reach >= 0.75, 'maskable ink should reach the safe circle');
+  assert.equal(inkOutsideRadius(maskable, 0.40), 0);
+  assert.equal(inkOutsideRadius(maskable, 0.50), 0);
+  assert.equal(inkOutsideSquircle(maskable), 0);
+  assert.ok(wordmarkWidth(maskable) < 0.55, 'the safe circle leaves side space');
   assert.deepEqual(corner(maskable, 0, 0), [255, 255, 255]);
   assert.deepEqual(corner(maskable, 511, 511), [255, 255, 255]);
   assert.equal(manifest.start_url, '/floorpro-crm/');
