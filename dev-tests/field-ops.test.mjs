@@ -174,8 +174,13 @@ test('office can still call the old document save, and crew cannot write it', as
 });
 
 test('a stale stop-order save leaves the previous order', async () => {
+  rpcCalls.length = 0;
   ev("_fpStopAck['0|2026-11-02']={revision:2, ids:['north','east']};");
   await ev("_fpPersistMove(0,'2026-11-02','north',1)");
   assert.equal(JSON.stringify(ev("_fpStopAck['0|2026-11-02'].ids")), JSON.stringify(['north', 'east']));
   assert.equal(ev("_fpStopAck['0|2026-11-02'].revision"), 2);
+  const sent = rpcCalls.filter(c => c.url.includes('fp_stop_order_set'));
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].body.p_ids, ['east', 'north']);
+  assert.equal(sent[0].body.p_expected, 2);
 });

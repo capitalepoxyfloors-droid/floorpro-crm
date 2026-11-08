@@ -7679,10 +7679,15 @@ function _fpStopsFor(ci, dateStr){
 function _fpOrderedStops(ci, dateStr){
   const stops=_fpStopsFor(ci, dateStr);
   const saved=_fpStopOrder[ci+'|'+dateStr]||[];
+  const byId=new Map(stops.filter(s=>s.jobId).map(s=>[String(s.jobId),s]));
   const byKey=new Map(stops.map(s=>[s.key,s]));
   const ordered=[];
-  saved.forEach(k=>{ if(byKey.has(k)){ ordered.push(byKey.get(k)); byKey.delete(k); } });
-  const rest=[...byKey.values()].sort((a,b)=>(a.label||'').localeCompare(b.label)||String(a.jobId).localeCompare(String(b.jobId))||a.key.localeCompare(b.key));
+  const used=new Set();
+  saved.forEach(k=>{
+    const stop=byId.get(String(k))||byKey.get(k);
+    if(stop&&!used.has(stop.key)){ ordered.push(stop); used.add(stop.key); }
+  });
+  const rest=stops.filter(s=>!used.has(s.key)).sort((a,b)=>(a.label||'').localeCompare(b.label)||String(a.jobId).localeCompare(String(b.jobId))||a.key.localeCompare(b.key));
   return ordered.concat(rest);
 }
 function _fpMoveStop(ci, dateStr, key, dir){
@@ -7766,6 +7771,8 @@ function _fpPaintTodayPlan(){
     empty.style.padding='0 12px 8px';
     empty.textContent='No stops on this day.';
     host.appendChild(empty);
+  }else if(!_fpIsCrew()&&_fpOpsReady()){
+    crews.forEach(ci=>{ if(_fpStopsFor(ci, dateStr).length) _fpEnsureStopOrder(ci, dateStr); });
   }else if(!_fpIsCrew()&&!_fpOpsReady()){
     const note=document.createElement('div');
     note.className='fp-muted';
@@ -8245,19 +8252,40 @@ async function _fpLoadOpenIssues(){
     host.appendChild(btn);
   });
 }
+function _fpEnsureStopOrder(ci, dateStr){
+  if(!_fpOpsReady()||typeof sb==='undefined'||!sb.rpc) return;
+  const k=ci+'|'+dateStr;
+  const ack=_fpStopAck[k];
+  if(ack&&(ack.loaded||ack.pending)) return;
+  _fpStopAck[k]={revision:ack&&ack.revision||0, ids:ack&&ack.ids?ack.ids.slice():[], loaded:false, pending:true};
+  sb.rpc('fp_stop_order_read',{p_idx:ci, p_date:dateStr}).then(rpc=>{
+    const cur=_fpStopAck[k]||{};
+    if(!rpc||!rpc.ok||!rpc.data){
+      _fpStopAck[k]={revision:cur.revision||0, ids:cur.ids||[], loaded:true, pending:false};
+      return;
+    }
+    const ids=Array.isArray(rpc.data.job_ids)?rpc.data.job_ids.map(String):[];
+    _fpStopAck[k]={revision:Number(rpc.data.revision)||0, ids, loaded:true, pending:false};
+    _fpStopOrder[k]=ids;
+    _fpPaintTodayPlan();
+  }).catch(()=>{
+    const cur=_fpStopAck[k]||{};
+    _fpStopAck[k]={revision:cur.revision||0, ids:cur.ids||[], loaded:true, pending:false};
+  });
+}
 async function _fpPersistMove(ci, dateStr, key, dir){
-  const ack=_fpStopAck[ci+'|'+dateStr]||{revision:0, ids:[]};
-  const ids=ack.ids.slice();
-  let i=ids.indexOf(key);
-  if(i<0){
-    const fresh=_fpOrderedStops(ci, dateStr).filter(s=>!s.pto&&s.jobId).map(s=>String(s.jobId));
-    fresh.forEach(id=>{ if(!ids.includes(id)) ids.push(id); });
-    i=ids.indexOf(key);
-  }
+  const stops=_fpOrderedStops(ci, dateStr).filter(s=>!s.pto&&s.jobId);
+  const ack=_fpStopAck[ci+'|'+dateStr]||{revision:0, ids:stops.map(s=>String(s.jobId))};
+  const ids=(ack.ids&&ack.ids.length?ack.ids:stops.map(s=>String(s.jobId))).map(String);
+  const stop=stops.find(s=>s.key===key||String(s.jobId)===String(key));
+  const id=stop?String(stop.jobId):String(key);
+  if(!ids.includes(id)) stops.forEach(s=>{ if(!ids.includes(String(s.jobId))) ids.push(String(s.jobId)); });
+  const i=ids.indexOf(id);
   const j=i+dir;
   if(i<0||j<0||j>=ids.length) return;
-  const tmp=ids[i]; ids[i]=ids[j]; ids[j]=tmp;
-  const rpc=await sb.rpc(ack.revision? 'fp_stop_order_set':'fp_stop_order_set',{p_idx:ci, p_date:dateStr, p_ids:ids, p_expected:ack.revision||0});
+  const next=ids.slice();
+  const tmp=next[i]; next[i]=next[j]; next[j]=tmp;
+  const rpc=await sb.rpc('fp_stop_order_set',{p_idx:ci, p_date:dateStr, p_ids:next, p_expected:ack.revision||0});
   if(!rpc.ok){
     const host=document.getElementById('cv-today-plan');
     const line=document.createElement('div');
@@ -8266,7 +8294,8 @@ async function _fpPersistMove(ci, dateStr, key, dir){
     if(host) host.appendChild(line);
     return;
   }
-  _fpStopAck[ci+'|'+dateStr]={revision:rpc.data, ids};
+  _fpStopAck[ci+'|'+dateStr]={revision:Number(rpc.data)||0, ids:next, loaded:true, pending:false};
+  _fpStopOrder[ci+'|'+dateStr]=next;
   _fpPaintTodayPlan();
 }
 function jcRenderDayLogs(){
