@@ -5040,8 +5040,10 @@ function sjConfirm(){
     sjCrew.forEach(ci=>{
       if(isCrewInactive(ci)) return;
       if(newSlots[ci]?.[curW]?.[curD]){
-        // Already occupied — double-book as extra slot
+        // Already occupied — double-book as extra slot. The cell keeps one primary
+        // link. The extra job gets its own link so the server can see that stored stop.
         dbAddExtraSlot(ci,curW,curD,cust,cssType,jobId,_slotDateStr);
+        SLOT_JOB_MAP[jcSlotKey(ci,curW,curD)+'_'+jobId]=jobId;
       } else {
         if(!newSlots[ci]) newSlots[ci]={};
         if(!newSlots[ci][curW]) newSlots[ci][curW]={};
@@ -6014,6 +6016,14 @@ function jcStaleSlotMapRemovals(map, jobs){
   const removals=[];
   for(const [key, jobId] of Object.entries(map||{})){
     const id=jobId==null?'':String(jobId);
+    const extra=String(key).match(/^(\d+)_(-?\d+)_(\d+)_(.+)$/);
+    if(extra){
+      const extraParts={ci:+extra[1], w:+extra[2], d:+extra[3]};
+      if(extra[4]!==id) removals.push({key, jobId:id, reason:'unreadable key'});
+      else if(!ids.has(id)) removals.push({key, jobId:id, reason:'job is not in job records'});
+      else if(jcSlotMapIsPastWeek(extraParts)) removals.push({key, jobId:id, reason:'past week'});
+      continue;
+    }
     const parts=jcSlotMapKeyParts(key);
     if(!parts){ removals.push({key, jobId:id, reason:'unreadable key'}); continue; }
     if(!ids.has(id)){ removals.push({key, jobId:id, reason:'job is not in job records'}); continue; }
@@ -8037,7 +8047,7 @@ function _fpPaintCurrentPlans(){
     const name=document.createElement('input');
     name.id='fp-doc-title';
     name.className='form-input';
-    name.placeholder='Plan name';
+    name.placeholder='New plan name';
     name.style.flex='1';
     const file=document.createElement('input');
     file.id='fp-doc-file';
@@ -8046,7 +8056,7 @@ function _fpPaintCurrentPlans(){
     btn.type='button';
     btn.className='btn btn-primary';
     btn.style.minHeight='44px';
-    btn.textContent='Save current plan';
+    btn.textContent='Save as new plan';
     btn.onclick=()=>{ _fpSaveCurrentPlan(); };
     row.append(name, file, btn);
     host.appendChild(row);
@@ -8074,15 +8084,104 @@ async function _fpLoadCurrentPlans(){
     list.appendChild(empty);
     return;
   }
-  rows.forEach(row=>{
-    const btn=document.createElement('button');
-    btn.type='button';
-    btn.className='btn btn-ghost';
-    btn.style.cssText='min-height:44px;width:100%;text-align:left;margin-top:6px;';
-    btn.textContent='Open '+(row.title||'plan');
-    btn.onclick=()=>{ _fpOpenCurrentPlan(row.revision_id); };
-    list.appendChild(btn);
+  rows.forEach(row=>list.appendChild(_fpPlanRow(row)));
+}
+function _fpPlanRow(row){
+  const wrap=document.createElement('div');
+  wrap.style.cssText='margin-top:8px;';
+  const open=document.createElement('button');
+  open.type='button';
+  open.className='btn btn-ghost';
+  open.style.cssText='min-height:44px;width:100%;text-align:left;';
+  const size=row.byte_size?(' · '+row.byte_size+' bytes'):'';
+  open.textContent='Open '+(row.title||'plan')+size;
+  open.onclick=()=>{ _fpOpenCurrentPlan(row.revision_id); };
+  wrap.appendChild(open);
+  if(_fpIsCrew()) return wrap;
+  const row2=document.createElement('div');
+  row2.style.cssText='display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;align-items:center;';
+  const file=document.createElement('input');
+  file.type='file';
+  file.setAttribute('aria-label','New version of '+(row.title||'plan'));
+  const save=document.createElement('button');
+  save.type='button';
+  save.className='btn btn-primary';
+  save.style.minHeight='44px';
+  save.textContent='Save new version';
+  save.onclick=()=>{ _fpSavePlanVersion(row, file.files&&file.files[0]); };
+  const older=document.createElement('button');
+  older.type='button';
+  older.className='btn btn-ghost';
+  older.style.minHeight='44px';
+  older.textContent='Older versions';
+  older.onclick=()=>{ _fpTogglePlanHistory(row, wrap); };
+  row2.append(file, save, older);
+  wrap.appendChild(row2);
+  return wrap;
+}
+async function _fpTogglePlanHistory(row, wrap){
+  const existing=wrap.querySelector('.fp-plan-history');
+  if(existing){ existing.remove(); return; }
+  const box=document.createElement('div');
+  box.className='fp-plan-history fp-muted';
+  box.style.marginTop='6px';
+  box.textContent='Loading…';
+  wrap.appendChild(box);
+  const rpc=await sb.rpc('fp_document_history',{p_document:row.document_id});
+  if(!rpc||!rpc.ok){ box.textContent='Not loaded.'; return; }
+  const rows=Array.isArray(rpc.data)?rpc.data:[];
+  box.replaceChildren();
+  if(!rows.length){ box.textContent='No older versions.'; return; }
+  rows.forEach(item=>{
+    const line=document.createElement('div');
+    const size=item.byte_size?(' · '+item.byte_size+' bytes'):'';
+    line.textContent=(item.is_current?'Current version':'Older version')+size;
+    box.appendChild(line);
   });
+}
+async function _fpStorePlanFile(docId, file, expected){
+  const status=document.getElementById('fp-doc-status');
+  if(!file){
+    if(status) status.textContent='Add a file.';
+    return false;
+  }
+  if(status) status.textContent='Saving…';
+  const key=(crypto.randomUUID?crypto.randomUUID():String(Date.now()));
+  const path='jobdocs-rev/'+docId+'/'+key;
+  let uploaded=false;
+  try{
+    const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${path}`,{
+      method:'POST',
+      headers:{ ...(await fpStorageHeaders()), 'Content-Type':file.type||'application/octet-stream' },
+      body:file
+    });
+    uploaded=!!res.ok;
+  }catch(e){ uploaded=false; }
+  if(!uploaded){
+    if(status) status.textContent='Not saved. The file is still here.';
+    return false;
+  }
+  const staged=await sb.rpc('fp_document_stage_revision',{p_document:docId, p_key:key, p_path:path, p_bytes:file.size});
+  if(!staged.ok){
+    if(status) status.textContent='Not saved. The file is still here.';
+    return false;
+  }
+  const promoted=await sb.rpc('fp_document_promote',{p_document:docId, p_revision:staged.data, p_expected:expected==null?null:expected});
+  if(!promoted.ok){
+    if(status) status.textContent=promoted.stale||(promoted.error&&/stale_revision/.test(JSON.stringify(promoted.error)))?'Not saved. Someone else updated this plan.':'Not saved. The file is still here.';
+    return false;
+  }
+  if(status) status.textContent='Saved.';
+  _fpLoadCurrentPlans();
+  return true;
+}
+async function _fpSavePlanVersion(row, file){
+  if(!row||!row.document_id||!row.revision_id){
+    const status=document.getElementById('fp-doc-status');
+    if(status) status.textContent='Not saved. The file is still here.';
+    return;
+  }
+  await _fpStorePlanFile(row.document_id, file, row.revision_id);
 }
 async function _fpSaveCurrentPlan(){
   const status=document.getElementById('fp-doc-status');
@@ -8102,34 +8201,8 @@ async function _fpSaveCurrentPlan(){
     return;
   }
   const docId=created.data;
-  const key=(crypto.randomUUID?crypto.randomUUID():String(Date.now()));
-  const path='jobdocs-rev/'+docId+'/'+key;
-  let uploaded=false;
-  try{
-    const res=await fetch(`${SUPABASE_URL}/storage/v1/object/${VEH_DOCS_BUCKET}/${path}`,{
-      method:'POST',
-      headers:{ ...(await fpStorageHeaders()), 'Content-Type':file.type||'application/octet-stream' },
-      body:file
-    });
-    uploaded=!!res.ok;
-  }catch(e){ uploaded=false; }
-  if(!uploaded){
-    if(status) status.textContent='Not saved. The file is still here.';
-    return;
-  }
-  const staged=await sb.rpc('fp_document_stage_revision',{p_document:docId, p_key:key, p_path:path, p_bytes:file.size});
-  if(!staged.ok){
-    if(status) status.textContent='Not saved. The file is still here.';
-    return;
-  }
-  const promoted=await sb.rpc('fp_document_promote',{p_document:docId, p_revision:staged.data, p_expected:null});
-  if(!promoted.ok){
-    if(status) status.textContent=promoted.stale||(promoted.error&&/stale_revision/.test(JSON.stringify(promoted.error)))?'Not saved. Someone else updated this plan.':'Not saved. The file is still here.';
-    return;
-  }
-  if(status) status.textContent='Saved.';
-  _fpDocDraft={key:'', title:''};
-  _fpLoadCurrentPlans();
+  const stored=await _fpStorePlanFile(docId, file, null);
+  if(stored) _fpDocDraft={key:'', title:''};
 }
 async function _fpOpenCurrentPlan(revisionId){
   const status=document.getElementById('fp-doc-status');
@@ -8260,7 +8333,58 @@ function _fpEnsureStopOrder(ci, dateStr){
     _fpStopAck[k]={revision:cur.revision||0, ids:cur.ids||[], loaded:true, pending:false};
   });
 }
+function _fpJobForSlotLabel(label, dateStr){
+  const name=(label||'').trim();
+  if(!name) return null;
+  const cands=(JOB_RECORDS||[]).filter(j=>((j.customer||'').trim())===name);
+  if(cands.length===1) return cands[0];
+  const covered=cands.filter(j=>j.startDate&&j.endDate&&dateStr>=j.startDate&&dateStr<=j.endDate);
+  return covered.length===1?covered[0]:null;
+}
+async function _fpLinkStoredStops(ci, dateStr){
+  if(!_slotMapLoadOk) return false;
+  const pos=typeof seDateToPos==='function'?seDateToPos(dateStr):null;
+  if(!pos) return false;
+  const key=jcSlotKey(ci,pos.w,pos.d);
+  let changed=false;
+  const linked=[];
+  const remember=job=>{
+    if(!job||!job.id||linked.some(id=>String(id)===String(job.id))) return;
+    linked.push(job.id);
+    const extraKey=key+'_'+job.id;
+    if(String(SLOT_JOB_MAP[extraKey])!==String(job.id)){
+      SLOT_JOB_MAP[extraKey]=String(job.id);
+      changed=true;
+    }
+  };
+  const primary=newSlots[ci]?.[pos.w]?.[pos.d]||getSlot(ci,pos.w,pos.d);
+  if(primary&&primary.l){
+    const job=_fpJobForSlotLabel(primary.l, primary.dt||dateStr);
+    if(job){
+      remember(job);
+      if(String(SLOT_JOB_MAP[key])!==String(job.id)){
+        SLOT_JOB_MAP[key]=String(job.id);
+        changed=true;
+      }
+    }
+  }
+  getExtraSlots(ci,pos.w,pos.d).forEach(slot=>{
+    remember(_fpJobForSlotLabel(slot.l, slot.dt||dateStr));
+  });
+  if(!changed) return true;
+  await saveSlotJobMap();
+  return !!_kvSaveOk.slot_job_map;
+}
 async function _fpPersistMove(ci, dateStr, key, dir){
+  const linked=await _fpLinkStoredStops(ci, dateStr);
+  if(!linked){
+    const host=document.getElementById('cv-today-plan');
+    const line=document.createElement('div');
+    line.className='fp-muted';
+    line.textContent='Not saved.';
+    if(host) host.appendChild(line);
+    return;
+  }
   const stops=_fpOrderedStops(ci, dateStr).filter(s=>!s.pto&&s.jobId);
   const ack=_fpStopAck[ci+'|'+dateStr]||{revision:0, ids:stops.map(s=>String(s.jobId))};
   const ids=(ack.ids&&ack.ids.length?ack.ids:stops.map(s=>String(s.jobId))).map(String);

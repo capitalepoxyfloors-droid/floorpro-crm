@@ -67,7 +67,18 @@ function mockFetch(url, opts = {}) {
   if (u.includes('/rest/v1/rpc/')) {
     rpcCalls.push({ url: u, body });
     if (u.includes('fp_field_ops_ready')) return Promise.resolve(jsonResponse({ documents: false }));
-    if (u.includes('fp_document_promote')) return Promise.resolve(jsonResponse({ message: 'stale_revision' }, 409));
+    if (u.includes('fp_documents_for_job')) return Promise.resolve(jsonResponse([
+      { document_id: 'doc-a', title: 'QA Synthetic plan', revision_id: 'rev-a', byte_size: 77 },
+      { document_id: 'doc-b', title: 'QA Synthetic plan', revision_id: 'rev-b', byte_size: 84 },
+    ]));
+    if (u.includes('fp_document_history')) return Promise.resolve(jsonResponse([
+      { revision_id: 'rev-old', byte_size: 77, is_current: false },
+      { revision_id: 'rev-a', byte_size: 90, is_current: true },
+    ]));
+    if (u.includes('fp_document_promote')) {
+      if (body && body.p_expected) return Promise.resolve(jsonResponse(body.p_revision || 'rev-new'));
+      return Promise.resolve(jsonResponse({ message: 'stale_revision' }, 409));
+    }
     if (u.includes('fp_document_create')) return Promise.resolve(jsonResponse('doc-1'));
     if (u.includes('fp_document_stage_revision')) return Promise.resolve(jsonResponse('rev-1'));
     if (u.includes('fp_issue_create')) {
@@ -173,9 +184,50 @@ test('office can still call the old document save, and crew cannot write it', as
   w.fetch = orig;
 });
 
+test('a new version updates the chosen plan and does not create another plan', async () => {
+  rpcCalls.length = 0;
+  uploadOk = true;
+  ev("_fpIsCrew=function(){return localStorage.getItem('fpRole')==='crew'||document.body.classList.contains('crew-mode');}; _fpOps={state:'ready'}; _jcId='qa-a'; localStorage.setItem('fpRole','office'); document.body.classList.remove('crew-mode');");
+  ev('_fpPaintCurrentPlans()');
+  await new Promise(r => setTimeout(r, 40));
+  const office = w.document.getElementById('fp-plan-docs').textContent;
+  assert.match(office, /77 bytes/);
+  assert.match(office, /84 bytes/);
+  assert.match(office, /Save new version/);
+  const file = new w.File(['version-three'], 'v3.txt', { type: 'text/plain' });
+  w._qaFile = file;
+  await ev("_fpSavePlanVersion({document_id:'doc-a', revision_id:'rev-a', title:'QA Synthetic plan'}, _qaFile)");
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(rpcCalls.some(c => c.url.includes('fp_document_create')), false);
+  const promote = rpcCalls.filter(c => c.url.includes('fp_document_promote'));
+  assert.equal(promote.length, 1);
+  assert.equal(promote[0].body.p_document, 'doc-a');
+  assert.equal(promote[0].body.p_expected, 'rev-a');
+  assert.match(w.document.getElementById('fp-doc-status').textContent, /^Saved\.$/);
+  const older = [...w.document.querySelectorAll('button')].find(b => b.textContent === 'Older versions');
+  older.click();
+  await new Promise(r => setTimeout(r, 20));
+  const history = w.document.querySelector('.fp-plan-history').textContent;
+  assert.match(history, /Current version/);
+  assert.match(history, /Older version/);
+  ev("localStorage.setItem('fpRole','crew'); document.body.classList.add('crew-mode'); _fpPaintCurrentPlans();");
+  await new Promise(r => setTimeout(r, 40));
+  const crew = w.document.getElementById('fp-plan-docs').textContent;
+  assert.equal(crew.includes('Save new version'), false);
+  assert.equal(crew.includes('Older versions'), false);
+  assert.match(crew, /Open QA Synthetic plan/);
+});
+
+test('an extra stored stop keeps its own schedule link', () => {
+  const removals = ev("jcStaleSlotMapRemovals({'5_0_6':'job-b','5_0_6_job-a':'job-a','bad key':'job-a'}, [{id:'job-a'},{id:'job-b'}])");
+  const keys = removals.map(r => r.key);
+  assert.equal(keys.includes('5_0_6_job-a'), false);
+  assert.equal(keys.includes('bad key'), true);
+});
+
 test('a stale stop-order save leaves the previous order', async () => {
   rpcCalls.length = 0;
-  ev("_fpStopAck['0|2026-11-02']={revision:2, ids:['north','east']};");
+  ev("_slotMapLoadOk=true; _fpStopAck['0|2026-11-02']={revision:2, ids:['north','east']};");
   await ev("_fpPersistMove(0,'2026-11-02','north',1)");
   assert.equal(JSON.stringify(ev("_fpStopAck['0|2026-11-02'].ids")), JSON.stringify(['north', 'east']));
   assert.equal(ev("_fpStopAck['0|2026-11-02'].revision"), 2);
