@@ -7998,6 +7998,7 @@ function _fpWhoNode(job, ds, log){
 }
 let _fpOps={state:'unknown'};
 let _fpIssueDraft={note:'', key:'', status:''};
+let _fpDocDraft={key:'', title:''};
 let _fpStopAck={};
 function _fpOpsReady(){ return _fpOps.state==='ready'; }
 async function _fpOpsProbe(){
@@ -8098,7 +8099,10 @@ async function _fpSaveCurrentPlan(){
     return;
   }
   if(status) status.textContent='Saving…';
-  const created=await sb.rpc('fp_document_create',{p_job:String(_jcId), p_title:title});
+  if(!_fpDocDraft.key||_fpDocDraft.title!==title){
+    _fpDocDraft={key:(crypto.randomUUID?crypto.randomUUID():String(Date.now())), title};
+  }
+  const created=await sb.rpc('fp_document_create',{p_job:String(_jcId), p_title:title, p_key:_fpDocDraft.key});
   if(!created.ok||!created.data){
     if(status) status.textContent='Not saved. The file is still here.';
     return;
@@ -8130,6 +8134,7 @@ async function _fpSaveCurrentPlan(){
     return;
   }
   if(status) status.textContent='Saved.';
+  _fpDocDraft={key:'', title:''};
   _fpLoadCurrentPlans();
 }
 async function _fpOpenCurrentPlan(revisionId){

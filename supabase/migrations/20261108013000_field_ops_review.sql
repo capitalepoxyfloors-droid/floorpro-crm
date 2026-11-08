@@ -1,10 +1,11 @@
 -- REVIEW ONLY. Do not apply until Will approves this exact file for floorpro-crm-test.
 --
--- Refuses to run unless the same session has:
---   SELECT set_config('fp.project_ref', 'nndjnywtkgxwvxajwztg', false);
--- Any other value, including the live project, stops the script before it changes anything.
--- Confirm the SQL editor URL contains nndjnywtkgxwvxajwztg and does not contain
--- cngbsmmdfxmerlqnkate. The setting is a typed check, not a substitute for that.
+-- The tripwire below reads fp.project_ref, which the operator types with set_config.
+-- That value is caller-controlled. It does not prove which database the session is
+-- connected to. Someone on the live project can set the same flag and this file will
+-- run. Before executing, the SQL runner must show project nndjnywtkgxwvxajwztg and
+-- host db.nndjnywtkgxwvxajwztg.supabase.co. Stop if either shows cngbsmmdfxmerlqnkate.
+-- The flag only stops a run where the operator forgot to set it.
 --
 -- Identities this file uses, from the test catalog and the current app:
 --   Daily-log jobs are text ids inside settings.job_records. public.jobs.id is a
@@ -48,8 +49,10 @@ CREATE TABLE public.job_documents (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   job_id text NOT NULL,
   title text NOT NULL CHECK (char_length(btrim(title)) BETWEEN 1 AND 200),
+  idempotency_key uuid NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
-  created_by uuid NOT NULL
+  created_by uuid NOT NULL,
+  UNIQUE (created_by, idempotency_key)
 );
 
 CREATE TABLE public.job_document_revisions (
@@ -285,7 +288,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION public.fp_document_create(p_job text, p_title text)
+CREATE OR REPLACE FUNCTION public.fp_document_create(p_job text, p_title text, p_key uuid)
 RETURNS uuid
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -293,22 +296,41 @@ SET search_path = ''
 AS $$
 DECLARE
   actor uuid;
+  existing public.job_documents%ROWTYPE;
   new_id uuid;
 BEGIN
   IF NOT private.fp_is_staff() THEN
     RAISE EXCEPTION 'not allowed';
   END IF;
-  IF private.fp_job_record(p_job) IS NULL THEN
+  IF p_key IS NULL OR private.fp_job_record(p_job) IS NULL THEN
     RAISE EXCEPTION 'not allowed';
   END IF;
   SELECT a.account_id INTO actor FROM private.fp_actor() AS a;
   IF actor IS NULL THEN
     RAISE EXCEPTION 'not allowed';
   END IF;
-  INSERT INTO public.job_documents (job_id, title, created_by)
-  VALUES (p_job, btrim(p_title), actor)
+  SELECT * INTO existing
+  FROM public.job_documents AS d
+  WHERE d.created_by = actor AND d.idempotency_key = p_key;
+  IF existing.id IS NOT NULL THEN
+    IF existing.job_id IS DISTINCT FROM p_job OR existing.title IS DISTINCT FROM btrim(p_title) THEN
+      RAISE EXCEPTION 'idempotency_conflict';
+    END IF;
+    RETURN existing.id;
+  END IF;
+  INSERT INTO public.job_documents (job_id, title, idempotency_key, created_by)
+  VALUES (p_job, btrim(p_title), p_key, actor)
   RETURNING id INTO new_id;
   RETURN new_id;
+EXCEPTION
+  WHEN unique_violation THEN
+    SELECT * INTO existing
+    FROM public.job_documents AS d
+    WHERE d.created_by = actor AND d.idempotency_key = p_key;
+    IF existing.job_id IS DISTINCT FROM p_job OR existing.title IS DISTINCT FROM btrim(p_title) THEN
+      RAISE EXCEPTION 'idempotency_conflict';
+    END IF;
+    RETURN existing.id;
 END;
 $$;
 
@@ -350,9 +372,18 @@ BEGIN
   END IF;
   SELECT r.id INTO existing
   FROM public.job_document_revisions AS r
-  WHERE r.document_id = p_document AND r.idempotency_key = p_key;
+  WHERE r.document_id = p_document
+    AND r.idempotency_key = p_key
+    AND r.storage_path = p_path
+    AND r.byte_size = p_bytes;
   IF existing IS NOT NULL THEN
     RETURN existing;
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM public.job_document_revisions AS r
+    WHERE r.document_id = p_document AND r.idempotency_key = p_key
+  ) THEN
+    RAISE EXCEPTION 'idempotency_conflict';
   END IF;
   INSERT INTO public.job_document_revisions (
     document_id, idempotency_key, storage_path, byte_size, is_current, uploaded_by
@@ -364,7 +395,13 @@ EXCEPTION
   WHEN unique_violation THEN
     SELECT r.id INTO existing
     FROM public.job_document_revisions AS r
-    WHERE r.document_id = p_document AND r.idempotency_key = p_key;
+    WHERE r.document_id = p_document
+      AND r.idempotency_key = p_key
+      AND r.storage_path = p_path
+      AND r.byte_size = p_bytes;
+    IF existing IS NULL THEN
+      RAISE EXCEPTION 'idempotency_conflict';
+    END IF;
     RETURN existing;
 END;
 $$;
@@ -392,18 +429,29 @@ BEGIN
   END IF;
   SELECT r.id INTO current_id
   FROM public.job_document_revisions AS r
-  WHERE r.document_id = p_document AND r.is_current;
-  IF current_id IS DISTINCT FROM p_expected THEN
-    RAISE EXCEPTION 'stale_revision';
-  END IF;
+  WHERE r.document_id = p_document AND r.is_current
+  FOR UPDATE;
   SELECT * INTO staged
   FROM public.job_document_revisions AS r
-  WHERE r.id = p_revision AND r.document_id = p_document;
+  WHERE r.id = p_revision AND r.document_id = p_document
+  FOR UPDATE;
   IF staged.id IS NULL OR staged.byte_size IS NULL OR staged.byte_size < 1 THEN
     RAISE EXCEPTION 'upload missing';
   END IF;
-  IF staged.is_current THEN
+  IF staged.storage_path IS DISTINCT FROM ('jobdocs-rev/' || p_document::text || '/' || staged.idempotency_key::text) THEN
+    RAISE EXCEPTION 'bad path';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM storage.objects AS o
+    WHERE o.bucket_id = 'vehicle-docs' AND o.name = staged.storage_path
+  ) THEN
+    RAISE EXCEPTION 'upload missing';
+  END IF;
+  IF staged.is_current AND current_id = staged.id THEN
     RETURN staged.id;
+  END IF;
+  IF current_id IS DISTINCT FROM p_expected THEN
+    RAISE EXCEPTION 'stale_revision';
   END IF;
   UPDATE public.job_document_revisions
   SET is_current = false
@@ -537,9 +585,21 @@ BEGIN
   END IF;
   SELECT i.id INTO existing
   FROM public.job_issues AS i
-  WHERE i.reporter_account_id = actor AND i.idempotency_key = p_key;
+  WHERE i.reporter_account_id = actor
+    AND i.idempotency_key = p_key
+    AND i.job_id = p_job
+    AND i.work_date = p_date
+    AND i.note = btrim(p_note)
+    AND i.category IS NOT DISTINCT FROM NULLIF(btrim(coalesce(p_category, '')), '')
+    AND i.photo_path IS NOT DISTINCT FROM p_photo;
   IF existing IS NOT NULL THEN
     RETURN existing;
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM public.job_issues AS i
+    WHERE i.reporter_account_id = actor AND i.idempotency_key = p_key
+  ) THEN
+    RAISE EXCEPTION 'idempotency_conflict';
   END IF;
   INSERT INTO public.job_issues (
     job_id, work_date, note, category, photo_path, reporter_account_id, idempotency_key
@@ -551,7 +611,16 @@ EXCEPTION
   WHEN unique_violation THEN
     SELECT i.id INTO existing
     FROM public.job_issues AS i
-    WHERE i.reporter_account_id = actor AND i.idempotency_key = p_key;
+    WHERE i.reporter_account_id = actor
+      AND i.idempotency_key = p_key
+      AND i.job_id = p_job
+      AND i.work_date = p_date
+      AND i.note = btrim(p_note)
+      AND i.category IS NOT DISTINCT FROM NULLIF(btrim(coalesce(p_category, '')), '')
+      AND i.photo_path IS NOT DISTINCT FROM p_photo;
+    IF existing IS NULL THEN
+      RAISE EXCEPTION 'idempotency_conflict';
+    END IF;
     RETURN existing;
 END;
 $$;
@@ -603,7 +672,7 @@ BEGIN
   UPDATE public.job_issues
   SET status = coalesce(p_status, status),
       owner_label = CASE WHEN p_owner IS NULL THEN owner_label ELSE NULLIF(btrim(p_owner), '') END,
-      due_on = p_due
+      due_on = coalesce(p_due, due_on)
   WHERE id = p_issue;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'not allowed';
@@ -641,6 +710,68 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION private.fp_stop_member(p_idx integer, p_date date, p_job text)
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  rec jsonb := private.fp_job_record(p_job);
+  day_key text := to_char(p_date, 'YYYY-MM-DD');
+  day jsonb;
+  person jsonb;
+  named boolean := false;
+  on_log boolean := false;
+  pair record;
+  map jsonb;
+BEGIN
+  IF p_idx IS NULL OR p_idx < 0 OR rec IS NULL OR p_date IS NULL THEN
+    RETURN false;
+  END IF;
+  IF NOT (
+    (rec ->> 'startDate') IS NOT NULL
+    AND (rec ->> 'endDate') IS NOT NULL
+    AND day_key >= (rec ->> 'startDate')
+    AND day_key <= (rec ->> 'endDate')
+  ) AND NOT (
+    jsonb_typeof(rec -> 'extraDays') = 'array'
+    AND (rec -> 'extraDays') ? day_key
+  ) THEN
+    RETURN false;
+  END IF;
+  day := rec -> 'dayLogs' -> day_key;
+  IF day IS NOT NULL AND jsonb_typeof(day -> 'crewPresent') = 'array' THEN
+    FOR person IN SELECT value FROM jsonb_array_elements(day -> 'crewPresent') LOOP
+      IF coalesce(person ->> 'crewIdx', '') ~ '^-?[0-9]+$'
+         OR btrim(coalesce(person ->> 'name', '')) <> '' THEN
+        named := true;
+      END IF;
+      IF coalesce(person ->> 'crewIdx', '') ~ '^-?[0-9]+$'
+         AND (person ->> 'crewIdx')::integer = p_idx THEN
+        on_log := true;
+      END IF;
+    END LOOP;
+  END IF;
+  IF named THEN
+    RETURN on_log;
+  END IF;
+  map := private.fp_settings_json('slot_job_map');
+  IF map IS NULL OR jsonb_typeof(map) <> 'object' THEN
+    RETURN false;
+  END IF;
+  FOR pair IN SELECT key, value FROM jsonb_each_text(map) LOOP
+    IF pair.value = p_job AND split_part(pair.key, '_', 1) = p_idx::text THEN
+      RETURN true;
+    END IF;
+  END LOOP;
+  RETURN false;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION private.fp_stop_member(integer, date, text) FROM PUBLIC, anon, authenticated;
+
 CREATE OR REPLACE FUNCTION private.fp_stop_order_write(
   p_idx integer,
   p_date date,
@@ -665,12 +796,22 @@ BEGIN
   IF actor IS NULL OR p_idx IS NULL OR p_idx < 0 OR p_date IS NULL OR p_expected IS NULL OR p_expected < 0 THEN
     RAISE EXCEPTION 'not allowed';
   END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM public.pin_accounts AS p
+    WHERE p.kind = 'crew' AND p.crew_idx = p_idx
+  ) AND NOT EXISTS (
+    SELECT 1 FROM public.scheduled_slots AS s WHERE s.crew_idx = p_idx
+  ) AND NOT EXISTS (
+    SELECT 1 FROM public.crew AS c WHERE c.sort_order = p_idx
+  ) THEN
+    RAISE EXCEPTION 'not allowed';
+  END IF;
   IF p_ids IS NOT NULL THEN
     FOREACH item IN ARRAY p_ids LOOP
       IF item IS NULL OR btrim(item) = '' OR item = ANY (clean) THEN
         RAISE EXCEPTION 'bad stop';
       END IF;
-      IF private.fp_job_record(item) IS NULL THEN
+      IF NOT private.fp_stop_member(p_idx, p_date, item) THEN
         RAISE EXCEPTION 'not allowed';
       END IF;
       clean := clean || item;
@@ -741,7 +882,7 @@ REVOKE ALL ON TABLE public.crew_day_order FROM PUBLIC, anon, authenticated;
 
 REVOKE ALL ON FUNCTION public.fp_field_ops_ready() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.fp_documents_for_job(text) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.fp_document_create(text, text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.fp_document_create(text, text, uuid) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.fp_document_stage_revision(uuid, uuid, text, bigint) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.fp_document_promote(uuid, uuid, uuid) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.fp_document_history(uuid) FROM PUBLIC, anon;
@@ -756,7 +897,7 @@ REVOKE ALL ON FUNCTION public.fp_stop_order_reset(integer, date, bigint) FROM PU
 
 GRANT EXECUTE ON FUNCTION public.fp_field_ops_ready() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.fp_documents_for_job(text) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.fp_document_create(text, text) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.fp_document_create(text, text, uuid) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.fp_document_stage_revision(uuid, uuid, text, bigint) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.fp_document_promote(uuid, uuid, uuid) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.fp_document_history(uuid) TO authenticated;
@@ -880,20 +1021,74 @@ CREATE POLICY fp_settings_update ON public.settings
     )
   );
 
+-- The test catalog shows storage.buckets.public = false for vehicle-docs.
+-- This file does not change that flag. Old rows still store /object/public/ URLs.
+-- Table policies do not make those URLs private. Signed-in members can still read
+-- the old jobdocs/ objects. Crew can no longer write or delete that prefix.
 DROP POLICY IF EXISTS "vehicle-docs authenticated all" ON storage.objects;
-CREATE POLICY "vehicle-docs member except field revisions"
+CREATE POLICY "vehicle-docs member read except new prefixes"
   ON storage.objects
-  FOR ALL
+  FOR SELECT
   TO authenticated
   USING (
     bucket_id = 'vehicle-docs'
     AND (SELECT private.fp_member())
     AND name NOT LIKE 'jobdocs-rev/%'
     AND name NOT LIKE 'issue-photos/%'
+  );
+CREATE POLICY "vehicle-docs staff write except new prefixes"
+  ON storage.objects
+  FOR ALL
+  TO authenticated
+  USING (
+    bucket_id = 'vehicle-docs'
+    AND (SELECT private.fp_is_staff())
+    AND name NOT LIKE 'jobdocs-rev/%'
+    AND name NOT LIKE 'issue-photos/%'
   )
   WITH CHECK (
     bucket_id = 'vehicle-docs'
-    AND (SELECT private.fp_member())
+    AND (SELECT private.fp_is_staff())
+    AND name NOT LIKE 'jobdocs-rev/%'
+    AND name NOT LIKE 'issue-photos/%'
+  );
+CREATE POLICY "vehicle-docs crew write except job docs"
+  ON storage.objects
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    bucket_id = 'vehicle-docs'
+    AND (SELECT private.fp_role()) = 'crew'
+    AND name NOT LIKE 'jobdocs/%'
+    AND name NOT LIKE 'jobdocs-rev/%'
+    AND name NOT LIKE 'issue-photos/%'
+  );
+CREATE POLICY "vehicle-docs crew update except job docs"
+  ON storage.objects
+  FOR UPDATE
+  TO authenticated
+  USING (
+    bucket_id = 'vehicle-docs'
+    AND (SELECT private.fp_role()) = 'crew'
+    AND name NOT LIKE 'jobdocs/%'
+    AND name NOT LIKE 'jobdocs-rev/%'
+    AND name NOT LIKE 'issue-photos/%'
+  )
+  WITH CHECK (
+    bucket_id = 'vehicle-docs'
+    AND (SELECT private.fp_role()) = 'crew'
+    AND name NOT LIKE 'jobdocs/%'
+    AND name NOT LIKE 'jobdocs-rev/%'
+    AND name NOT LIKE 'issue-photos/%'
+  );
+CREATE POLICY "vehicle-docs crew delete except job docs"
+  ON storage.objects
+  FOR DELETE
+  TO authenticated
+  USING (
+    bucket_id = 'vehicle-docs'
+    AND (SELECT private.fp_role()) = 'crew'
+    AND name NOT LIKE 'jobdocs/%'
     AND name NOT LIKE 'jobdocs-rev/%'
     AND name NOT LIKE 'issue-photos/%'
   );
@@ -904,7 +1099,7 @@ CREATE POLICY "jobdocs-rev staff insert"
   TO authenticated
   WITH CHECK (
     bucket_id = 'vehicle-docs'
-    AND name LIKE 'jobdocs-rev/%'
+    AND name ~ '^jobdocs-rev/[0-9a-fA-F-]{36}/[0-9a-fA-F-]{36}$'
     AND (SELECT private.fp_is_staff())
   );
 CREATE POLICY "jobdocs-rev staff select"
@@ -945,6 +1140,26 @@ CREATE POLICY "issue-photos crew insert own"
     AND (SELECT private.fp_role()) = 'crew'
     AND name LIKE ('issue-photos/' || private.fp_actor_id()::text || '/%')
   );
+
+DO $check$
+BEGIN
+  IF has_table_privilege('anon', 'public.job_documents', 'SELECT')
+     OR has_table_privilege('authenticated', 'public.job_documents', 'INSERT')
+     OR has_table_privilege('authenticated', 'public.job_issues', 'INSERT')
+     OR has_table_privilege('authenticated', 'public.crew_day_order', 'UPDATE') THEN
+    RAISE EXCEPTION 'direct table grant is still open';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename = 'settings'
+      AND policyname IN ('fp_settings_insert', 'fp_settings_update')
+      AND (coalesce(qual, '') ILIKE '%job_docs%' OR coalesce(with_check, '') ILIKE '%job_docs%')
+  ) THEN
+    RAISE EXCEPTION 'crew can still write job_docs';
+  END IF;
+END
+$check$;
 
 NOTIFY pgrst, 'reload schema';
 

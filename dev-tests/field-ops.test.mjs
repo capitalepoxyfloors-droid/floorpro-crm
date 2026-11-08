@@ -22,6 +22,10 @@ test('the review migration refuses the wrong project and does not copy or delete
   assert.match(sql, /WHERE is_current/);
   assert.match(sql, /stale_revision/);
   assert.match(sql, /stale_order/);
+  assert.match(sql, /idempotency_conflict/);
+  assert.match(sql, /fp_stop_member/);
+  assert.match(sql, /caller-controlled/);
+  assert.equal(sql.includes('vehicle-docs authenticated all') && sql.includes('CREATE POLICY "vehicle-docs authenticated all"'), false);
   assert.match(sql, /fp_issues_open_unassigned/);
   assert.match(sql, /private\.fp_is_staff\(\)/);
   assert.match(sql, /private\.fp_role\(\)/);
@@ -33,7 +37,9 @@ test('the review migration refuses the wrong project and does not copy or delete
   assert.equal(/GRANT\s+DELETE/i.test(sql), false);
   const crewWrite = sql.split('CREATE POLICY fp_settings_insert')[1].split('CREATE POLICY fp_settings_update')[0];
   assert.equal(crewWrite.includes("'job_docs'"), false);
-  assert.match(undo, /job_docs/);
+  assert.equal(undo.includes('CREATE POLICY "vehicle-docs authenticated all"'), false);
+  const undoCrew = undo.split('CREATE POLICY fp_settings_insert')[1].split('CREATE POLICY fp_settings_update')[0];
+  assert.equal(undoCrew.includes("'job_docs'"), false);
   assert.equal(/DELETE FROM public\.settings/i.test(undo), false);
   assert.equal(/DELETE FROM public\.job_records/i.test(undo), false);
 });
@@ -147,6 +153,24 @@ test('a failed upload does not promote, and a denied issue keeps the note', asyn
   assert.equal(ev('_fpIssueDraft.note'), '');
   assert.match(w.document.getElementById('fp-issue-status').textContent, /Issue recorded/);
   assert.equal(w.document.body.textContent.includes('Office notified'), false);
+});
+
+test('office can still call the old document save, and crew cannot write it', async () => {
+  const writes = [];
+  const orig = w.fetch;
+  w.fetch = (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes('/rest/v1/settings') && String(opts.method).toUpperCase() === 'POST') writes.push(opts.body);
+    return orig(url, opts);
+  };
+  w.localStorage.setItem('fpRole', 'crew');
+  await ev("jcUploadJobDocFiles([new File(['x'], 'a.pdf')])");
+  assert.equal(writes.length, 0);
+  w.localStorage.setItem('fpRole', 'office');
+  await ev('jcUploadJobDocFiles([])');
+  assert.equal(writes.length, 0);
+  assert.equal(html.includes('async function saveJobDocs'), true);
+  w.fetch = orig;
 });
 
 test('a stale stop-order save leaves the previous order', async () => {
