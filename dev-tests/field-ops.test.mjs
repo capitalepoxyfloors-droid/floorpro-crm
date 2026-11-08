@@ -60,6 +60,9 @@ function mockFetch(url, opts = {}) {
   if (opts.body && typeof opts.body === 'string') {
     try { body = JSON.parse(opts.body); } catch { body = opts.body; }
   }
+  if (u.includes('/storage/v1/object/sign/')) return Promise.resolve(jsonResponse([
+    { path: 'jobdocs-rev/doc-a/file', signedURL: '/object/sign/vehicle-docs/jobdocs-rev/doc-a/file?token=synthetic' },
+  ]));
   if (u.includes('/storage/v1/object/')) {
     storageCalls.push(u);
     return Promise.resolve(new Response(uploadOk ? '{}' : 'no', { status: uploadOk ? 200 : 500 }));
@@ -71,6 +74,7 @@ function mockFetch(url, opts = {}) {
       { document_id: 'doc-a', title: 'QA Synthetic plan', revision_id: 'rev-a', byte_size: 77 },
       { document_id: 'doc-b', title: 'QA Synthetic plan', revision_id: 'rev-b', byte_size: 84 },
     ]));
+    if (u.includes('fp_document_open')) return Promise.resolve(jsonResponse('jobdocs-rev/doc-a/file'));
     if (u.includes('fp_document_history')) return Promise.resolve(jsonResponse([
       { revision_id: 'rev-old', byte_size: 77, is_current: false },
       { revision_id: 'rev-a', byte_size: 90, is_current: true },
@@ -216,6 +220,23 @@ test('a new version updates the chosen plan and does not create another plan', a
   assert.equal(crew.includes('Save new version'), false);
   assert.equal(crew.includes('Older versions'), false);
   assert.match(crew, /Open QA Synthetic plan/);
+});
+
+test('opening a current plan shows the file', async () => {
+  const opened = [];
+  w.open = (url) => {
+    const tab = { location: {}, close(){} };
+    Object.defineProperty(tab.location, 'href', { set(v){ opened.push(String(v)); }, get(){ return opened.at(-1) || ''; } });
+    if (url && url !== 'about:blank') opened.push(String(url));
+    return tab;
+  };
+  ev("_accessToken='test-token'; _accessExp=Date.now()+3600000; _fpOps={state:'ready'}; _jcId='qa-a'; localStorage.setItem('fpRole','crew');");
+  ev('_fpPaintCurrentPlans()');
+  await new Promise(r => setTimeout(r, 30));
+  await ev("_fpOpenCurrentPlan('rev-a')");
+  await new Promise(r => setTimeout(r, 30));
+  assert.match(w.document.getElementById('fp-doc-status').textContent, /Opened/);
+  assert.equal(opened.some(u => u.includes('jobdocs-rev/doc-a/file')), true);
 });
 
 test('an extra stored stop keeps its own schedule link', () => {

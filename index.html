@@ -8206,14 +8206,24 @@ async function _fpSaveCurrentPlan(){
 }
 async function _fpOpenCurrentPlan(revisionId){
   const status=document.getElementById('fp-doc-status');
+  const tab=window.open('about:blank', '_blank');
   const rpc=await sb.rpc('fp_document_open',{p_revision:revisionId});
-  if(!rpc.ok||!rpc.data){
+  const path=rpc&&rpc.ok&&rpc.data?String(rpc.data):'';
+  if(!path){
+    if(tab) tab.close();
     if(status) status.textContent='Not opened.';
     return;
   }
-  try{ await fpSignPaths([rpc.data]); }catch(e){
+  try{ await fpSignPaths([path]); }catch(e){}
+  const hit=_signedUrlCache.get(path);
+  if(!hit||!hit.url){
+    if(tab) tab.close();
     if(status) status.textContent='Not opened.';
+    return;
   }
+  if(tab) tab.location.href=hit.url;
+  else window.open(hit.url, '_blank');
+  if(status) status.textContent='Opened.';
 }
 function _fpPaintIssueForm(){
   const host=document.getElementById('fp-issue-form');
