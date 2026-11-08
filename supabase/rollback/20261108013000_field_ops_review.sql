@@ -174,8 +174,6 @@ DROP FUNCTION IF EXISTS private.fp_self_crew_idx();
 DROP FUNCTION IF EXISTS private.fp_actor_id();
 DROP FUNCTION IF EXISTS private.fp_revision_path_is_current(text);
 DROP FUNCTION IF EXISTS private.fp_crew_sees_job(text);
-DROP FUNCTION IF EXISTS private.fp_job_record(text);
-DROP FUNCTION IF EXISTS private.fp_settings_json(text);
 DROP FUNCTION IF EXISTS private.fp_actor();
 
 DROP TABLE IF EXISTS public.crew_day_order;

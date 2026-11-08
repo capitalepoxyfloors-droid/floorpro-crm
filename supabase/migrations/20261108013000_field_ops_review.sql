@@ -118,40 +118,9 @@ AS $$
     AND private.fp_member();
 $$;
 
-CREATE OR REPLACE FUNCTION private.fp_settings_json(p_key text)
-RETURNS jsonb
-LANGUAGE plpgsql
-STABLE
-SECURITY DEFINER
-SET search_path = ''
-AS $$
-DECLARE
-  raw text;
-BEGIN
-  SELECT s.value INTO raw FROM public.settings AS s WHERE s.key = p_key;
-  IF raw IS NULL OR btrim(raw) = '' THEN
-    RETURN NULL;
-  END IF;
-  BEGIN
-    RETURN raw::jsonb;
-  EXCEPTION WHEN others THEN
-    RETURN NULL;
-  END;
-END;
-$$;
-
-CREATE OR REPLACE FUNCTION private.fp_job_record(p_job text)
-RETURNS jsonb
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = ''
-AS $$
-  SELECT elem
-  FROM jsonb_array_elements(coalesce(private.fp_settings_json('job_records'), '[]'::jsonb)) AS elem
-  WHERE elem ->> 'id' = p_job
-  LIMIT 1;
-$$;
+-- private.fp_job_record(p_job_id text) already exists on the test database.
+-- Do not replace it. These helpers call that function. Replacing it fails
+-- because the parameter name differs, and the existing body is the job lookup.
 
 CREATE OR REPLACE FUNCTION private.fp_crew_sees_job(p_job text)
 RETURNS boolean
@@ -163,13 +132,22 @@ AS $$
 DECLARE
   v_idx integer := private.fp_crew_idx();
   rec jsonb := private.fp_job_record(p_job);
-  map jsonb := private.fp_settings_json('slot_job_map');
+  raw text;
+  map jsonb;
   pair record;
   day jsonb;
   person jsonb;
 BEGIN
   IF v_idx IS NULL OR rec IS NULL THEN
     RETURN false;
+  END IF;
+  SELECT s.value INTO raw FROM public.settings AS s WHERE s.key = 'slot_job_map';
+  IF raw IS NOT NULL AND btrim(raw) <> '' THEN
+    BEGIN
+      map := raw::jsonb;
+    EXCEPTION WHEN others THEN
+      map := NULL;
+    END;
   END IF;
   IF map IS NOT NULL AND jsonb_typeof(map) = 'object' THEN
     FOR pair IN SELECT key, value FROM jsonb_each_text(map) LOOP
@@ -210,8 +188,6 @@ AS $$
 $$;
 
 REVOKE ALL ON FUNCTION private.fp_actor() FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION private.fp_settings_json(text) FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION private.fp_job_record(text) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION private.fp_crew_sees_job(text) FROM PUBLIC, anon, authenticated;
 CREATE OR REPLACE FUNCTION private.fp_actor_id()
 RETURNS uuid
@@ -725,6 +701,7 @@ DECLARE
   named boolean := false;
   on_log boolean := false;
   pair record;
+  raw text;
   map jsonb;
 BEGIN
   IF p_idx IS NULL OR p_idx < 0 OR rec IS NULL OR p_date IS NULL THEN
@@ -757,7 +734,14 @@ BEGIN
   IF named THEN
     RETURN on_log;
   END IF;
-  map := private.fp_settings_json('slot_job_map');
+  SELECT s.value INTO raw FROM public.settings AS s WHERE s.key = 'slot_job_map';
+  IF raw IS NOT NULL AND btrim(raw) <> '' THEN
+    BEGIN
+      map := raw::jsonb;
+    EXCEPTION WHEN others THEN
+      map := NULL;
+    END;
+  END IF;
   IF map IS NULL OR jsonb_typeof(map) <> 'object' THEN
     RETURN false;
   END IF;
