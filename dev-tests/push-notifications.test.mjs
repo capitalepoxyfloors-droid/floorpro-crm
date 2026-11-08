@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { JSDOM, ResourceLoader, VirtualConsole } from 'jsdom';
 import {
@@ -33,6 +34,154 @@ const manifest = JSON.parse(read('manifest.json'));
 const manifestTest = JSON.parse(read('manifest-test.json'));
 const sender = read('supabase/functions/send-push/index.ts');
 const db = 'floorpro_push_test';
+
+function readPng(buf) {
+  assert.equal(buf.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  const idat = [];
+  while (offset < buf.length) {
+    const len = buf.readUInt32BE(offset);
+    const type = buf.toString('ascii', offset + 4, offset + 8);
+    const data = buf.subarray(offset + 8, offset + 8 + len);
+    if (type === 'IHDR') {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      bitDepth = data[8];
+      colorType = data[9];
+      assert.equal(data[10], 0);
+    } else if (type === 'IDAT') {
+      idat.push(data);
+    } else if (type === 'IEND') break;
+    offset += 12 + len;
+  }
+  assert.equal(bitDepth, 8);
+  const channels = colorType === 2 ? 3 : colorType === 6 ? 4 : 0;
+  assert.ok(channels, 'icon png must be RGB or RGBA');
+  const raw = zlib.inflateSync(Buffer.concat(idat));
+  const stride = width * channels;
+  const pixels = Buffer.alloc(height * stride);
+  let src = 0;
+  let prev = Buffer.alloc(stride);
+  for (let y = 0; y < height; y++) {
+    const filter = raw[src++];
+    const row = raw.subarray(src, src + stride);
+    src += stride;
+    const cur = Buffer.alloc(stride);
+    for (let i = 0; i < stride; i++) {
+      const left = i >= channels ? cur[i - channels] : 0;
+      const up = prev[i];
+      const ul = i >= channels ? prev[i - channels] : 0;
+      const x = row[i];
+      if (filter === 0) cur[i] = x;
+      else if (filter === 1) cur[i] = (x + left) & 255;
+      else if (filter === 2) cur[i] = (x + up) & 255;
+      else if (filter === 3) cur[i] = (x + Math.floor((left + up) / 2)) & 255;
+      else if (filter === 4) {
+        const p = left + up - ul;
+        const pa = Math.abs(p - left);
+        const pb = Math.abs(p - up);
+        const pc = Math.abs(p - ul);
+        const pr = pa <= pb && pa <= pc ? left : pb <= pc ? up : ul;
+        cur[i] = (x + pr) & 255;
+      } else throw new Error(`unsupported png filter ${filter}`);
+    }
+    cur.copy(pixels, y * stride);
+    prev = cur;
+  }
+  return { width, height, channels, pixels };
+}
+
+function isInk(png, x, y) {
+  const i = (y * png.width + x) * png.channels;
+  const r = png.pixels[i];
+  const g = png.pixels[i + 1];
+  const b = png.pixels[i + 2];
+  const a = png.channels === 4 ? png.pixels[i + 3] : 255;
+  return a > 20 && r < 200 && g < 200 && b < 200;
+}
+
+function wordmarkSpan(png) {
+  let top = png.height;
+  let bottom = 0;
+  let left = png.width;
+  let right = 0;
+  for (let y = 0; y < png.height; y++) {
+    for (let x = 0; x < png.width; x++) {
+      if (!isInk(png, x, y)) continue;
+      if (y < top) top = y;
+      if (y > bottom) bottom = y;
+      if (x < left) left = x;
+      if (x > right) right = x;
+    }
+  }
+  return { top, bottom, left, right };
+}
+
+function wordmarkHeight(png) {
+  const box = wordmarkSpan(png);
+  return (box.bottom - box.top + 1) / png.height;
+}
+
+function wordmarkWidth(png) {
+  const box = wordmarkSpan(png);
+  return (box.right - box.left + 1) / png.width;
+}
+
+function inkOutsideSquircle(png) {
+  const a = png.width / 2;
+  const cx = png.width / 2;
+  const cy = png.height / 2;
+  let outside = 0;
+  for (let y = 0; y < png.height; y++) {
+    for (let x = 0; x < png.width; x++) {
+      if (!isInk(png, x, y)) continue;
+      const dx = (x + 0.5 - cx) / a;
+      const dy = (y + 0.5 - cy) / a;
+      if (Math.abs(dx) ** 4 + Math.abs(dy) ** 4 > 1) outside += 1;
+    }
+  }
+  return outside;
+}
+
+function furthestInkFraction(png) {
+  const cx = png.width / 2;
+  const cy = png.height / 2;
+  const limit = png.width / 2;
+  let far = 0;
+  for (let y = 0; y < png.height; y++) {
+    for (let x = 0; x < png.width; x++) {
+      if (!isInk(png, x, y)) continue;
+      const dist = Math.hypot(x + 0.5 - cx, y + 0.5 - cy);
+      if (dist > far) far = dist;
+    }
+  }
+  return far / limit;
+}
+
+function inkOutsideRadius(png, radiusFraction) {
+  const cx = png.width / 2;
+  const cy = png.height / 2;
+  const radius = png.width * radiusFraction;
+  let outside = 0;
+  for (let y = 0; y < png.height; y++) {
+    for (let x = 0; x < png.width; x++) {
+      if (!isInk(png, x, y)) continue;
+      const dx = x + 0.5 - cx;
+      const dy = y + 0.5 - cy;
+      if (dx * dx + dy * dy > radius * radius) outside += 1;
+    }
+  }
+  return outside;
+}
+
+function corner(png, x, y) {
+  const i = (y * png.width + x) * png.channels;
+  return [png.pixels[i], png.pixels[i + 1], png.pixels[i + 2]];
+}
 
 const SETH = '11111111-1111-1111-1111-111111111111';
 const BREN = '55555555-5555-5555-5555-555555555555';
@@ -202,9 +351,27 @@ test('manifests install on the GitHub Pages path, and the worker does not cache 
   for (const file of [manifest, manifestTest]) {
     assert.equal(file.display, 'standalone');
     assert.equal(file.scope, '/floorpro-crm/');
-    assert.ok(file.icons.some((icon) => icon.sizes === '192x192' && icon.src.includes('/floorpro-crm/icon.png')));
-    assert.ok(file.icons.some((icon) => icon.sizes === '512x512'));
+    assert.ok(file.icons.some((icon) => icon.sizes === '192x192' && icon.src.endsWith('/icon.png') && icon.purpose === 'any'));
+    assert.ok(file.icons.some((icon) => icon.sizes === '512x512' && icon.purpose === 'any'));
+    assert.ok(file.icons.some((icon) => icon.src.endsWith('/icon-maskable.png') && icon.purpose === 'maskable'));
+    assert.equal(file.icons.some((icon) => icon.purpose === 'any maskable'), false);
   }
+  const plain = readPng(fs.readFileSync(path.join(root, 'icon.png')));
+  const maskable = readPng(fs.readFileSync(path.join(root, 'icon-maskable.png')));
+  assert.deepEqual([plain.width, plain.height], [512, 512]);
+  assert.deepEqual([maskable.width, maskable.height], [512, 512]);
+  assert.ok(wordmarkHeight(plain) >= 0.85, 'the Apple icon should use most of the square height');
+  assert.ok(wordmarkWidth(plain) <= 0.75, 'a portrait wordmark cannot fill the square width');
+  assert.ok(wordmarkHeight(plain) > wordmarkHeight(maskable));
+  const reach = furthestInkFraction(maskable);
+  assert.ok(reach <= 0.80, 'maskable ink must stay inside the safe circle');
+  assert.ok(reach >= 0.75, 'maskable ink should reach the safe circle');
+  assert.equal(inkOutsideRadius(maskable, 0.40), 0);
+  assert.equal(inkOutsideRadius(maskable, 0.50), 0);
+  assert.equal(inkOutsideSquircle(maskable), 0);
+  assert.ok(wordmarkWidth(maskable) < 0.55, 'the safe circle leaves side space');
+  assert.deepEqual(corner(maskable, 0, 0), [255, 255, 255]);
+  assert.deepEqual(corner(maskable, 511, 511), [255, 255, 255]);
   assert.equal(manifest.start_url, '/floorpro-crm/');
   assert.equal(manifestTest.start_url, '/floorpro-crm/?env=test');
   assert.match(manifestTest.id, /env=test/);

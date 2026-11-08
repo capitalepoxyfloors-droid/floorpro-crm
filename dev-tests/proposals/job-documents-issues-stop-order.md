@@ -1,5 +1,7 @@
 # Proposal only. Do not apply.
 
+The sketch below is not the migration. The review file is `supabase/migrations/20261108013000_field_ops_review.sql`. Its undo is `supabase/rollback/20261108013000_field_ops_review.sql`. Neither file has been run.
+
 This file is not a migration. Nothing here has been run on floorpro-crm-test or on the live project. The app does not use it.
 
 Reviewed against the current app and the role-split settings policies. Sources named in the design: Ops and Helias for documents, the Business Coach for the foreman brief, and the Chief of Staff for issues.
@@ -12,7 +14,7 @@ There is no job-issue record, no Open or Unassigned list, and no "Issue recorded
 
 Stop order is not a column on `scheduled_slots`. The test screen lists the day's jobs in name order. It does not save an order and it does not change the schedule.
 
-No-work is one flag on the whole day log for that job. It keeps the clocks already typed, including a second person on the same log, and it does not change another job. The audit insert can store the actor name plus the date, the stop, and the people listed on that log. This repo's migrations do not define an `audit_log.created_at` column, so a recorded time is not proven from here. Crew cannot read the audit log. The flag cannot be limited to one person. That is not the designed per-person no-work, and it stays blocked.
+No-work is one flag on the whole day log for that job. It keeps the clocks already typed, including a second person on the same log, and it does not change another job. The test catalog shows `audit_log.created_at` as `timestamptz` with default `now()`. No audit rows were read, and this migration does not change that table. Crew cannot read the audit log. The flag cannot be limited to one person. The test screen no longer offers the button. Per-person no-work stays blocked.
 
 ## What would have to exist before those screens are real
 
