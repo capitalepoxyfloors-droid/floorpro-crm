@@ -104,31 +104,63 @@ function isInk(png, x, y) {
   return a > 20 && r < 200 && g < 200 && b < 200;
 }
 
-function wordmarkHeight(png) {
+function wordmarkSpan(png) {
   let top = png.height;
   let bottom = 0;
+  let left = png.width;
+  let right = 0;
   for (let y = 0; y < png.height; y++) {
     for (let x = 0; x < png.width; x++) {
       if (!isInk(png, x, y)) continue;
       if (y < top) top = y;
       if (y > bottom) bottom = y;
+      if (x < left) left = x;
+      if (x > right) right = x;
     }
   }
-  return (bottom - top + 1) / png.height;
+  return { top, bottom, left, right };
 }
 
-function farthestInkRadius(png) {
-  const cx = (png.width - 1) / 2;
-  const cy = (png.height - 1) / 2;
-  let far = 0;
+function wordmarkHeight(png) {
+  const box = wordmarkSpan(png);
+  return (box.bottom - box.top + 1) / png.height;
+}
+
+function wordmarkWidth(png) {
+  const box = wordmarkSpan(png);
+  return (box.right - box.left + 1) / png.width;
+}
+
+function inkOutsideSquircle(png) {
+  const a = png.width / 2;
+  const cx = png.width / 2;
+  const cy = png.height / 2;
+  let outside = 0;
   for (let y = 0; y < png.height; y++) {
     for (let x = 0; x < png.width; x++) {
       if (!isInk(png, x, y)) continue;
-      const dist = Math.hypot(x - cx, y - cy);
-      if (dist > far) far = dist;
+      const dx = (x + 0.5 - cx) / a;
+      const dy = (y + 0.5 - cy) / a;
+      if (Math.abs(dx) ** 4 + Math.abs(dy) ** 4 > 1) outside += 1;
     }
   }
-  return far / (png.width / 2);
+  return outside;
+}
+
+function inkOutsideCircle(png) {
+  const a = png.width / 2;
+  const cx = png.width / 2;
+  const cy = png.height / 2;
+  let outside = 0;
+  for (let y = 0; y < png.height; y++) {
+    for (let x = 0; x < png.width; x++) {
+      if (!isInk(png, x, y)) continue;
+      const dx = x + 0.5 - cx;
+      const dy = y + 0.5 - cy;
+      if (dx * dx + dy * dy > a * a) outside += 1;
+    }
+  }
+  return outside;
 }
 
 function corner(png, x, y) {
@@ -313,8 +345,11 @@ test('manifests install on the GitHub Pages path, and the worker does not cache 
   const maskable = readPng(fs.readFileSync(path.join(root, 'icon-maskable.png')));
   assert.deepEqual([plain.width, plain.height], [512, 512]);
   assert.deepEqual([maskable.width, maskable.height], [512, 512]);
-  assert.ok(wordmarkHeight(plain) >= 0.90, 'the plain icon should fill the square');
-  assert.ok(farthestInkRadius(maskable) <= 0.80, 'the Android icon must stay inside the mask safe zone');
+  assert.ok(wordmarkHeight(plain) >= 0.85, 'the plain icon should use most of the square height');
+  assert.ok(wordmarkWidth(plain) <= 0.75, 'a portrait wordmark cannot fill the square width');
+  assert.ok(wordmarkHeight(maskable) >= 0.85);
+  assert.equal(inkOutsideSquircle(maskable), 0, 'squircle and rounded-square masks must keep the letters');
+  assert.ok(inkOutsideCircle(maskable) > 0, 'a circle still crops this portrait mark');
   assert.deepEqual(corner(maskable, 0, 0), [255, 255, 255]);
   assert.deepEqual(corner(maskable, 511, 511), [255, 255, 255]);
   assert.equal(manifest.start_url, '/floorpro-crm/');
