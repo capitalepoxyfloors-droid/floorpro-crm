@@ -239,6 +239,23 @@ test('opening a current plan shows the file', async () => {
   assert.equal(opened.some(u => u.includes('jobdocs-rev/doc-a/file')), true);
 });
 
+test('substitute: the office list renders an issue the server returned', async () => {
+  await ev(`(async()=>{
+    const orig=sb.rpc.bind(sb);
+    sb.rpc=async function(name, args){
+      if(name==='fp_issues_open_unassigned') return {ok:true,status:200,data:[{id:'issue-qa',note:'QA synthetic issue Nov8. Not a real issue.',job_id:'qa-a',work_date:'2026-11-08'}]};
+      return orig(name, args);
+    };
+    let host=document.getElementById('fp-open-issues');
+    if(!host){ host=document.createElement('div'); host.id='fp-open-issues'; document.body.appendChild(host); }
+    await _fpLoadOpenIssues();
+    window.__issueList=host.textContent;
+    sb.rpc=orig;
+  })()`);
+  await new Promise(r => setTimeout(r, 20));
+  assert.match(String(ev('window.__issueList')), /QA synthetic issue Nov8\. Not a real issue\./);
+});
+
 test('an extra stored stop keeps its own schedule link', () => {
   const removals = ev("jcStaleSlotMapRemovals({'5_0_6':'job-b','5_0_6_job-a':'job-a','bad key':'job-a'}, [{id:'job-a'},{id:'job-b'}])");
   const keys = removals.map(r => r.key);
