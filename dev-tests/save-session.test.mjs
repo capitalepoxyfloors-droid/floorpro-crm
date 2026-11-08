@@ -257,6 +257,8 @@ test('a stale save lists the conflict and does not overwrite the other edit', as
   assert.equal(shown.includes('Save this choice'), false);
   assert.equal(shown.includes('Keep yours'), false);
   assert.equal(shown.includes('Second coat'), false);
+  assert.equal(shown.includes('keeps your note and replaces'), false);
+  assert.match(w.document.querySelector('#jc-day-logs [data-jc-save-conflicts]').textContent, /Choose which note to keep/);
   const logPanel = w.document.querySelector('#jc-day-logs [data-jc-save-conflicts]');
   const footPanel = w.document.querySelector('#jc-footer [data-jc-save-conflicts]');
   assert.match(logPanel.textContent, /Save my note/);
