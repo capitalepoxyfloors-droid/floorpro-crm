@@ -8825,7 +8825,8 @@ function jcHourCreditHtml(ds, i, c, log, isCrew){
   const meta=adj?(' Reason: '+adj.reason+(adj.by?' · '+adj.by:'')+(adj.at?' · '+adj.at:'')):'';
   const summary=_ovhEsc(clockLine+' '+countLine+extra+meta);
   if(isCrew){
-    const shown=counted.hours>0?counted.hours.toFixed(1):(effS&&effE?rowClock.toFixed(1):'');
+    // Hours worked follows the clock. A payroll credit stays on the office row and is not shown here.
+    const shown=(log&&log.fullDay)?'8.0':((effS&&effE)?rowClock.toFixed(1):'');
     const line=shown?('Hours '+shown):(effS||effE?'Add both start and end.':'Add the site start and end.');
     return `<div style="padding:6px 8px 8px;border-top:1px solid var(--border2);font-size:13px;color:var(--text);">${_ovhEsc(line)}</div>`;
   }

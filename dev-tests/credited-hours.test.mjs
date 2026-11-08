@@ -366,7 +366,8 @@ test('a credit needs a reason and an office session, and the audit names the cre
   assert.equal(crewHtml.includes('Balance today'), false);
   assert.equal(crewHtml.includes('1.8333'), false);
   assert.equal(crewHtml.includes('Reason'), false);
-  assert.match(crewHtml, /Hours 8\.0/);
+  assert.match(crewHtml, /Hours 7\.3/);
+  assert.equal(crewHtml.includes('Hours 8.0'), false);
   assert.match(crewHtml, /7:50 AM/);
 });
 
@@ -386,9 +387,13 @@ test('a crew row uses the site clock and does not say the row has no clock', () 
     hourAdjustments: [{ crewIdx: 1, name: 'Blake Diaz', creditedTenths: 18, reason: 'Office only', by: 'Ops Reviewer' }],
   };
   const withCredit = call('jcHourCreditHtml', DAY, 0, person, credited, true);
-  assert.match(withCredit, /Hours 1\.8/);
+  assert.match(withCredit, /Hours 8\.0/);
+  assert.equal(withCredit.includes('1.8'), false);
   assert.equal(withCredit.includes('1.8333'), false);
   assert.equal(withCredit.includes('payroll'), false);
+  assert.equal(credited.hourAdjustments[0].creditedTenths, 18);
+  assert.equal(credited.startTime, '7:30 AM');
+  assert.equal(credited.endTime, '3:30 PM');
   const office = call('jcHourCreditHtml', DAY, 0, person, credited, false);
   assert.match(office, /Balance today to 8\.0h/);
   assert.match(office, /Save credit/);
@@ -396,6 +401,36 @@ test('a crew row uses the site clock and does not say the row has no clock', () 
   const empty = { task: 'Prime the floor', crewPresent: [person] };
   assert.equal(call('jcLogHasCountedTime', empty), false);
   assert.match(call('jcHourCreditHtml', DAY, 0, person, empty, true), /Add the site start and end/);
+});
+
+test('a half-entered site clock is not a stored 1.8 credit', () => {
+  useFakeCrew();
+  w.localStorage.setItem('fpRole', 'crew');
+  const person = { crewIdx: 1, name: 'Blake Diaz', startTime: '', endTime: '' };
+  const partial = { startTime: '7:30 AM', endTime: '', task: 'Scrape', crewPresent: [person] };
+  assert.equal(call('jcLogHasCountedTime', partial), false);
+  assert.equal(call('jcClockHrsForRow', person, partial), 0);
+  const office = call('jcHourCreditHtml', DAY, 0, person, partial, false);
+  assert.match(office, /No clock on this row/);
+  assert.match(office, /Counted 0\.0h from the clock/);
+  assert.match(office, /placeholder="1\.8"/);
+  assert.match(office, /placeholder="1:50"/);
+  assert.equal(office.includes('value="1.8"'), false);
+  const row = call('jcDayCrewHtml', DAY, partial);
+  assert.match(row, /Set site time above/);
+  assert.match(row, /Add both start and end/);
+  assert.equal(row.includes('7:30 AM –'), false);
+  const stored = {
+    startTime: '7:30 AM', endTime: '', crewPresent: [person],
+    hourAdjustments: [{ crewIdx: 1, name: 'Blake Diaz', creditedTenths: 18, reason: 'Office only', by: 'Ops Reviewer' }],
+  };
+  assert.equal(call('jcLogHasCountedTime', stored), true);
+  const crewStored = call('jcHourCreditHtml', DAY, 0, person, stored, true);
+  assert.equal(crewStored.includes('Hours 1.8'), false);
+  assert.match(crewStored, /Add both start and end/);
+  assert.equal(stored.hourAdjustments[0].creditedTenths, 18);
+  assert.equal(stored.startTime, '7:30 AM');
+  assert.equal(stored.endTime, '');
 });
 
 test('a notes edit keeps a credit, and a credit edit keeps server notes', () => {
@@ -533,7 +568,8 @@ test('office and owner can credit from the crew screen, and a crew sign-in canno
     assert.equal(crewRendered.includes('Save credit'), false, route);
     assert.equal(crewRendered.includes('Balance today'), false, route);
     assert.equal(crewRendered.includes('Use lower 0.1h'), false, route);
-    assert.match(crewRendered, /Hours 7\.5/);
+    assert.match(crewRendered, /Hours 7\.3/);
+    assert.equal(crewRendered.includes('Hours 7.5'), false, route);
     assert.equal(crewRendered.includes('18500'), false, route);
     assert.equal(crewRendered.includes('41.50'), false, route);
     assert.equal(crewRendered.includes('30.25'), false, route);
