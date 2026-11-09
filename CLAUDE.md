@@ -46,7 +46,7 @@ When you touch...                  | Also verify...
 `buildWeekGrid` PTO logic          | Crew view PTO display (separate renderer — check both)
 `saveJobRecords` / `loadJobRecords`| Any tab that reads job data
 `SLOT_JOB_MAP` writes              | All three click handlers that read the map
-`getMonday` / `BASE` / week math   | All schedule views; use `Math.floor` not `Math.round`
+`getMonday` / `BASE` / week math   | All schedule views; use `weekOffsetOf` (calendar days), not millisecond weeks
 
 ---
 
@@ -61,8 +61,8 @@ The `_runs` collection feeds `suppressedRunIdxs`, `mergedExtraSpans`, gradient l
 ### `isExtra` flag
 Affects whether a bar gets the `.extension` class (opacity 0.32) AND whether two adjacent runs form a gradient. Incorrect `isExtra` = wrong opacity or missing gradient.
 
-### Math.floor vs Math.round for week offsets
-`Math.floor((date - BASE) / weekMs)` is correct. `Math.round` shifts Fridays to the wrong week (4/7 = 0.571 rounds up). Every date→wOff conversion must use `Math.floor`.
+### Week offsets are calendar days, not millisecond weeks
+`weekOffsetOf(date)` is the only date→wOff conversion. It floors local calendar days / 7, so Friday stays in its week and a daylight-time Monday is not a week early. Do not use `Math.floor((date - BASE) / (7*24*60*60*1000))` — a CDT date is one hour short of a whole number of those spans from a CST `BASE`, and floor then lands one week early. `Math.round` of raw week-milliseconds also shifts Fridays (4/7 = 0.571 rounds up).
 
 ### Single-file app — all functions share global scope
 A rename or signature change to any function breaks every caller silently. Always grep for all usages before changing function signatures.
