@@ -16126,6 +16126,25 @@ function overheadPerHour(set,util){
   const hrs=overheadAnnualLaborHours(s,util);
   return hrs>0 ? overheadPool(s)/hrs : 0;
 }
+// Pool that makes overheadPerHour(entry) equal ratePerHour at this entry's divisor
+// (active non-owner crew × paid hours × utilization). Saving that pool as a NEW
+// rate set is how a forward rate is published. Day logs already stamped are not rewritten.
+function overheadPoolForTargetRate(entry, ratePerHour){
+  const hrs=overheadAnnualLaborHours(entry);
+  const rate=parseFloat(ratePerHour)||0;
+  return hrs>0 ? Math.round(rate*hrs*100)/100 : 0;
+}
+// Trailing 12 months of overhead dollars ÷ crew hours in that same window.
+// The app does not read this from Wave. Wave sync only pulls accepted estimates.
+// A monthly items amount × 12 is a run-rate, not this trailing total.
+function overheadRateFromRolling12(expenses, crewHours){
+  const exp=parseFloat(expenses)||0, hrs=parseFloat(crewHours)||0;
+  return hrs>0 ? exp/hrs : 0;
+}
+// Pool to store on a new rate set so the existing stamp formula equals that trailing rate.
+function overheadPoolForRolling12(entry, expenses, crewHours){
+  return overheadPoolForTargetRate(entry, overheadRateFromRolling12(expenses, crewHours));
+}
 function overheadBreakdownText(){
   const s=costingCurrentModel().entry, pool=overheadPool(s), n=_overheadCrew(s).length;
   if(pool<=0) return 'Set the overhead pool in costing settings below to compute the overhead rate.';
