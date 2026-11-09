@@ -318,6 +318,33 @@
   .step-line.done{background:var(--green);}
   .info-box{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;font-size:12.5px;color:var(--text2);line-height:1.6;}
   .info-box strong{color:var(--text);font-weight:500;}
+  /* Job P&L summary. The results card and the pricing guide are separate boxes. */
+  .jc-pnl-card{background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:14px 16px;}
+  .jc-pnl-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:12px;}
+  .jc-pnl-kicker{font-size:11px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;}
+  .jc-pnl-row{display:flex;justify-content:space-between;align-items:flex-start;gap:8px 12px;font-size:13px;color:var(--text2);margin-bottom:6px;}
+  .jc-pnl-label{min-width:0;line-height:1.35;}
+  .jc-pnl-val{margin-left:auto;white-space:nowrap;text-align:right;font-family:'DM Mono',monospace;}
+  .jc-pnl-hint{display:block;font-size:11px;color:var(--text3);font-weight:400;margin-top:1px;}
+  .jc-pnl-sub{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:1px 0 1px 12px;font-size:12px;color:var(--text3);}
+  .jc-pnl-sub .jc-pnl-val{color:var(--text2);font-size:12px;}
+  .jc-pnl-formula{font-size:12px;font-family:'DM Mono',monospace;color:var(--text3);padding:0 0 2px 2px;line-height:1.4;}
+  .jc-pnl-rule{border-top:1px solid var(--border2);margin:8px 0;}
+  .jc-pnl-strong .jc-pnl-label{font-weight:700;color:var(--text);font-size:14px;}
+  .jc-pnl-strong .jc-pnl-val{font-size:16px;font-weight:700;}
+  .jc-pnl-pct{font-size:.72em;font-weight:600;}
+  .jc-pnl-net{border-top:2px solid var(--border2);padding-top:10px;margin-top:8px;margin-bottom:0;align-items:center;}
+  .jc-pnl-net .jc-pnl-label{font-size:15px;font-weight:700;color:var(--text);}
+  .jc-pnl-net .jc-pnl-val{font-size:20px;font-weight:700;}
+  .jc-pnl-details{margin-top:10px;border-top:1px dashed var(--border2);padding-top:2px;}
+  .jc-pnl-details summary{cursor:pointer;min-height:44px;display:flex;align-items:center;font-size:12.5px;color:var(--text3);font-weight:600;list-style:none;}
+  .jc-pnl-details summary::-webkit-details-marker{display:none;}
+  .jc-pnl-details summary::before{content:'▸';display:inline-block;width:12px;margin-right:4px;font-size:11px;}
+  .jc-pnl-details[open] summary::before{content:'▾';}
+  .jc-pnl-details .jc-pnl-row{margin:2px 0 8px;}
+  .jc-pricing-guide{margin-top:14px;background:var(--accent-dim);border:1.5px dashed var(--accent);border-radius:var(--radius-sm);padding:12px 14px;}
+  .jc-pricing-title{font-size:13px;font-weight:700;color:var(--accent);margin-bottom:2px;}
+  .jc-pricing-note{font-size:11.5px;color:var(--text2);line-height:1.4;margin-bottom:10px;}
   @media(max-width:960px){
     .sidebar{width:60px;}
     .logo-mark,.logo-sub,.user-name,.user-role,.nav-item span{display:none;}
@@ -517,6 +544,8 @@
     .cv-cell-month{font-size:7px;}
     .cv-event-bar{font-size:11px;height:20px;padding:0 6px;border-radius:10px;}
     .tabs{overflow-x:auto;scrollbar-width:none;}.tabs::-webkit-scrollbar{display:none;}
+    .jc-pnl-card,.jc-pricing-guide{padding:12px;}
+    .jc-pnl-net .jc-pnl-val{font-size:18px;}
     .form-row{grid-template-columns:1fr;}
     .modal-footer{flex-wrap:wrap;}
     #login-screen{padding:12px;}
@@ -9975,40 +10004,51 @@ function renderJobCosting(){
     </div>`;
   }
 
-  // Summary: gross margin, overhead, net, break-even and the price that hits the target
+  // Summary card is display-only: same jcJobCostLines numbers, new order and placement.
   html+=sec('Summary');
   {
-    const line=(label,val,color,bold)=>`<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text2);margin-bottom:6px;${bold?'font-weight:700;color:var(--text);':''}"><span>${label}</span><span style="font-family:'DM Mono',monospace;${color?'color:'+color+';':''}">${val}</span></div>`;
+    const line=(label,val,color,bold)=>`<div class="jc-pnl-row${bold?' jc-pnl-strong':''}"><span class="jc-pnl-label">${label}</span><span class="jc-pnl-val"${color?' style="color:'+color+';"':''}>${val}</span></div>`;
+    const sub=(label,val)=>`<div class="jc-pnl-sub"><span>${label}</span><span class="jc-pnl-val">${val}</span></div>`;
     const sgn=n=>(n<0?'-':'')+fmt(n);
     const netColor=L.netProfit>=0?'var(--green)':'var(--red)';
-    // Not finished yet: what gross margin does it take just to cover overhead on the scheduled hours?
-    let estNote='';
-    if(job.status!=='complete'&&effRevenue>0){
-      const estHrs=Math.max(jcEstimatedHours(job),L.hours);
-      if(estHrs>0){
-        const minGM=Math.round(estHrs*L.overheadRateNow/effRevenue*1000)/10;
-        estNote=`<div style="font-size:11.5px;color:var(--text3);margin:-2px 0 8px;">Minimum GM to break even: <b style="color:${margin>=minGM?'var(--green)':'var(--red)'};">${minGM}%</b> (est. ${Math.round(estHrs)} hrs × $${L.overheadRateNow.toFixed(2)} overhead ÷ ${fmt(effRevenue)})</div>`;
-      }
-    }
-    html+=`<div style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:14px 16px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-        <span style="font-size:11px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;">Job P&amp;L · as recorded</span>
+    const ohParts=Object.entries(L.ohByRate||{}).filter(([,h])=>h>0).sort((a,b)=>parseFloat(b[0])-parseFloat(a[0]));
+    const ohFormula=ohParts.length
+      ? ohParts.map(([rate,h])=>`<div class="jc-pnl-formula">${(Math.round(h*10)/10).toFixed(1)} hrs × $${parseFloat(rate).toFixed(2)}/hr</div>`).join('')
+      : (L.hours?`<div class="jc-pnl-formula">${(Math.round(L.hours*10)/10).toFixed(1)} hrs</div>`:'');
+    const directSubs=[
+      sub('Labor',fmt(totalLaborCost)),
+      sub('Materials',fmt(totalMatCost)),
+      sub('Consumables',fmt(consCost)),
+      sub('Mileage',fmt(mileageCost)),
+    ];
+    if(commCost>0) directSubs.push(sub('Commission',fmt(commCost)));
+    const ownerDetails=(L.ownerCostPerHour>0&&effRevenue>0)
+      ? `<details class="jc-pnl-details"><summary>Owner cost detail</summary>${line('After owner cost <span class="jc-pnl-hint">'+L.hours+' hrs × $'+L.ownerCostPerHour.toFixed(2)+' = '+fmt(L.ownerCost)+'</span>',sgn(L.trueNet)+' ('+L.trueNetPct+'%)',L.trueNet>=0?'var(--green)':'var(--red)')}</details>`
+      : '';
+    html+=`<div class="jc-pnl-card">
+      <div class="jc-pnl-head">
+        <span class="jc-pnl-kicker">Job P&amp;L · as recorded</span>
         ${jcFlagBadge(L.flag)}
       </div>
       ${line(tmJob?'Revenue (T&amp;M billed)':'Revenue',effRevenue>0?fmt(effRevenue):'—')}
-      ${line('Direct cost <span style="font-size:11px;color:var(--text3);">labor '+fmt(totalLaborCost)+' · materials '+fmt(totalMatCost)+(consCost>0?' · consumables '+fmt(consCost):'')+(mileageCost>0?' · mileage '+fmt(mileageCost):'')+(commCost>0?' · commission '+fmt(commCost):'')+'</span>','-'+fmt(L.directCost),'var(--red)')}
-      <div style="border-top:1px solid var(--border2);margin:8px 0;"></div>
-      ${line('Gross margin',effRevenue>0?sgn(grossProfit)+' <span style="font-size:12px;">('+margin+'%)</span>':'—',profitColor,true)}
-      ${estNote}
-      ${line('Overhead <span style="font-size:11px;color:var(--text3);">'+L.hours+' hrs</span>','-'+fmt(L.overhead),'var(--red)')}
-      <div style="border-top:2px solid var(--border2);padding-top:10px;margin-top:6px;display:flex;justify-content:space-between;align-items:center;">
-        <span style="font-size:14px;font-weight:700;">Net after overhead</span>
-        <span style="font-size:20px;font-weight:700;font-family:'DM Mono',monospace;color:${netColor};">${effRevenue>0?sgn(L.netProfit)+' <span style="font-size:14px;">('+L.netPct+'%)</span>':'—'}</span>
+      ${line('Direct cost','-'+fmt(L.directCost),'var(--red)')}
+      ${directSubs.join('')}
+      <div class="jc-pnl-rule"></div>
+      ${line('Gross margin',effRevenue>0?sgn(grossProfit)+' <span class="jc-pnl-pct">('+margin+'%)</span>':'—',profitColor,true)}
+      <div class="jc-pnl-rule"></div>
+      ${line('Overhead','-'+fmt(L.overhead),'var(--red)')}
+      ${ohFormula}
+      <div class="jc-pnl-row jc-pnl-net">
+        <span class="jc-pnl-label">Net profit</span>
+        <span class="jc-pnl-val" style="color:${netColor};">${effRevenue>0?sgn(L.netProfit)+' <span class="jc-pnl-pct">('+L.netPct+'%)</span>':'—'}</span>
       </div>
-      ${L.ownerCostPerHour>0&&effRevenue>0?line('After owner cost <span style="font-size:11px;color:var(--text3);">'+L.hours+' hrs × $'+L.ownerCostPerHour.toFixed(2)+' = '+fmt(L.ownerCost)+'</span>',sgn(L.trueNet)+' ('+L.trueNetPct+'%)',L.trueNet>=0?'var(--green)':'var(--red)'):''}
-      <div style="border-top:1px solid var(--border2);margin:8px 0;"></div>
-      ${line('Break-even price <span style="font-size:11px;color:var(--text3);">direct cost + overhead</span>',fmt(L.breakEven))}
-      ${L.priceForTarget!==null?line('Price for '+L.targetNetPct+'% net <span style="font-size:11px;color:var(--text3);">'+(L.ownerCost>0?'incl. owner cost':'')+'</span>',fmt(L.priceForTarget)):''}
+      ${ownerDetails}
+    </div>
+    <div class="jc-pricing-guide">
+      <div class="jc-pricing-title">Pricing guide for similar jobs</div>
+      <div class="jc-pricing-note">Uses this job's costs to price a similar one.</div>
+      ${line('Break-even price <span class="jc-pnl-hint">direct cost + overhead</span>',fmt(L.breakEven))}
+      ${L.priceForTarget!==null?line('Price for '+L.targetNetPct+'% net <span class="jc-pnl-hint">'+(L.ownerCost>0?'incl. owner cost':'')+'</span>',fmt(L.priceForTarget)):''}
     </div>
     ${(!tmJob&&revenue===0)?`<div style="font-size:12px;color:var(--text3);margin-top:10px;">💡 Set a Job Value on the Job Info tab to see profit and margin.</div>`:''}`;
   }

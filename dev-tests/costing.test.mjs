@@ -399,7 +399,37 @@ test('job P&L: direct cost, gross margin, overhead, net, break-even, price for t
   assert.equal(ev(`getJobRecord('p1').consumablesPct`), undefined, 'rendering never writes a default % onto the job');
   ev(`document.body.insertAdjacentHTML('beforeend','<div id=jc-costing-content></div>'); renderJobCosting();`);
   assert.equal(ev(`getJobRecord('p1').consumablesPct`), undefined);
-  assert.ok(ev(`document.getElementById('jc-costing-content').textContent`).includes('Net after overhead'));
+  const cardText = ev(`document.querySelector('#jc-costing-content .jc-pnl-card').textContent`);
+  const guideText = ev(`document.querySelector('#jc-costing-content .jc-pricing-guide').textContent`);
+  const order = ['Revenue','Direct cost','Labor','Materials','Consumables','Mileage','Gross margin','Overhead','8.0 hrs × $15.32/hr','Net profit'];
+  let pos = -1;
+  for (const label of order) {
+    const i = cardText.indexOf(label);
+    assert.ok(i > pos, 'summary order: ' + label);
+    pos = i;
+  }
+  assert.equal(cardText.includes('Net after overhead'), false);
+  assert.equal(cardText.includes('Minimum GM to break even'), false);
+  assert.equal(cardText.includes('Break-even price'), false);
+  assert.equal(cardText.includes('Price for 15% net'), false);
+  assert.match(cardText, /\$2,000\.00/);
+  assert.match(cardText, /\$902\.16/);
+  assert.match(cardText, /\$322\.16/);
+  assert.match(cardText, /\$500\.00/);
+  assert.match(cardText, /\$80\.00/);
+  assert.match(cardText, /\$1,097\.84/);
+  assert.match(cardText, /\$122\.56/);
+  assert.match(cardText, /\$975\.28/);
+  assert.equal(ev(`document.querySelectorAll('#jc-costing-content .jc-pnl-card .jc-pnl-net').length`), 1);
+  assert.equal(ev(`document.querySelector('#jc-costing-content details.jc-pnl-details').open`), false);
+  assert.match(ev(`document.querySelector('#jc-costing-content details.jc-pnl-details').textContent`), /After owner cost/);
+  assert.match(ev(`document.querySelector('#jc-costing-content details.jc-pnl-details').textContent`), /\$17\.25/);
+  assert.match(ev(`document.querySelector('#jc-costing-content details.jc-pnl-details').textContent`), /\$138\.00/);
+  assert.equal(ev(`document.querySelector('#jc-costing-content .jc-pnl-card .jc-pricing-guide')`), null);
+  assert.equal(ev(`document.querySelector('#jc-costing-content .jc-pricing-title').textContent`), 'Pricing guide for similar jobs');
+  assert.ok(guideText.indexOf('Break-even price') < guideText.indexOf('Price for 15% net'));
+  assert.match(guideText, /\$1,024\.72/);
+  assert.match(guideText, /\$1,367\.91/);
   assert.equal(ev('jcProfitFlag(9.9)'), 'thin');
   assert.equal(ev('jcProfitFlag(-0.1)'), 'losing');
 });
@@ -479,8 +509,10 @@ test('data guard: a solo day offers "Owner on site?", which adds the owner at th
   const L = lines('g1');
   assert.deepEqual(L.soloDays, []);
   assert.equal(L.ownerHours, 8);
-  // Estimated break-even GM for an unfinished job uses scheduled hours × overhead ÷ price
-  assert.ok(ev(`document.getElementById('jc-costing-content').textContent`).includes('Minimum GM to break even'));
+  const unfinished = ev(`document.getElementById('jc-costing-content').textContent`);
+  assert.equal(unfinished.includes('Minimum GM to break even'), false);
+  assert.ok(unfinished.includes('Net profit'));
+  assert.ok(unfinished.includes('Pricing guide for similar jobs'));
 });
 
 test('saving a crew member writes back every existing column value', async () => {
