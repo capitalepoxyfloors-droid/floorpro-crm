@@ -2789,6 +2789,21 @@ function getExtraSlots(ci,w,d){ return multiSlots[_msKey(ci,w,d)]||[]; }
 let weekOffset = 0;
 
 function getMonday(off){const d=new Date(BASE);d.setDate(d.getDate()+off*7);return d;}
+// Whole local calendar days from a to b. Round, not floor: a DST transition makes
+// one civil day 23 or 25 hours, and floor of raw milliseconds drops that day.
+function calendarDaysBetween(a,b){
+  const aa=new Date(a.getFullYear(),a.getMonth(),a.getDate());
+  const bb=new Date(b.getFullYear(),b.getMonth(),b.getDate());
+  return Math.round((bb-aa)/86400000);
+}
+// Week offset of a local date relative to BASE (0 = the week of BASE).
+// Floor of calendar days/7, not floor of (date-BASE)/(7*24h): a CDT Monday is one
+// hour short of a whole number of those spans from a CST BASE, so millisecond floor
+// lands one week early and the grid (which walks getMonday by calendar date) shows
+// that Monday empty. Floor, not round — round shifts Friday (day 4 of 7) forward.
+function weekOffsetOf(d){
+  return Math.floor(calendarDaysBetween(BASE,d)/7);
+}
 function fmtDate(d){return d.toLocaleDateString('en-US',{month:'short',day:'numeric'});}
 function getSlot(i,w,d){return slots[i]?.[w]?.[d]||null;}
 function getNew(i,w,d){return newSlots[i]?.[w]?.[d]||null;}
@@ -3831,7 +3846,7 @@ async function loadPTO(){
     if(dateEnc){
       const d=new Date(dateEnc+'T00:00:00');
       if(!isNaN(d)){
-        wOff=Math.floor((d-BASE)/(7*24*60*60*1000));
+        wOff=weekOffsetOf(d);
         const _dow=d.getDay(); dIdx=_dow===0?6:_dow-1; // Sun→6, Mon→0…Sat→5
       }
     }
@@ -3887,7 +3902,7 @@ async function loadScheduledSlots(){
     if(dateEnc){
       const d=new Date(dateEnc+'T00:00:00');
       if(!isNaN(d)){
-        wOff=Math.floor((d-BASE)/(7*24*60*60*1000));
+        wOff=weekOffsetOf(d);
         const _dow=d.getDay(); dIdx=_dow===0?6:_dow-1; // Sun→6, Mon→0…Sat→5
       }
     }
@@ -4035,7 +4050,7 @@ function _fpDecodeSlotRow(r){
   if(dateEnc){
     const dt=new Date(dateEnc+'T00:00:00');
     if(!isNaN(dt)){
-      wOff=Math.floor((dt-BASE)/(7*24*60*60*1000));
+      wOff=weekOffsetOf(dt);
       const dow=dt.getDay(); dIdx=dow===0?6:dow-1;
     }
   }
@@ -4505,7 +4520,7 @@ function findWindow(crew,days,earliestStr){
   const MAX_D=wknd?6:4; // last valid day index in a week (Mon=0…Sun=6 or Mon=0…Fri=4)
   let earliest=earliestStr?new Date(earliestStr+'T00:00:00'):new Date(BASE);
   // Search far enough ahead to cover the earliest date + buffer, accounting for multi-week jobs
-  const weeksToEarliest=Math.ceil((earliest-new Date(BASE))/(7*24*60*60*1000));
+  const weeksToEarliest=Math.ceil(calendarDaysBetween(BASE, earliest)/7);
   const weeksNeeded=wknd?Math.ceil(days/7):Math.ceil(days/5);
   const maxW=Math.max(52,weeksToEarliest+weeksNeeded+8);
   for(let w=0;w<=maxW;w++){
@@ -4614,8 +4629,7 @@ function sjConfirm(){
   {let curW=w,curD=start;
   for(let i=0;i<days;i++){
     if(curD>BOOK_MD){curW++;curD=0;}
-    const _slotDt=new Date(BASE.getTime()+curW*7*24*60*60*1000+curD*24*60*60*1000);
-    const _slotDateStr=_slotDt.toISOString().split('T')[0];
+    const _slotDateStr=seSlotToDate(curW,curD).toISOString().split('T')[0];
     sjCrew.forEach(ci=>{
       if(isCrewInactive(ci)) return;
       if(newSlots[ci]?.[curW]?.[curD]){
@@ -4819,7 +4833,7 @@ function seDateToPos(dateStr){
   // dow: 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
   // dayIdx: Mon=0,Tue=1,Wed=2,Thu=3,Fri=4,Sat=5,Sun=6
   const dayIdx=dow===0?6:dow-1;
-  const wOff=Math.floor((dt-BASE)/(7*24*60*60*1000));
+  const wOff=weekOffsetOf(dt);
   return {w:wOff, d:dayIdx};
 }
 
@@ -4900,8 +4914,7 @@ async function seRemoveSlot(ci, w, d){
 async function sePlaceSlot(ci, w, d, label, type){
   if(!newSlots[ci]) newSlots[ci]={};
   if(!newSlots[ci][w]) newSlots[ci][w]={};
-  const _dt=new Date(BASE.getTime()+w*7*24*60*60*1000+d*24*60*60*1000);
-  const dateStr=_dt.toISOString().split('T')[0];
+  const dateStr=seSlotToDate(w,d).toISOString().split('T')[0];
   const dbId=await dbSaveSlot(ci,w,d,label,type,dateStr);
   newSlots[ci][w][d]={l:label,t:type,db_id:dbId,dt:dateStr};
   // Keep SLOT_JOB_MAP in step with the slot just placed. Previously the map was only written by
@@ -9517,7 +9530,7 @@ let _payrollPeriodOffset=null;     // null = not yet initialized this session
 function _payrollPeriodOffsetForToday(){
   const anchor=new Date(PAYROLL_ANCHOR+'T00:00:00');
   const today=new Date(); today.setHours(0,0,0,0);
-  const daysSince=Math.floor((today-anchor)/86400000);
+  const daysSince=calendarDaysBetween(anchor, today);
   // Default to the most recently COMPLETED period (payroll is cut a few days after period end),
   // not the in-progress one — e.g. still shows 6/21–7/4 through all of 7/5–7/18 until that ends too.
   return Math.floor((daysSince-13)/14);
@@ -13447,7 +13460,7 @@ async function approvePtoRequest(id){
   while(cur<=end){
     const dow=cur.getDay();
     if(dow!==0&&dow!==6){
-      const wOff=Math.floor((cur-BASE)/(7*24*60*60*1000)); // floor not round — round shifts Fridays to next week
+      const wOff=weekOffsetOf(cur);
       const dIdx=dow-1;
       const _ptoDateStr=cur.toISOString().split('T')[0];
       if(!ptoSlots[crewIdx]) ptoSlots[crewIdx]={};
@@ -17917,7 +17930,7 @@ async function savePtoDayEdit(){
   const dow=d.getDay();
   if(dow===0||dow===6){showToast('Please choose a weekday (Mon–Fri).');return;}
   const newDIdx=dow-1;
-  const newWOff=Math.floor((d-BASE)/(7*24*60*60*1000));
+  const newWOff=weekOffsetOf(d);
   const pto=ptoSlots[_editPtoCrewIdx]?.[_editPtoWOff]?.[_editPtoDIdx];
   // Remove old entry
   if(pto?.db_id) await sb.delete('pto_blocks',pto.db_id);
@@ -18815,7 +18828,7 @@ async function savePTO(){
     const d=new Date(date+'T00:00:00');
     const dow=d.getDay();
     if(dow===0||dow===6){showToast('That falls on a weekend.');return;}
-    const wOff=Math.floor((d-BASE)/(7*24*60*60*1000));
+    const wOff=weekOffsetOf(d);
     const dIdx=dow-1;
     const fmt=t=>{const[h,m]=t.split(':');const hr=parseInt(h);return(hr%12||12)+':'+m+(hr<12?'am':'pm');};
     const label=reason+' ('+fmt(from)+'–'+fmt(to)+')';
@@ -18850,7 +18863,7 @@ async function savePTO(){
     while(cur<=e){
       const dow=cur.getDay();
       if(dow!==0&&dow!==6){
-        const wOff=Math.floor((cur-BASE)/(7*24*60*60*1000));
+        const wOff=weekOffsetOf(cur);
         const dIdx=dow-1;
         const dateStr=cur.toISOString().split('T')[0];
         const existing=getSlot(crewIdx,wOff,dIdx)||getNew(crewIdx,wOff,dIdx);
