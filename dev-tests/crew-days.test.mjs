@@ -57,6 +57,9 @@ function mockFetch(url, opts = {}) {
     return Promise.resolve(new Response(null, { status: 204 }));
   }
   const table = (u.split('/rest/v1/')[1] || '').split('?')[0];
+  if (table === 'scheduled_slots' && method === 'GET') {
+    return Promise.resolve(jsonResponse(state.slots));
+  }
   if (table === 'scheduled_slots' && method === 'POST') {
     const row = { ...body, id: state.nextSlotId++ };
     state.slots.push(row);
@@ -551,4 +554,187 @@ test('the open job card still shows its own skipped crew days', async () => {
   assert.deepEqual(again, []);
   assert.deepEqual(plain(extraLabels(0, mon)), ['Schupp - Garage']);
   assert.equal(conflictWarn().hidden, true);
+});
+
+// Production shape: Brendon has a logged day, but the crew string never listed him.
+// Toggling someone else's day used to rebuild crewDays from crewNames and drop him.
+test('turning off one of Seth\'s days leaves Brendon\'s logged day and does not rewrite crewNames', async () => {
+  resetBoard();
+  const mon = lex('BASE').toISOString().slice(0, 10);
+  const wed = addDays(mon, 2);
+  const fri = addDays(mon, 4);
+  const credit = [{ crewIdx: 1, name: 'Brendon Bennett', creditedTenths: 80, reason: 'Logged day', by: 'Ops' }];
+  const job = putJob({
+    id: 'gbh-phase-2',
+    customer: 'GBH - Salvation Army - Phase 2',
+    startDate: mon,
+    endDate: fri,
+    crewNames: 'Seth West, Hunter Schuler',
+    crewDays: { 'Brendon Bennett': [fri] },
+    status: 'in_progress',
+    dayLogs: { [fri]: { notes: 'Brendon was here', hourAdjustments: credit, crewPresent: [{ crewIdx: 1, name: 'Brendon Bennett' }] } },
+  });
+  assert.equal(call('jcEstimatedHours', job), 80, 'the unfinished-job estimate still counts only the stored crew string');
+  call('jcRenderCrewPicker');
+  const picker = w.document.getElementById('jc-crew-picker');
+  assert.equal(picker.querySelector('[data-crew-name="Brendon Bennett"]').getAttribute('data-on'), '1');
+  assert.equal(picker.querySelector(`[data-crew-for="Brendon Bennett"][data-crew-day="${fri}"]`).getAttribute('data-on'), '1');
+  assert.equal(picker.querySelector(`[data-crew-for="Brendon Bennett"][data-crew-day="${mon}"]`).getAttribute('data-on'), '0');
+  assert.equal(job.crewNames, 'Seth West, Hunter Schuler', 'opening the picker must not add Brendon to the stored string');
+  assert.deepEqual(plain(job.crewDays['Brendon Bennett']), [fri]);
+
+  w.eval(`(() => {
+    const p = cvDateToSlot(new Date(${JSON.stringify(fri)} + 'T00:00:00'));
+    if (!newSlots[1]) newSlots[1] = {};
+    if (!newSlots[1][p.w]) newSlots[1][p.w] = {};
+    newSlots[1][p.w][p.d] = { l: 'GBH - Salvation Army - Phase 2', t: 'epoxy', dt: ${JSON.stringify(fri)} };
+  })()`);
+  const logsBefore = JSON.stringify(job.dayLogs);
+  await call('jcToggleCrewDay', 0, wed);
+  assert.equal(job.crewNames, 'Seth West, Hunter Schuler');
+  assert.deepEqual(plain(job.crewDays['Brendon Bennett']), [fri]);
+  assert.deepEqual(plain(job.crewDays['Seth West']), [mon, addDays(mon, 1), addDays(mon, 3), fri]);
+  assert.deepEqual(plain(job.crewDays['Hunter Schuler']), [mon, addDays(mon, 1), wed, addDays(mon, 3), fri]);
+  assert.equal(slotLabel(1, fri), 'GBH - Salvation Army - Phase 2');
+  assert.equal(slotLabel(0, wed), null);
+  assert.equal(JSON.stringify(job.dayLogs), logsBefore);
+
+  job.notes = 'office note';
+  await call('saveJobRecords', job.id);
+  await call('jcSyncCrewSlots', job);
+  assert.equal(job.crewNames, 'Seth West, Hunter Schuler');
+  assert.deepEqual(plain(job.crewDays['Brendon Bennett']), [fri]);
+  assert.equal(call('jcEstimatedHours', job), 72);
+});
+
+test('a new crew day or a new schedule slot adds that person to crewNames and leaves everyone else', async () => {
+  resetBoard();
+  const mon = lex('BASE').toISOString().slice(0, 10);
+  const tue = addDays(mon, 1);
+  const fri = addDays(mon, 4);
+  const job = putJob({
+    id: 'gbh-phase-2',
+    customer: 'GBH - Salvation Army - Phase 2',
+    startDate: mon,
+    endDate: fri,
+    crewNames: 'Seth West, Hunter Schuler',
+    crewDays: { 'Brendon Bennett': [fri] },
+    status: 'scheduled',
+    dayLogs: {},
+  });
+  const unchanged = call('jcRecordNewCrewAssignment', job, 'Seth West', mon);
+  assert.equal(unchanged, false);
+  assert.equal(job.crewDays['Seth West'], undefined, 'someone already named for the whole job does not get a one-day list');
+  assert.equal(job.crewNames, 'Seth West, Hunter Schuler');
+
+  await call('jcToggleCrewDay', 3, tue);
+  assert.equal(job.crewNames, 'Seth West, Hunter Schuler, Cody Faulkner');
+  assert.deepEqual(plain(job.crewDays['Cody Faulkner']), [tue]);
+  assert.deepEqual(plain(job.crewDays['Brendon Bennett']), [fri]);
+
+  const pos = w.eval(`cvDateToSlot(new Date(${JSON.stringify(mon)} + 'T00:00:00'))`);
+  await call('jcAttachPlacedSlots', [{ ci: 2, w: pos.w, d: pos.d, dateStr: mon, label: job.customer }]);
+  assert.equal(job.crewNames, 'Seth West, Hunter Schuler, Cody Faulkner, Will Bradford');
+  assert.deepEqual(plain(job.crewDays['Will Bradford']), [mon]);
+  assert.deepEqual(plain(job.crewDays['Brendon Bennett']), [fri]);
+});
+
+test('a one-person drag and a whole-job move do not drop a logged day that is not in crewNames', async () => {
+  resetBoard();
+  const mon = lex('BASE').toISOString().slice(0, 10);
+  const tue = addDays(mon, 1);
+  const fri = addDays(mon, 4);
+  const nextMon = addDays(mon, 7);
+  const job = putJob({
+    id: 'gbh-phase-2',
+    customer: 'GBH - Salvation Army - Phase 2',
+    startDate: mon,
+    endDate: fri,
+    crewNames: 'Seth West, Hunter Schuler',
+    crewDays: { 'Brendon Bennett': [mon, fri] },
+    status: 'scheduled',
+    dayLogs: {},
+  });
+  call('jcApplyCrewReassignDays', job, 'Brendon Bennett', [mon], 'Cody Faulkner', [nextMon], false);
+  assert.deepEqual(plain(job.crewDays['Brendon Bennett']), [fri]);
+  assert.equal(job.crewNames.includes('Brendon Bennett'), false);
+  assert.ok(job.crewNames.includes('Cody Faulkner'));
+  assert.deepEqual(plain(job.crewDays['Hunter Schuler']).includes(mon), true);
+
+  const move = putJob({
+    id: 'move-gbh',
+    customer: 'Move Job',
+    startDate: mon,
+    endDate: fri,
+    crewNames: 'Seth West',
+    crewDays: { 'Brendon Bennett': [fri] },
+    status: 'scheduled',
+    jobType: 'epoxy',
+    dayLogs: {},
+  });
+  const newDates = call('getWorkingDaysFrom', nextMon, 2, false);
+  await call('jcRescheduleApply', [], newDates, 2, move, nextMon, false);
+  assert.equal(move.crewNames, 'Seth West');
+  assert.deepEqual(plain(move.crewDays['Brendon Bennett']), [fri]);
+  assert.equal(move.startDate, nextMon);
+});
+
+test('slot cleanup keeps a logged day that is missing from crewNames and still drops a real orphan', async () => {
+  resetBoard();
+  const mon = lex('BASE').toISOString().slice(0, 10);
+  const fri = addDays(mon, 4);
+  const job = putJob({
+    id: 'gbh-phase-2',
+    customer: 'GBH - Salvation Army - Phase 2',
+    startDate: mon,
+    endDate: fri,
+    crewNames: 'Seth West, Hunter Schuler',
+    crewDays: { 'Brendon Bennett': [fri] },
+    status: 'scheduled',
+    dayLogs: {},
+  });
+  function remember(ci, iso, id) {
+    const p = w.eval(`cvDateToSlot(new Date(${JSON.stringify(iso)} + 'T00:00:00'))`);
+    state.slots.push({
+      id,
+      crew_idx: ci,
+      week_offset: p.w,
+      day_idx: p.d,
+      label: job.customer,
+      job_type: 'epoxy:' + iso,
+    });
+  }
+  remember(1, fri, 11);
+  remember(2, mon, 12);
+  await call('jcCleanOrphanedSlots', job);
+  assert.deepEqual(state.slots.map(s => s.id), [11]);
+  assert.deepEqual(plain(job.crewDays['Brendon Bennett']), [fri]);
+  assert.equal(job.crewNames, 'Seth West, Hunter Schuler');
+});
+
+test('taking Brendon off the job is explicit and does not touch the other names', async () => {
+  resetBoard();
+  const mon = lex('BASE').toISOString().slice(0, 10);
+  const fri = addDays(mon, 4);
+  const job = putJob({
+    id: 'gbh-phase-2',
+    customer: 'GBH - Salvation Army - Phase 2',
+    startDate: mon,
+    endDate: fri,
+    crewNames: 'Seth West, Hunter Schuler',
+    crewDays: { 'Brendon Bennett': [fri] },
+    status: 'scheduled',
+    dayLogs: {},
+  });
+  await call('jcToggleCrewDay', 1, fri);
+  assert.equal(job.crewNames, 'Seth West, Hunter Schuler');
+  assert.equal(job.crewDays['Brendon Bennett'], undefined);
+  assert.deepEqual(plain(job.crewDays['Seth West']), [mon, addDays(mon, 1), addDays(mon, 2), addDays(mon, 3), fri]);
+  assert.deepEqual(plain(job.crewDays['Hunter Schuler']), [mon, addDays(mon, 1), addDays(mon, 2), addDays(mon, 3), fri]);
+
+  job.crewDays = { 'Brendon Bennett': [fri], 'Seth West': [mon] };
+  await call('jcToggleCrew', 1);
+  assert.equal(job.crewNames, 'Seth West, Hunter Schuler');
+  assert.equal(job.crewDays['Brendon Bennett'], undefined);
+  assert.deepEqual(plain(job.crewDays['Seth West']), [mon]);
 });

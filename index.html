@@ -2859,7 +2859,7 @@ const DASH_WIDGETS = {
       return '<div style="display:flex;flex-direction:column;padding:4px 0;">'+active.map((j,idx)=>{
         const valStr=j.value?parseFloat(j.value).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}):'';
         const dateStr=j.startDate?((j.endDate&&j.endDate!==j.startDate)?jcFmtDate(j.startDate)+' – '+jcFmtDate(j.endDate):jcFmtDate(j.startDate)):'';
-        const sub=[j.crewNames, dateStr].filter(Boolean).join(' &nbsp;·&nbsp; ');
+        const sub=[(typeof jcCrewLabel==='function'?jcCrewLabel(j):j.crewNames), dateStr].filter(Boolean).join(' &nbsp;·&nbsp; ');
         const brd=idx<active.length-1?'border-bottom:1px solid var(--border2);':'';
         return `<div onclick="openJobCard('${j.id}')" title="Click to open job"
             style="display:flex;align-items:center;gap:10px;padding:9px 16px;cursor:pointer;${brd}transition:background .12s;"
@@ -3528,7 +3528,7 @@ function renderStaleJobNotice(){
           const id=String(item.job.id||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
           const name=_alEsc(item.job.customer||'Unnamed job');
           const when=_alEsc(typeof jcFmtDate==='function'?jcFmtDate(item.job.endDate):item.job.endDate);
-          const crew=(typeof jcCrewNames==='function'?jcCrewNames(item.job):[]).map(_alEsc).join(', ');
+          const crew=(typeof jcCrewRoster==='function'?jcCrewRoster(item.job):[]).map(_alEsc).join(', ');
           const who=crew?crew+' — ':'';
           return `<button type="button" onclick="openJobCard('${id}')" style="text-align:left;background:none;border:none;padding:3px 0;cursor:pointer;font:inherit;color:var(--text2);font-size:12.5px;"><b style="color:var(--text);">${name}</b> — ${who}last log ${item.past} days after ${when}</button>`;
         }).join('')}
@@ -4953,10 +4953,14 @@ async function saveSlotEdit(force=false){
   // Snapshot remaining BEFORE we start moving things
   const remaining = applyAll ? seRemainingSlots(ci, w, d, origLabel) : [];
 
+  // Slots this edit actually placed. A label change on the same person and day is not
+  // a new assignment, so it does not touch crewNames.
+  const placed=[];
   // Handle this day
   if(moved){
     await seRemoveSlot(ci, w, d);
     await sePlaceSlot(newCi, newPos.w, newPos.d, label, type);
+    placed.push({ci:newCi, w:newPos.w, d:newPos.d, dateStr:newDateStr, label});
   } else {
     const s=newSlots[ci]?.[w]?.[d];
     if(s){s.l=label;s.t=type;}
@@ -4975,12 +4979,15 @@ async function saveSlotEdit(force=false){
       if(isBooked(newCi,rPos.w,rPos.d)){ skipped++; continue; } // conflict
       await seRemoveSlot(ci, r.w, r.d);
       await sePlaceSlot(newCi, rPos.w, rPos.d, label, type);
+      placed.push({ci:newCi, w:rPos.w, d:rPos.d, dateStr:rNewDate.toISOString().split('T')[0], label});
     } else {
       const s=newSlots[ci]?.[r.w]?.[r.d];
       if(s){s.l=label;s.t=type;}
       if(s?.db_id) await sb.update('scheduled_slots',s.db_id,{label,job_type:s?.dt?type+':'+s.dt:type});
     }
   }
+
+  if(placed.length) await jcAttachPlacedSlots(placed);
 
   _seCtx=null;
   closeModal('slotedit');
@@ -5882,6 +5889,32 @@ function jcJobWorkDates(job){
 function jcCrewNames(job){
   return ((job&&job.crewNames)||'').split(',').map(n=>n.trim()).filter(Boolean);
 }
+// Names that already have at least one logged day. An empty list is "explicitly on no
+// days" (someone held off a reschedule), not a person to show.
+function jcCrewDayNames(job){
+  if(!job||!job.crewDays||typeof job.crewDays!=='object'||Array.isArray(job.crewDays)) return [];
+  const out=[];
+  for(const name of Object.keys(job.crewDays)){
+    const days=job.crewDays[name];
+    if(Array.isArray(days)&&days.some(d=>typeof d==='string'&&d)) out.push(name);
+  }
+  return out;
+}
+// Who the job card and other read-only crew lines show. The stored crewNames string is
+// left alone: a person can have logged days without being in that string, and putting
+// them into the string would change which names later edits treat as the booked crew.
+function jcCrewRoster(job){
+  const names=jcCrewNames(job).slice();
+  const seen=new Set(names);
+  for(const name of jcCrewDayNames(job)){
+    if(!seen.has(name)){ seen.add(name); names.push(name); }
+  }
+  return names;
+}
+function jcCrewLabel(job){
+  const names=jcCrewRoster(job);
+  return names.length?names.join(', '):((job&&job.crewNames)||'');
+}
 // An entry exists only after someone has edited that person's days (or a drag/reschedule
 // wrote them down). No entry means "on every current work day" — the old whole-job booking.
 function jcCrewDaysExplicit(job, name){
@@ -5889,14 +5922,18 @@ function jcCrewDaysExplicit(job, name){
     &&Object.prototype.hasOwnProperty.call(job.crewDays,name)&&Array.isArray(job.crewDays[name]));
 }
 function jcAssignedDates(job, name){
-  if(!job||!name||!jcCrewNames(job).includes(name)) return [];
+  if(!job||!name) return [];
+  const listed=jcCrewNames(job).includes(name);
+  const explicit=jcCrewDaysExplicit(job, name);
+  if(!listed&&!explicit) return [];
   const work=jcJobWorkDates(job);
-  if(!jcCrewDaysExplicit(job, name)) return work;
+  if(!explicit) return work;
   const allow=new Set(work);
   return job.crewDays[name].filter(d=>allow.has(d)).sort();
 }
-// Copy the implied "every day" list onto the job so a later one-day edit cannot
-// drop the other people. Does not save and is not called on page load.
+// Copy the implied "every day" list onto people already named on the job, so a later
+// one-day edit cannot drop them. Days already stored for anyone else stay. Does not
+// save, does not change crewNames, and is not called on page load.
 function jcMaterializeCrewDays(job){
   if(!job) return job;
   if(!job.crewDays||typeof job.crewDays!=='object'||Array.isArray(job.crewDays)) job.crewDays={};
@@ -5904,10 +5941,44 @@ function jcMaterializeCrewDays(job){
   for(const name of jcCrewNames(job)){
     if(!jcCrewDaysExplicit(job, name)) job.crewDays[name]=work.slice();
   }
-  for(const name of Object.keys(job.crewDays)){
-    if(!jcCrewNames(job).includes(name)) delete job.crewDays[name];
-  }
   return job;
+}
+// A person just received a new day or a new schedule slot from something the user did.
+// Adds the name to crewNames only in that moment. Does nothing for someone already
+// named with no day list (they are still on every work day). Never called on load.
+function jcRecordNewCrewAssignment(job, name, dateStr){
+  if(!job||!name) return false;
+  const listed=jcCrewNames(job);
+  const known=listed.includes(name);
+  let changed=false;
+  if(!known){
+    listed.push(name);
+    job.crewNames=listed.join(', ');
+    changed=true;
+  }
+  if(!dateStr) return changed;
+  if(!jcCrewDaysExplicit(job, name)){
+    if(known) return changed;
+    if(!job.crewDays||typeof job.crewDays!=='object'||Array.isArray(job.crewDays)) job.crewDays={};
+    job.crewDays[name]=[dateStr];
+    return true;
+  }
+  if(!job.crewDays[name].includes(dateStr)){
+    job.crewDays[name]=[...job.crewDays[name], dateStr].sort();
+    return true;
+  }
+  return changed;
+}
+async function jcAttachPlacedSlots(entries){
+  const dirty=new Set();
+  for(const e of entries||[]){
+    const name=CREW[e.ci]&&CREW[e.ci].full;
+    if(!name||!e.dateStr) continue;
+    const job=resolveSlotJob(e.ci, e.w, e.d, e.label, e.dateStr);
+    if(!job) continue;
+    if(jcRecordNewCrewAssignment(job, name, e.dateStr)) dirty.add(String(job.id));
+  }
+  for(const id of dirty) await saveJobRecords(id);
 }
 function jcDropCrewDay(job, ds){
   if(!job||!job.crewDays||typeof job.crewDays!=='object'||Array.isArray(job.crewDays)) return;
@@ -5932,9 +6003,9 @@ function jcCarryCrew(job){
   }
   return out;
 }
-// One-person drag. Freeze everyone else on the days they have now, take the moved
-// days off the origin, and give those new dates to the target — so the next sync
-// does not put the origin back or book the target for the whole job.
+// One-person drag. Freeze everyone already named on the job onto the days they have
+// now, take only the moved days off the origin, and give those new dates to the target.
+// A logged day for someone who is not in crewNames is left as it is.
 function jcApplyCrewReassignDays(job, originName, originDays, targetName, newDateStrs, targetWasOn){
   if(!job) return;
   if(!job.crewDays||typeof job.crewDays!=='object'||Array.isArray(job.crewDays)) job.crewDays={};
@@ -5944,12 +6015,19 @@ function jcApplyCrewReassignDays(job, originName, originDays, targetName, newDat
     if(!jcCrewDaysExplicit(job, name)) job.crewDays[name]=prior.slice();
   }
   if(jcCrewDaysExplicit(job, originName)){
-    const moved=new Set(originDays);
-    job.crewDays[originName]=job.crewDays[originName].filter(d=>!moved.has(d));
+    const moved=new Set(originDays||[]);
+    const left=job.crewDays[originName].filter(d=>!moved.has(d));
+    if(left.length) job.crewDays[originName]=left;
+    else delete job.crewDays[originName];
   }
-  if(!jcCrewNames(job).includes(originName)) delete job.crewDays[originName];
   if(!jcCrewDaysExplicit(job, targetName)) job.crewDays[targetName]=targetWasOn?prior.slice():[];
-  job.crewDays[targetName]=[...new Set([...(job.crewDays[targetName]||[]), ...(newDateStrs||[])])].sort();
+  const targetDates=[...new Set([...(job.crewDays[targetName]||[]), ...(newDateStrs||[])])].sort();
+  job.crewDays[targetName]=targetDates;
+  if(targetName&&!jcCrewNames(job).includes(targetName)&&(newDateStrs||[]).length){
+    const names=jcCrewNames(job);
+    names.push(targetName);
+    job.crewNames=names.join(', ');
+  }
 }
 // Place or clear this job's slot for one person on one date. A day that already
 // belongs to another job is double-booked, never skipped.
@@ -6010,6 +6088,7 @@ function jcBackfillSlotMap(job){
 
 // Remove this job's slots for anyone who is not assigned that day — either they
 // are off the job entirely, or they are on the job but not on this date.
+// A crewDays entry is an assignment even when that name is missing from crewNames.
 // The job argument may be this page's stale copy. Assignment is decided from a
 // fresh job_records read, and only a slot row that is still on the server is deleted.
 async function jcCleanOrphanedSlots(job){
@@ -6023,7 +6102,6 @@ async function jcCleanOrphanedSlots(job){
   if(!fresh||!fresh.startDate||!fresh.endDate){ console.error('jcCleanOrphanedSlots: fresh job has no dates — not deleting slots'); return; }
   const slotsGot=await sb.getResult('scheduled_slots');
   if(!slotsGot.ok){ console.error('jcCleanOrphanedSlots: scheduled_slots re-read failed — not deleting slots'); return; }
-  const names=new Set(jcCrewNames(fresh));
   const allDates=new Set(jcJobWorkDates(fresh));
   let changed=false;
   for(const row of slotsGot.rows){
@@ -6031,7 +6109,8 @@ async function jcCleanOrphanedSlots(job){
     if(!slot.label||slot.label!==fresh.customer||!slot.dt||!allDates.has(slot.dt)) continue;
     const person=CREW[slot.ci];
     if(!person) continue;
-    const assigned=names.has(person.full)?new Set(jcAssignedDates(fresh, person.full)):new Set();
+    // A logged day counts even when that name was never written into crewNames.
+    const assigned=new Set(jcAssignedDates(fresh, person.full));
     if(assigned.has(slot.dt)) continue;
     _fpLogSlotDelete(slot.id, slot.label, slot.dt, person.full+' is not on '+fresh.customer+' that day');
     if(slot.id!=null) await sb.delete('scheduled_slots', slot.id);
@@ -6045,7 +6124,7 @@ async function jcCleanOrphanedSlots(job){
   for(let ci=0;ci<CREW.length;ci++){
     const person=CREW[ci];
     if(!person) continue;
-    const assigned=names.has(person.full)?new Set(jcAssignedDates(fresh, person.full)):new Set();
+    const assigned=new Set(jcAssignedDates(fresh, person.full));
     for(const ds of allDates){
       if(assigned.has(ds)) continue;
       const pos=cvDateToSlot(new Date(ds+'T00:00:00')); if(!pos) continue;
@@ -6246,7 +6325,7 @@ function jcRenderCrewPicker(){
   el.style.flexDirection='column';
   el.style.alignItems='stretch';
   if(!CREW.length){el.innerHTML='<span style="font-size:12px;color:var(--text3);">No crew members set up yet.</span>';return;}
-  const current=new Set(jcCrewNames(job));
+  const current=new Set(jcCrewRoster(job));
   const days=jcJobWorkDates(job);
   el.innerHTML=CREW.map((c,i)=>{
     const on=current.has(c.full);
@@ -6267,18 +6346,21 @@ async function jcToggleCrew(i){
   const job=getJobRecord(_jcId); if(!job) return;
   const name=CREW[i].full;
   const names=jcCrewNames(job);
-  const idx=names.indexOf(name);
-  const adding=idx===-1;
+  const adding=!jcCrewRoster(job).includes(name);
   if(adding&&isCrewInactive(i)){ showToast(name+' is inactive and was not added to the schedule.'); return; }
   if(adding){
-    jcMaterializeCrewDays(job); // freeze everyone already on the job before this person joins
+    jcMaterializeCrewDays(job); // freeze everyone already named on the job before this person joins
     names.push(name);
     job.crewNames=names.join(', ');
     if(!job.crewDays||typeof job.crewDays!=='object'||Array.isArray(job.crewDays)) job.crewDays={};
     job.crewDays[name]=jcJobWorkDates(job).slice();
   } else {
-    names.splice(idx,1);
-    job.crewNames=names.join(', ');
+    // The name chip is the explicit "take this person off the job" action.
+    const idx=names.indexOf(name);
+    if(idx!==-1){
+      names.splice(idx,1);
+      job.crewNames=names.join(', ');
+    }
     if(job.crewDays) delete job.crewDays[name];
   }
   await saveJobRecords();
@@ -6318,16 +6400,20 @@ async function jcToggleCrewDay(i, ds){
     days=days.filter(d=>d!==ds);
     if(!days.length){
       const idx=names.indexOf(name);
-      if(idx!==-1) names.splice(idx,1);
-      job.crewNames=names.join(', ');
+      if(idx!==-1){
+        names.splice(idx,1);
+        job.crewNames=names.join(', ');
+      }
       delete job.crewDays[name];
     } else {
       job.crewDays[name]=days;
     }
     await jcSetCrewSlot(job, i, ds, false);
   } else {
-    if(!names.includes(name)) names.push(name);
-    job.crewNames=names.join(', ');
+    if(!names.includes(name)){
+      names.push(name);
+      job.crewNames=names.join(', ');
+    }
     days.push(ds);
     job.crewDays[name]=[...new Set(days)].sort();
     doubled=await jcSetCrewSlot(job, i, ds, true);
@@ -9255,7 +9341,10 @@ function jcJobCostLines(job,mode){
     ownerCostPerHour,ownerCost,trueNet,trueNetPct,targetNetPct,breakEven,priceForTarget,
     sqft:jcJobSqft(job),category:jcCostCategory(job),finishDate};
 }
-// Estimated hours for a job that isn't finished: each scheduled person's work days × 8.
+// Estimated hours for a job that isn't finished: each name stored in crewNames × 8
+// per assigned day. Logged days for someone missing from that string are not added
+// here. Payroll credits and job-cost hours come from the day log (crew on site and
+// any per-person credit), not from crewNames or this estimate.
 function jcEstimatedHours(job){
   const names=jcCrewNames(job);
   return names.reduce((s,n)=>s+jcAssignedDates(job,n).length*8,0);
@@ -10484,13 +10573,23 @@ async function jcRescheduleApply(crewCIs,newDates,duration,job,newStart,force=fa
   const newEnd=newDates[newDates.length-1].toISOString().split('T')[0];
   const carriedNames=moving.map(ci=>CREW[ci]&&CREW[ci].full).filter(Boolean);
   const heldBack=jcCrewNames(job).filter(n=>!carriedNames.includes(n));
+  // Days logged for someone who was never written into crewNames are not part of
+  // this move, and they are not deleted or copied into the crew string.
+  const keptDays={};
+  if(job.crewDays&&typeof job.crewDays==='object'&&!Array.isArray(job.crewDays)){
+    for(const name of Object.keys(job.crewDays)){
+      if(jcCrewNames(job).includes(name)||!Array.isArray(job.crewDays[name])) continue;
+      keptDays[name]=job.crewDays[name].slice();
+    }
+  }
   jcClearCrewDays(job);
   job.startDate=newStart; job.endDate=newEnd;
   const newDateSet=new Set(newDates.map(d=>d.toISOString().split('T')[0]));
   if(job.extraDays?.length) job.extraDays=job.extraDays.filter(ds=>newDateSet.has(ds));
-  if(heldBack.length){
+  if(heldBack.length||Object.keys(keptDays).length){
     job.crewDays={};
     heldBack.forEach(n=>{ job.crewDays[n]=[]; });
+    Object.keys(keptDays).forEach(n=>{ job.crewDays[n]=keptDays[n]; });
   }
   jcSyncStatusToDate(job,newStart);
   await saveJobRecords();
@@ -15894,7 +15993,7 @@ async function toggleCrewInactive(idx){
     let fut=0;
     Object.values(newSlots[idx]||{}).forEach(days=>Object.values(days||{}).forEach(s=>{ if(s?.dt&&s.dt>=todayStr) fut++; }));
     Object.entries(multiSlots).forEach(([k,list])=>{ if(k.startsWith(idx+'_')) (list||[]).forEach(e=>{ if(e.dt&&e.dt>=todayStr) fut++; }); });
-    const openJobs=(JOB_RECORDS||[]).filter(j=>j.status!=='complete'&&(j.crewNames||'').split(',').map(n=>n.trim()).includes(c.full));
+    const openJobs=(JOB_RECORDS||[]).filter(j=>j.status!=='complete'&&jcCrewRoster(j).includes(c.full));
     let msg='Mark '+who+' as INACTIVE?\n\n• Removed from the Install Schedule and crew pickers\n• Their PIN stops working\n• No Holiday Pay, and their hours stop counting toward the overhead $/hr\n• All past jobs, hours and payroll history are kept\n\nYou can reactivate them any time.';
     if(fut||openJobs.length) msg+='\n\n⚠ Still booked: '+(fut?fut+' scheduled day'+(fut!==1?'s':'')+' from today on':'')+(fut&&openJobs.length?', ':'')+(openJobs.length?'on '+openJobs.map(j=>j.customer).join(', '):'')+'. Those will keep showing until you reassign them.';
     if(!confirm(msg)) return;
