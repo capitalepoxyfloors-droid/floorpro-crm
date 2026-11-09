@@ -3856,7 +3856,187 @@ async function loadPTO(){
   });
 }
 
-async function dbSaveSlot(crewIdx,weekOff,dayIdx,label,jobType,dateStr){
+// Calendar date of a stored slot. The job_type suffix wins; a stale week_offset
+// (daylight-time Mondays used to load one week early) is not the date.
+function _fpDateFromWeekDay(w,d){
+  const wn=+w, dn=+d;
+  if(!Number.isFinite(wn)||!Number.isFinite(dn)||dn<0||dn>6) return null;
+  return seSlotToDate(wn, dn).toISOString().split('T')[0];
+}
+function _fpSplitJobType(jobType){
+  const jtRaw=jobType||'';
+  const colonIdx=jtRaw.lastIndexOf(':');
+  const datePart=colonIdx>=0?jtRaw.slice(colonIdx+1):'';
+  const hasDt=/^\d{4}-\d{2}-\d{2}$/.test(datePart);
+  return {type:hasDt?jtRaw.slice(0,colonIdx):jtRaw, date:hasDt?datePart:null};
+}
+// A map or caller id counts only when it belongs to this label. A missing job
+// record still counts — the schedule form inserts slots before the record exists.
+function _fpExplicitJobId(jobId, label){
+  if(jobId==null||jobId==='') return null;
+  const job=getJobRecord(jobId);
+  if(job&&(job.customer||'')!==(label||'')) return null;
+  return String(jobId);
+}
+function _fpMapJobId(ci,w,d,label){
+  const mapped=SLOT_JOB_MAP[jcSlotKey(ci,w,d)];
+  if(mapped==null||mapped==='') return null;
+  return _fpExplicitJobId(mapped, label);
+}
+// Same job: both records exist and share an id, or one side has no id and the
+// known record's name and type match, or neither id is known and label+type match.
+// Two different records on the same day are not the same job, even with one name.
+function _fpSameScheduledJob(a,b){
+  if(!a||!b) return false;
+  if(a.jobId&&b.jobId&&String(a.jobId)===String(b.jobId)) return true;
+  const aJob=a.jobId?getJobRecord(a.jobId):null;
+  const bJob=b.jobId?getJobRecord(b.jobId):null;
+  if(aJob&&bJob&&String(aJob.id)!==String(bJob.id)) return false;
+  if(aJob&&!bJob){
+    if((aJob.customer||'')!==(b.label||'')) return false;
+    const jt=aJob.jobType||'';
+    return !jt||!b.type||jt===b.type;
+  }
+  if(bJob&&!aJob) return _fpSameScheduledJob(b,a);
+  return (a.label||'')===(b.label||'') && (a.type||'')===(b.type||'');
+}
+function _fpIdentFromPrimary(ci,w,d,slot){
+  return {label:slot.l||'', type:slot.t||'', jobId:_fpMapJobId(ci,w,d,slot.l||'')};
+}
+function _fpIdentFromExtra(ex){
+  const jobId=ex&&ex.jobId!=null&&ex.jobId!==''?_fpExplicitJobId(ex.jobId, ex.l||''):null;
+  return {label:(ex&&ex.l)||'', type:(ex&&ex.t)||'', jobId};
+}
+function _fpSlotDateOf(slot,w,d){
+  if(slot&&slot.dt&&/^\d{4}-\d{2}-\d{2}$/.test(slot.dt)) return slot.dt;
+  return _fpDateFromWeekDay(w,d);
+}
+function _fpFindMemoryScheduledSlot(ci, dateStr, want){
+  if(!dateStr) return null;
+  const crew=+ci;
+  for(const wStr in (newSlots[crew]||{})){
+    for(const dStr in (newSlots[crew][wStr]||{})){
+      const slot=newSlots[crew][wStr][dStr];
+      if(!slot) continue;
+      const w=+wStr, d=+dStr;
+      if(_fpSlotDateOf(slot,w,d)!==dateStr) continue;
+      const ident=_fpIdentFromPrimary(crew,w,d,slot);
+      if(!_fpSameScheduledJob(ident, want)) continue;
+      return {id:slot.db_id??null, ci:crew, w, d, label:slot.l||'', type:slot.t||'', dt:dateStr, jobId:ident.jobId, bucket:'primary', inMemory:true};
+    }
+  }
+  for(const k of Object.keys(multiSlots)){
+    const parts=k.split('_');
+    if(+parts[0]!==crew) continue;
+    const w=+parts[1], d=+parts[2];
+    for(const ex of (multiSlots[k]||[])){
+      if(!ex) continue;
+      if(_fpSlotDateOf(ex,w,d)!==dateStr) continue;
+      const ident=_fpIdentFromExtra(ex);
+      if(!_fpSameScheduledJob(ident, want)) continue;
+      return {id:ex.db_id??null, ci:crew, w, d, label:ex.l||'', type:ex.t||'', dt:dateStr, jobId:ident.jobId, bucket:'extra', inMemory:true};
+    }
+  }
+  return null;
+}
+async function _fpFindDbScheduledSlot(ci, dateStr, want){
+  if(!dateStr) return null;
+  let got;
+  try{
+    got=await sb.getResult('scheduled_slots','crew_idx=eq.'+encodeURIComponent(ci)+'&select=id,crew_idx,week_offset,day_idx,label,job_type');
+  }catch(e){
+    console.error('scheduled slot lookup failed', e);
+    return null;
+  }
+  if(!got||!got.ok) return null;
+  let best=null;
+  for(const row of got.rows){
+    if(+row.crew_idx!==+ci) continue;
+    const parsed=_fpSplitJobType(row.job_type);
+    const decoded=_fpDecodeSlotRow(row);
+    const dt=parsed.date||decoded.dt;
+    if(dt!==dateStr) continue;
+    const ident={label:row.label||'', type:parsed.type||'', jobId:_fpMapJobId(decoded.ci, decoded.w, decoded.d, row.label||'')};
+    if(!_fpSameScheduledJob(ident, want)) continue;
+    if(!best||(row.id!=null&&(best.id==null||+row.id<+best.id))){
+      best={id:row.id??null, ci:+row.crew_idx, w:decoded.w, d:decoded.d, label:row.label||'', type:parsed.type||'', dt, jobId:ident.jobId, bucket:'db', inMemory:false};
+    }
+  }
+  return best;
+}
+// Before any scheduled_slots insert: same crew member, same calendar date, same job.
+async function fpFindScheduledSlot(ci, w, d, label, type, dateStr, jobId){
+  const date=(dateStr&&/^\d{4}-\d{2}-\d{2}$/.test(dateStr))?dateStr:_fpDateFromWeekDay(w,d);
+  const want={label:label||'', type:type||'', jobId:_fpExplicitJobId(jobId, label||'')};
+  const mem=_fpFindMemoryScheduledSlot(ci, date, want);
+  if(mem) return mem;
+  return _fpFindDbScheduledSlot(ci, date, want);
+}
+function _fpAdoptScheduledSlot(hit, incomingJobId){
+  if(!hit) return hit;
+  const ci=hit.ci, w=hit.w, d=hit.d;
+  const jobId=hit.jobId||_fpExplicitJobId(incomingJobId, hit.label)||null;
+  if(!newSlots[ci]) newSlots[ci]={};
+  if(!newSlots[ci][w]) newSlots[ci][w]={};
+  const want={label:hit.label, type:hit.type||'', jobId};
+  const primary=newSlots[ci][w][d];
+  if(!primary){
+    newSlots[ci][w][d]={l:hit.label, t:hit.type||'', db_id:hit.id??null, dt:hit.dt||null};
+    hit.bucket='primary';
+    hit.inMemory=true;
+    if(jobId) hit.jobId=jobId;
+    return hit;
+  }
+  if(_fpSameScheduledJob(_fpIdentFromPrimary(ci,w,d,primary), want)){
+    if(hit.id!=null&&primary.db_id==null) primary.db_id=hit.id;
+    hit.bucket='primary';
+    hit.inMemory=true;
+    return hit;
+  }
+  const k=_msKey(ci,w,d);
+  const list=multiSlots[k]||[];
+  if(!list.some(ex=>_fpSameScheduledJob(_fpIdentFromExtra(ex), want))){
+    if(!multiSlots[k]) multiSlots[k]=[];
+    multiSlots[k].push({l:hit.label, t:hit.type||'', db_id:hit.id??null, jobId:jobId, dt:hit.dt||null});
+  }
+  hit.bucket='extra';
+  hit.inMemory=true;
+  return hit;
+}
+// Keep slot_job_map on the job that already owns the primary cell.
+function fpRememberExistingSlot(hit, incomingJobId){
+  if(!hit) return;
+  if(!hit.inMemory) _fpAdoptScheduledSlot(hit, incomingJobId);
+  if(hit.bucket==='extra') return;
+  const key=jcSlotKey(hit.ci, hit.w, hit.d);
+  if(SLOT_JOB_MAP[key]) return;
+  if(hit.jobId) SLOT_JOB_MAP[key]=hit.jobId;
+}
+// Leftover duplicate rows stay in the database. The grid shows each crew+date+job once.
+function _fpCollapseDuplicateSlotsInMemory(){
+  Object.keys(multiSlots).forEach(k=>{
+    const parts=k.split('_');
+    const ci=+parts[0], w=+parts[1], d=+parts[2];
+    const primary=newSlots[ci]?.[w]?.[d];
+    const primaryIdent=primary?_fpIdentFromPrimary(ci,w,d,primary):null;
+    const kept=[];
+    for(const ex of (multiSlots[k]||[])){
+      const ident=_fpIdentFromExtra(ex);
+      if(primaryIdent&&_fpSameScheduledJob(primaryIdent, ident)) continue;
+      if(kept.some(prev=>_fpSameScheduledJob(_fpIdentFromExtra(prev), ident))) continue;
+      kept.push(ex);
+    }
+    if(kept.length) multiSlots[k]=kept;
+    else delete multiSlots[k];
+  });
+}
+
+async function dbSaveSlot(crewIdx,weekOff,dayIdx,label,jobType,dateStr,jobId){
+  const existing=await fpFindScheduledSlot(crewIdx,weekOff,dayIdx,label,jobType,dateStr,jobId);
+  if(existing){
+    fpRememberExistingSlot(existing, jobId);
+    return existing.id!=null?existing.id:null;
+  }
   // Encode absolute date into job_type so slots never drift when BASE advances
   const encodedType=dateStr?jobType+':'+dateStr:jobType;
   const res=await sb.insert('scheduled_slots',{crew_idx:crewIdx,week_offset:weekOff,day_idx:dayIdx,label:label,job_type:encodedType});
@@ -3864,10 +4044,16 @@ async function dbSaveSlot(crewIdx,weekOff,dayIdx,label,jobType,dateStr){
   return res&&res[0]?res[0].id:null;
 }
 async function dbAddExtraSlot(ci,w,d,label,type,jobId,dateStr){
-  const dbId=await dbSaveSlot(ci,w,d,label,type,dateStr);
+  const existing=await fpFindScheduledSlot(ci,w,d,label,type,dateStr,jobId);
+  if(existing){
+    fpRememberExistingSlot(existing, jobId);
+    return {id:existing.id??null, inserted:false};
+  }
+  const dbId=await dbSaveSlot(ci,w,d,label,type,dateStr,jobId);
   const k=_msKey(ci,w,d);
   if(!multiSlots[k]) multiSlots[k]=[];
   multiSlots[k].push({l:label,t:type,db_id:dbId,jobId:jobId||null,dt:dateStr||null});
+  return {id:dbId, inserted:true};
 }
 async function loadScheduledSlots(){
   // Reset the double-booked/extra-slot store before repopulating — loadAllFromSupabase can run
@@ -3915,26 +4101,31 @@ async function loadScheduledSlots(){
   decoded.forEach(({crew_idx,wOff,dIdx,label,jobTypeClean,id,dateEnc})=>{
     if(!newSlots[crew_idx])newSlots[crew_idx]={};
     if(!newSlots[crew_idx][wOff])newSlots[crew_idx][wOff]={};
+    const ident={label, type:jobTypeClean||'', jobId:_fpMapJobId(crew_idx,wOff,dIdx,label)};
     const existing=newSlots[crew_idx][wOff][dIdx];
+    // Same crew + date + job already on this cell (primary or a second pill). One render.
+    if(existing&&_fpSameScheduledJob(_fpIdentFromPrimary(crew_idx,wOff,dIdx,existing), ident)) return;
+    const k=_msKey(crew_idx,wOff,dIdx);
+    if((multiSlots[k]||[]).some(ex=>_fpSameScheduledJob(_fpIdentFromExtra(ex), ident))) return;
     if(!existing){
       newSlots[crew_idx][wOff][dIdx]={l:label,t:jobTypeClean,db_id:id,dt:dateEnc};
-    } else if(existing.l!==label){
-      // Different label = genuinely double-booked slot. Keep whichever job started first as the
+    } else {
+      // Different job = genuinely double-booked slot. Keep whichever job started first as the
       // primary bar and push the other to multiSlots — deterministic, independent of row order.
       const existingStart=minDateByCrewLabel[crew_idx+'|'+existing.l];
       const thisStart=minDateByCrewLabel[crew_idx+'|'+label];
       const thisStartsEarlier=thisStart&&existingStart&&thisStart<existingStart;
-      const k=_msKey(crew_idx,wOff,dIdx);
       if(!multiSlots[k]) multiSlots[k]=[];
       if(thisStartsEarlier){
-        multiSlots[k].push({l:existing.l,t:existing.t,db_id:existing.db_id,jobId:null,dt:existing.dt});
+        const prev={l:existing.l,t:existing.t,db_id:existing.db_id,jobId:null,dt:existing.dt};
+        if(!multiSlots[k].some(ex=>_fpSameScheduledJob(_fpIdentFromExtra(ex), _fpIdentFromExtra(prev)))) multiSlots[k].push(prev);
         newSlots[crew_idx][wOff][dIdx]={l:label,t:jobTypeClean,db_id:id,dt:dateEnc};
       } else {
         multiSlots[k].push({l:label,t:jobTypeClean,db_id:id,jobId:null,dt:dateEnc});
       }
     }
-    // Same label = harmless duplicate DB row (old data repair) — silently ignore
   });
+  _fpCollapseDuplicateSlotsInMemory();
 }
 
 async function dbSaveSettings(){
@@ -4154,6 +4345,8 @@ async function deduplicateSlotsByJobRecord(){
   }
 
   Object.assign(SLOT_JOB_MAP,mapFixes);
+  // Same crew+date+job leftovers render once. Rows stay in the database.
+  _fpCollapseDuplicateSlotsInMemory();
   if(!toDelete.length && !Object.keys(mapFixes).length) return;
   for(const item of toDelete){
     _fpLogSlotDelete(item.id, item.label, item.dt, 'outside '+item.customer+' '+item.start+'–'+item.end);
@@ -4615,7 +4808,7 @@ function goStep3(){
   btn.onclick=sjConfirm;
 }
 
-function sjConfirm(){
+async function sjConfirm(){
   const cust=document.getElementById('sj-cust').value.trim();
   const sjTypeLabel=document.getElementById('sj-type').value;
   const sjTypeMatch=getAllJobTypes().find(t=>t.label===sjTypeLabel);
@@ -4625,23 +4818,31 @@ function sjConfirm(){
   // Generate job ID first so we can associate extra slots correctly
   const jobId = (typeof crypto!=='undefined'&&crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2));
 
-  // Book slots across week boundaries (supports multi-week jobs)
+  // Book slots across week boundaries (supports multi-week jobs).
+  // A crew member who already has this job on that date is not inserted again.
+  const freshSlotKeys=[];
   {let curW=w,curD=start;
   for(let i=0;i<days;i++){
     if(curD>BOOK_MD){curW++;curD=0;}
     const _slotDateStr=seSlotToDate(curW,curD).toISOString().split('T')[0];
-    sjCrew.forEach(ci=>{
-      if(isCrewInactive(ci)) return;
+    for(const ci of sjCrew){
+      if(isCrewInactive(ci)) continue;
+      const existing=await fpFindScheduledSlot(ci,curW,curD,cust,cssType,_slotDateStr,jobId);
+      if(existing){
+        fpRememberExistingSlot(existing, jobId);
+        continue;
+      }
       if(newSlots[ci]?.[curW]?.[curD]){
-        // Already occupied — double-book as extra slot
-        dbAddExtraSlot(ci,curW,curD,cust,cssType,jobId,_slotDateStr);
+        // Already occupied by a different job — double-book as extra slot
+        await dbAddExtraSlot(ci,curW,curD,cust,cssType,jobId,_slotDateStr);
       } else {
         if(!newSlots[ci]) newSlots[ci]={};
         if(!newSlots[ci][curW]) newSlots[ci][curW]={};
-        newSlots[ci][curW][curD]={l:cust,t:cssType,dt:_slotDateStr};
-        dbSaveSlot(ci,curW,curD,cust,cssType,_slotDateStr);
+        const dbId=await dbSaveSlot(ci,curW,curD,cust,cssType,_slotDateStr,jobId);
+        newSlots[ci][curW][curD]={l:cust,t:cssType,dt:_slotDateStr,db_id:dbId};
+        freshSlotKeys.push(jcSlotKey(ci,curW,curD));
       }
-    });
+    }
     curD++;
   }}
 
@@ -4674,8 +4875,12 @@ function sjConfirm(){
   {let curW=w,curD=start;
   for(let i=0;i<days;i++){
     if(curD>BOOK_MD){curW++;curD=0;}
-    // Only map crew that got a primary slot — skip those that were double-booked into multiSlots
-    sjCrew.forEach(ci=>{ if(!isCrewInactive(ci)&&newSlots[ci]?.[curW]?.[curD]?.l===cust) SLOT_JOB_MAP[jcSlotKey(ci,curW,curD)]=jobId; });
+    // Only map crew that got a new primary slot. An existing row keeps the job it already points at.
+    sjCrew.forEach(ci=>{
+      if(isCrewInactive(ci)||newSlots[ci]?.[curW]?.[curD]?.l!==cust) return;
+      const key=jcSlotKey(ci,curW,curD);
+      if(freshSlotKeys.includes(key)) SLOT_JOB_MAP[key]=jobId;
+    });
     curD++;
   }}
   saveJobRecords(); saveSlotJobMap();
@@ -4911,11 +5116,22 @@ async function seRemoveSlot(ci, w, d){
   if(_rmLabel) logAudit('schedule_removed',_rmLabel,(CREW[ci]?.full||'Crew '+ci)+(_rmDate?' — '+_rmDate:''));
 }
 
-async function sePlaceSlot(ci, w, d, label, type){
+async function sePlaceSlot(ci, w, d, label, type, jobId){
   if(!newSlots[ci]) newSlots[ci]={};
   if(!newSlots[ci][w]) newSlots[ci][w]={};
   const dateStr=seSlotToDate(w,d).toISOString().split('T')[0];
-  const dbId=await dbSaveSlot(ci,w,d,label,type,dateStr);
+  const existing=await fpFindScheduledSlot(ci,w,d,label,type,dateStr,jobId);
+  if(existing){
+    fpRememberExistingSlot(existing, jobId);
+    // This job is already a second pill. Leave the primary cell and its map alone.
+    if(existing.bucket==='extra') return false;
+    const _key=jcSlotKey(ci,w,d);
+    const _jr=(jobId&&getJobRecord(jobId)&&getJobRecord(jobId).customer===(label||''))?getJobRecord(jobId):resolveSlotJob(ci,w,d,label,dateStr);
+    const _cur=SLOT_JOB_MAP[_key];
+    if(_jr&&String(_cur)!==String(_jr.id)){ SLOT_JOB_MAP[_key]=_jr.id; await saveSlotJobMap(); }
+    return true;
+  }
+  const dbId=await dbSaveSlot(ci,w,d,label,type,dateStr,jobId);
   newSlots[ci][w][d]={l:label,t:type,db_id:dbId,dt:dateStr};
   // Keep SLOT_JOB_MAP in step with the slot just placed. Previously the map was only written by
   // some callers, so a slot could land on a cell whose map entry still pointed at the previous
@@ -4926,6 +5142,7 @@ async function sePlaceSlot(ci, w, d, label, type){
   const _cur=SLOT_JOB_MAP[_key];
   if(_jr&&String(_cur)!==String(_jr.id)){ SLOT_JOB_MAP[_key]=_jr.id; await saveSlotJobMap(); }
   else if(!_jr&&_cur){ delete SLOT_JOB_MAP[_key]; await saveSlotJobMap(); }
+  return true;
 }
 
 async function saveSlotEdit(force=false){
@@ -6057,11 +6274,11 @@ async function jcSetCrewSlot(job, ci, ds, present){
       // person with no calendar entry for this job (only a toast said so): adding Hunter while he
       // was on Helias, then removing Brendon, left Complete Custom Homes with nothing on the
       // schedule at all. The other job's slot is left exactly as it is.
-      await dbAddExtraSlot(ci,w,d,job.customer,job.jobType||'epoxy',job.id,ds);
-      return 1;
+      const extra=await dbAddExtraSlot(ci,w,d,job.customer,job.jobType||'epoxy',job.id,ds);
+      return extra&&extra.inserted?1:0;
     }
-    await sePlaceSlot(ci,w,d,job.customer,job.jobType||'epoxy');
-    SLOT_JOB_MAP[key]=job.id;
+    const placed=await sePlaceSlot(ci,w,d,job.customer,job.jobType||'epoxy',job.id);
+    if(placed) SLOT_JOB_MAP[key]=job.id;
     return 0;
   }
   const s=newSlots[ci]?.[w]?.[d];
@@ -6195,12 +6412,12 @@ async function jcSyncCrewSlots(job, force=false){
         // force=true — add as a double-booked extra slot, don't overwrite primary.
         // Pass ds (the absolute date already in hand) so the slot never drifts once
         // BASE advances to a new current week — omitting it was a latent bug here.
-        await dbAddExtraSlot(ci,w,d,job.customer,job.jobType||'epoxy',job.id,ds);
-        added++;
+        const extra=await dbAddExtraSlot(ci,w,d,job.customer,job.jobType||'epoxy',job.id,ds);
+        if(extra&&extra.inserted) added++;
         continue;
       }
-      await sePlaceSlot(ci,w,d,job.customer,job.jobType||'epoxy');
-      SLOT_JOB_MAP[key]=job.id; added++;
+      const placed=await sePlaceSlot(ci,w,d,job.customer,job.jobType||'epoxy',job.id);
+      if(placed){ SLOT_JOB_MAP[key]=job.id; added++; }
     }
   }
   if(added){
@@ -10571,12 +10788,12 @@ async function jcRescheduleApply(crewCIs,newDates,duration,job,newStart,force=fa
       const key=jcSlotKey(ci,pos.w,pos.d);
       if(newSlots[ci]?.[pos.w]?.[pos.d]&&SLOT_JOB_MAP[key]&&String(SLOT_JOB_MAP[key])!==String(job.id)){
         if(!force){ skipped++; continue; }
-        await dbAddExtraSlot(ci,pos.w,pos.d,job.customer,job.jobType||'epoxy',job.id,dateStr);
-        doubled++;
+        const extra=await dbAddExtraSlot(ci,pos.w,pos.d,job.customer,job.jobType||'epoxy',job.id,dateStr);
+        if(extra&&extra.inserted) doubled++;
         continue;
       }
-      await sePlaceSlot(ci,pos.w,pos.d,job.customer,job.jobType||'epoxy');
-      SLOT_JOB_MAP[key]=job.id;
+      const placed=await sePlaceSlot(ci,pos.w,pos.d,job.customer,job.jobType||'epoxy',job.id);
+      if(placed) SLOT_JOB_MAP[key]=job.id;
     }
   }
   // 3. Update job record dates. Everyone who moved is now on every new day, so their old
@@ -18120,12 +18337,12 @@ async function schedHandleCrewReassign(originCi,targetCi,targetSw,targetSd,jobId
     const key=jcSlotKey(targetCi,pos.w,pos.d);
     if(newSlots[targetCi]?.[pos.w]?.[pos.d]&&SLOT_JOB_MAP[key]&&SLOT_JOB_MAP[key]!==jobId){
       if(!force) continue;
-      await dbAddExtraSlot(targetCi,pos.w,pos.d,job.customer,job.jobType||'epoxy',jobId,dateStr);
-      doubled++;
+      const extra=await dbAddExtraSlot(targetCi,pos.w,pos.d,job.customer,job.jobType||'epoxy',jobId,dateStr);
+      if(extra&&extra.inserted) doubled++;
       continue;
     }
-    await sePlaceSlot(targetCi,pos.w,pos.d,job.customer,job.jobType||'epoxy');
-    SLOT_JOB_MAP[key]=jobId;
+    const placed=await sePlaceSlot(targetCi,pos.w,pos.d,job.customer,job.jobType||'epoxy',jobId);
+    if(placed) SLOT_JOB_MAP[key]=jobId;
   }
 
   // 3. Swap the crew list — origin out, target in. Anyone else already on the job is untouched.
