@@ -7264,7 +7264,7 @@ function jcRenderDayLogs(){
             <span id="jch-${key}" style="font-size:13px;font-weight:700;color:var(--accent);">${log.fullDay?'8.0 hrs':(log.startTime&&log.endTime?jcCalcHrs(log.startTime,log.endTime):'—')}</span>
           </div>`:``}
         </div>
-        ${(Array.isArray(log.hourAdjustments)&&log.hourAdjustments.length)?`<div style="font-size:11px;color:var(--text2);">Per-person credits are on the crew rows. They do not change the site clock or anyone else's hours.</div>`:''}
+        ${(localStorage.getItem('fpRole')!=='crew'&&Array.isArray(log.hourAdjustments)&&log.hourAdjustments.length)?`<div style="font-size:11px;color:var(--text2);">Per-person credits are on the crew rows. They do not change the site clock or anyone else's hours.</div>`:''}
         ${_isOwnerView?`<div class="form-group jc-pay-fields" style="margin:0;">
           <label class="form-label">Pay for this day <span style="font-weight:400;color:var(--text3);font-size:10px;">(overrides the job default)</span></label>
           <div style="display:flex;gap:18px;flex-wrap:wrap;padding-top:2px;">
@@ -7571,7 +7571,10 @@ function jcHourCreditHtml(ds, i, c, log, isCrew){
   const meta=adj?(' Reason: '+adj.reason+(adj.by?' · '+adj.by:'')+(adj.at?' · '+adj.at:'')):'';
   const summary=_ovhEsc(clockLine+' '+countLine+extra+meta);
   if(isCrew){
-    return `<div style="padding:6px 8px 8px;border-top:1px solid var(--border2);font-size:11px;line-height:1.45;color:var(--text2);">${summary}</div>`;
+    // Hours worked follows the clock. A payroll credit stays on the office row and is not shown here.
+    const shown=(log&&log.fullDay)?'8.0':((effS&&effE)?rowClock.toFixed(1):'');
+    const line=shown?('Hours '+shown):(effS||effE?'Add both start and end.':'Add the site start and end.');
+    return `<div style="padding:6px 8px 8px;border-top:1px solid var(--border2);font-size:13px;color:var(--text);">${_ovhEsc(line)}</div>`;
   }
   const help='Credited hours use 0.1h steps, the same steps a clock already uses. 6h 10m counts as 6.2h. Balance sets this job so the person\'s counted day is 8.0h and leaves every other job\'s clocks and credits alone. The complement of 6.2h is 1.8h, not 1h 50m. 1h 50m is 1.8333h; 1.8333 + 6.2 = 8.0333, which is not saved as 8.0.';
   return `<div style="padding:6px 8px 8px;border-top:1px solid var(--border2);display:flex;flex-direction:column;gap:6px;">
