@@ -1540,6 +1540,11 @@
       <button class="modal-close" onclick="closeMatRequestModal()">×</button>
     </div>
     <div class="modal-body">
+      <div id="mrq-existing" style="margin-bottom:14px;padding-bottom:4px;border-bottom:1px solid var(--border2);">
+        <div style="font-size:14px;font-weight:700;margin-bottom:2px;">Already requested</div>
+        <div id="mrq-existing-note" style="font-size:12px;color:var(--text3);margin-bottom:4px;line-height:1.4;">Check this before you send another one.</div>
+        <div id="mrq-existing-list" style="max-height:38vh;overflow-y:auto;-webkit-overflow-scrolling:touch;"></div>
+      </div>
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Your Name</label>
@@ -1547,7 +1552,7 @@
         </div>
         <div class="form-group">
           <label class="form-label">Job <span style="color:var(--text3);font-weight:400;">(optional)</span></label>
-          <select class="form-select" id="mrq-job"></select>
+          <select class="form-select" id="mrq-job" onchange="renderCrewMatRequestList()"></select>
         </div>
       </div>
       <div class="form-row">
@@ -2941,7 +2946,12 @@ function renderDashboard(){
   renderNameLinkNotice();
   const grid = document.getElementById('dash-grid');
   if(!grid) return;
-  grid.innerHTML = dashOrder.map(id=>{
+  // Crew never see this page, but the jobs widget still paints dollar amounts
+  // into the hidden board. Skip that widget so those amounts are not in the page.
+  const crewSession=localStorage.getItem('fpRole')==='crew';
+  if(crewSession) _crewClearMoneyDom();
+  const widgetIds=crewSession?dashOrder.filter(id=>id!=='jobs'):dashOrder;
+  grid.innerHTML = widgetIds.map(id=>{
     const w = DASH_WIDGETS[id];
     if(!w) return '';
     const handle = `<div class="drag-handle" title="Drag to reorder">
@@ -7259,7 +7269,23 @@ async function msgHide(which, id){
   msgLoad(which, which==='jc'?_jcId:MSG_TEAM, peer?{quiet:true, direct:true}:{quiet:true});
 }
 
+function _crewClearMoneyDom(){
+  ['jc-costing-content','jc-cost-page-content','jc-invoice-list'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el) el.innerHTML='';
+  });
+  const pane=document.getElementById('jc-pane-costing');
+  if(pane) pane.style.display='none';
+  const tab=document.getElementById('jc-tab-costing');
+  if(tab) tab.classList.remove('active');
+}
 function jcTab(name){
+  // The costing tab is only hidden with CSS. A crew session must not open it,
+  // even from the console. Phone managers already land on Job Info.
+  if(name==='costing'&&localStorage.getItem('fpRole')==='crew'){
+    _crewClearMoneyDom();
+    name='info';
+  }
   if(name==='costing'&&mgrPhoneOn()) name='info';
   ['info','materials','log','costing','messages'].forEach(t=>{
     const pane=document.getElementById('jc-pane-'+t);
@@ -7342,6 +7368,13 @@ function jcMatPick(i,name){
 
 // ── SUPPLIER INVOICES ────────────────────────────────────────────────────────
 function jcRenderSupplierInvoices(){
+  // Do not paint invoice amounts for a crew login, and do not create an empty
+  // supplierInvoices array on the job (that array is what a later save would send).
+  if(localStorage.getItem('fpRole')==='crew'){
+    const el=document.getElementById('jc-invoice-list');
+    if(el) el.innerHTML='';
+    return;
+  }
   const job=getJobRecord(_jcId); if(!job) return;
   if(!job.supplierInvoices) job.supplierInvoices=[];
   const el=document.getElementById('jc-invoice-list'); if(!el) return;
@@ -9573,6 +9606,7 @@ function _jcSumCostRows(members){
     breakEven:r2(sum('breakEven')),isTM:members.some(m=>m.tmJob)};
 }
 function renderJobCostingPage(){
+  if(localStorage.getItem('fpRole')==='crew'){ _crewClearMoneyDom(); return; }
   const el=document.getElementById('jc-cost-page-content'); if(!el) return;
   const fmt=n=>'$'+Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
   const sfmt=n=>(n<0?'-':'')+fmt(n);
@@ -9968,6 +10002,7 @@ function renderPayroll(){
 
 // ── JOB COSTING (modal tab) ────────────────────────────────────────────────────
 function renderJobCosting(){
+  if(localStorage.getItem('fpRole')==='crew'){ _crewClearMoneyDom(); return; }
   const job=getJobRecord(_jcId); if(!job) return;
   const el=document.getElementById('jc-costing-content'); if(!el) return;
 
@@ -13297,10 +13332,23 @@ function _updateSvNotifBadge(){
 
 // ── MATERIAL REQUESTS ──────────────────────────────────────────────────────────
 let MATERIAL_REQUESTS = [];
+let _matRequestsLoadOk = false;
 
 async function loadMatRequests(){
-  try{const v=await sb.getKV('material_requests');if(v){try{MATERIAL_REQUESTS=JSON.parse(v)||[];}catch(e){MATERIAL_REQUESTS=[];}}}catch(e){}
+  const r=await sb.readKV('material_requests');
+  if(!r.ok){
+    _matRequestsLoadOk=false;
+  }else{
+    _matRequestsLoadOk=true;
+    if(r.value){
+      try{ MATERIAL_REQUESTS=JSON.parse(r.value)||[]; }
+      catch(e){ MATERIAL_REQUESTS=[]; }
+    }else{
+      MATERIAL_REQUESTS=[];
+    }
+  }
   _updateMrBadge();
+  if(document.getElementById('modal-matrequest')?.classList.contains('open')) renderCrewMatRequestList();
 }
 async function saveMatRequests(){
   MATERIAL_REQUESTS = await _saveKVMerged('material_requests', MATERIAL_REQUESTS);
@@ -13324,6 +13372,81 @@ function openMatRequestModal(){
   jobSel.innerHTML='<option value="">— No specific job —</option>'+jobs.map(j=>`<option value="${j.id}">${(j.customer||'').replace(/</g,'&lt;')}</option>`).join('');
   ['mrq-material','mrq-qty','mrq-unit','mrq-notes'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
   openModal('matrequest');
+  renderCrewMatRequestList();
+}
+
+function _mrqPlain(s){
+  return String(s==null?'':s).replace(/\$\s?\d[\d,]*(?:\.\d+)?/g,'').replace(/\$/g,'').trim();
+}
+function _mrqWhen(ds){
+  if(!ds) return '';
+  const d=new Date(String(ds).slice(0,10)+'T12:00:00');
+  if(isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+}
+// Open requests, plus ones marked received in the last three weeks.
+// Requests can name a job or be for the shop, so the list shows both.
+function _mrqCrewRows(){
+  const cutoff=new Date();
+  cutoff.setDate(cutoff.getDate()-21);
+  const cutoffStr=cutoff.toISOString().split('T')[0];
+  return (MATERIAL_REQUESTS||[]).filter(r=>{
+    if(!r||typeof r!=='object') return false;
+    if(r.status==='pending'||r.status==='ordered'||!r.status) return true;
+    if(r.status==='received') return String(r.orderedDate||r.submittedDate||'')>=cutoffStr;
+    return false;
+  });
+}
+function renderCrewMatRequestList(){
+  const el=document.getElementById('mrq-existing-list');
+  const note=document.getElementById('mrq-existing-note');
+  if(!el) return;
+  if(!_matRequestsLoadOk && !(MATERIAL_REQUESTS||[]).length){
+    if(note) note.textContent='Check this before you send another one.';
+    el.innerHTML='<div style="font-size:13px;color:var(--text2);padding:10px 0;line-height:1.4;">Couldn\'t load the list. You can still send a request.</div>';
+    return;
+  }
+  const jobId=document.getElementById('mrq-job')?.value||'';
+  const statusLabel={pending:'Pending',ordered:'Ordered',received:'Received'};
+  const rows=_mrqCrewRows().sort((a,b)=>{
+    const aj=jobId&&String(a.jobId)===String(jobId)?0:1;
+    const bj=jobId&&String(b.jobId)===String(jobId)?0:1;
+    if(aj!==bj) return aj-bj;
+    return String(b.submittedDate||'').localeCompare(String(a.submittedDate||''));
+  }).slice(0,24);
+  if(note) note.textContent=jobId?'This job is listed first.':'Open requests from the crew.';
+  if(!rows.length){
+    el.innerHTML='<div style="font-size:13px;color:var(--text3);padding:10px 0;">Nothing requested yet.</div>';
+    return;
+  }
+  let split=false, seenMine=false;
+  el.innerHTML=rows.map(r=>{
+    const mine=jobId&&String(r.jobId)===String(jobId);
+    let head='';
+    if(jobId&&mine&&!seenMine){
+      seenMine=true;
+      head='<div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.4px;padding-top:8px;">This job</div>';
+    }
+    if(jobId&&!mine&&!split){
+      split=true;
+      head='<div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.4px;padding-top:8px;">Other jobs</div>';
+    }
+    const item=_mrqPlain(r.material)||'Item';
+    const qty=_mrqPlain([r.qty,r.unit].filter(Boolean).join(' '));
+    const who=_mrqPlain(r.crewName);
+    const when=_mrqWhen(r.submittedDate);
+    const status=statusLabel[r.status]||'Pending';
+    const job=_mrqPlain(r.jobName);
+    const meta=[who,when,status].filter(Boolean).join(' · ');
+    return head+`<div style="padding:10px 0;border-top:1px solid var(--border2);">
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;">
+        <div style="font-size:15px;font-weight:700;min-width:0;line-height:1.3;">${_ovhEsc(item)}</div>
+        ${qty?`<div style="font-size:14px;font-weight:600;flex-shrink:0;">${_ovhEsc(qty)}</div>`:''}
+      </div>
+      ${meta?`<div style="font-size:12.5px;color:var(--text2);margin-top:3px;line-height:1.35;">${_ovhEsc(meta)}</div>`:''}
+      ${job?`<div style="font-size:12px;color:var(--text3);margin-top:1px;line-height:1.35;">${_ovhEsc(job)}</div>`:''}
+    </div>`;
+  }).join('');
 }
 
 function closeMatRequestModal(){ closeModal('matrequest'); }
