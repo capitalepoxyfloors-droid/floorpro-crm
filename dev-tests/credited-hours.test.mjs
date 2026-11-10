@@ -707,3 +707,68 @@ test('a daily log crew card shows the clock line and keeps the hours editor behi
   assert.equal(closed.includes('>Save<'), false);
   holder.remove();
 });
+
+test('a crew sign-in does not see the day hour total, and owner and office do', () => {
+  useFakeCrew();
+  putJobs([{
+    id: 'north', customer: 'North Shop', status: 'in_progress', startDate: DAY, endDate: DAY,
+    value: '18500', displayVal: '$18,500',
+    dayLogs: { [DAY]: {
+      startTime: '7:30 AM', endTime: '3:15 PM', overtimeWage: true,
+      crewPresent: [
+        { crewIdx: 0, name: 'Avery Cole', burdenedRate: '41.50', directRate: '30.25' },
+        { crewIdx: 1, name: 'Blake Diaz', burdenedRate: '41.50', directRate: '30.25' },
+      ],
+    } },
+  }]);
+  ev(`_jcId='north'`);
+
+  function openLog() {
+    call('openJobCard', 'north');
+    call('jcTab', 'log');
+    return w.document.getElementById('jc-day-logs').innerHTML
+      + w.document.getElementById('jc-meta').textContent;
+  }
+
+  w.localStorage.removeItem('fpRole');
+  w.localStorage.removeItem('fpOfficeUser');
+  showEntry('jobs');
+  let html = openLog();
+  assert.match(html, /Time on site:/);
+  assert.match(html, /id="jch-20260623"/);
+  assert.match(html, />7\.8 hrs</);
+  assert.equal((html.match(/7:30 AM – 3:15 PM/g) || []).length, 2);
+  assert.equal(html.includes('15.6'), false);
+
+  w.localStorage.setItem('fpOfficeUser', 'Ops Reviewer');
+  showEntry('crewview');
+  html = openLog();
+  assert.match(html, /Time on site:/);
+  assert.match(html, />7\.8 hrs</);
+  assert.equal(html.includes('Pay for this day'), false);
+  assert.equal(html.includes('18500'), false);
+
+  w.localStorage.setItem('fpRole', 'crew');
+  w.localStorage.removeItem('fpOfficeUser');
+  w.document.body.classList.add('crew-mode');
+  showEntry('crewview');
+  html = openLog();
+  assert.equal(html.includes('Time on site'), false);
+  assert.equal(html.includes('id="jch-20260623"'), false);
+  assert.equal(html.includes('Pay for this day'), false);
+  assert.equal(html.includes('1.5×'), false);
+  assert.equal(html.includes('18500'), false);
+  assert.equal(html.includes('$18,500'), false);
+  assert.equal(html.includes('41.50'), false);
+  assert.equal(html.includes('30.25'), false);
+  assert.equal(html.includes('15.6'), false);
+  assert.equal((html.match(/Hours 7\.8/g) || []).length, 2);
+  assert.match(html, /7:30 AM – 3:15 PM/);
+  assert.equal(w.document.getElementById('jc-tab-costing').style.display, 'none');
+  assert.equal(w.document.getElementById('jc-value-group').style.display, 'none');
+  assert.equal(w.document.getElementById('jc-value').value, '');
+
+  w.localStorage.removeItem('fpRole');
+  w.document.body.classList.remove('crew-mode');
+  showEntry('dashboard');
+});

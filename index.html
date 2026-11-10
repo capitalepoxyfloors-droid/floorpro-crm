@@ -7559,7 +7559,11 @@ function jcRenderDayLogs(){
   days.forEach((ds,idx)=>{
     if(!job.dayLogs[ds]) job.dayLogs[ds]={crewPresent:[],task:'',materialsUsed:[],startTime:'',endTime:'',notes:''};
     const log=job.dayLogs[ds];
-    const _isOwnerView=localStorage.getItem('fpRole')!=='crew'&&!document.getElementById('page-crewview')?.classList.contains('active');
+    const _crewSession=localStorage.getItem('fpRole')==='crew';
+    // Wages and day controls stay off the Crew screen. The day's hour total is
+    // different: owner and office still see it there. A crew sign-in does not.
+    const _isOwnerView=!_crewSession&&!document.getElementById('page-crewview')?.classList.contains('active');
+    const _showDayTotal=!_crewSession;
     const _dayOT=(log.overtimeWage!==undefined)?!!log.overtimeWage:!!job.overtimeWage;
     const _dayCash=(log.cashWages!==undefined)?!!log.cashWages:!!job.cashWages;
     _jcMigrateCrewPresent(log);
@@ -7602,13 +7606,13 @@ function jcRenderDayLogs(){
             <input class="form-input" type="text" inputmode="numeric" placeholder="3:30 PM" value="${log.endTime||''}" oninput="jcLogSet('${ds}','endTime',this.value)" onblur="fmtTimeInput(this,'${ds}','endTime')" style="font-size:13px;"/>
           </div>
         </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-          ${_isOwnerView?`<button id="jcfd-${key}" onclick="jcToggleFullDay('${ds}')" style="font-size:12px;padding:3px 10px;border-radius:6px;border:1px solid var(--primary);cursor:pointer;transition:all .15s;background:${log.fullDay?'var(--primary)':'none'};color:${log.fullDay?'#fff':'var(--primary)'};">${log.fullDay?'✓ Full Day':'Full Day'}</button>`:''}
-          ${_isOwnerView?`<div style="display:flex;align-items:center;gap:6px;">
+        ${(_isOwnerView||_showDayTotal)?`<div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;">
+          ${_isOwnerView?`<button id="jcfd-${key}" onclick="jcToggleFullDay('${ds}')" style="font-size:12px;padding:3px 10px;border-radius:6px;border:1px solid var(--primary);cursor:pointer;transition:all .15s;background:${log.fullDay?'var(--primary)':'none'};color:${log.fullDay?'#fff':'var(--primary)'};margin-right:auto;">${log.fullDay?'✓ Full Day':'Full Day'}</button>`:''}
+          ${_showDayTotal?`<div style="display:flex;align-items:center;gap:6px;">
             <span style="font-size:12px;color:var(--text3);">Time on site:</span>
             <span id="jch-${key}" style="font-size:13px;font-weight:700;color:var(--accent);">${log.fullDay?'8.0 hrs':(log.startTime&&log.endTime?jcCalcHrs(log.startTime,log.endTime):'—')}</span>
-          </div>`:``}
-        </div>
+          </div>`:''}
+        </div>`:''}
         ${_isOwnerView?`<div class="form-group jc-pay-fields" style="margin:0;">
           <label class="form-label">Pay for this day <span style="font-weight:400;color:var(--text3);font-size:10px;">(overrides the job default)</span></label>
           <div style="display:flex;gap:18px;flex-wrap:wrap;padding-top:2px;">
