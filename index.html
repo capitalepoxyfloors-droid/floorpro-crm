@@ -2576,6 +2576,49 @@ const sb = {
 // settings stays off unless these are set, and never runs for a crew session.
 let _slotsLoadOk=false,_leadsLoadOk=false,_jobRecordsLoadOk=false,_slotMapLoadOk=false,_materialsFromServer=false,_leadQuotedDatesLoadOk=false;
 function _isOwnerSession(){ return localStorage.getItem('fpRole')!=='crew'; }
+// The real owner account. Office, PM, and agent sign-ins are not crew, so
+// _isOwnerSession() is true for them too — that check is "not a crew login".
+// A remembered session stores kind on the auth blob. A test or an older tab
+// may only have the office name. Either one means this is not the owner.
+function _sessionAccount(){
+  try{
+    if(typeof _signedInAccount!=='undefined'&&_signedInAccount&&_signedInAccount.kind) return _signedInAccount;
+  }catch(e){}
+  try{
+    if(typeof _accountFromBlob==='function'){
+      const blob=_accountFromBlob();
+      if(blob&&blob.kind) return blob;
+    }
+  }catch(e){}
+  return null;
+}
+function _isRealOwnerSession(){
+  try{
+    if(localStorage.getItem('fpRole')==='crew') return false;
+    if(localStorage.getItem('fpOfficeUser')) return false;
+  }catch(e){ return false; }
+  const acct=_sessionAccount();
+  if(acct&&acct.kind) return acct.kind==='owner';
+  return true;
+}
+// PM sign-ins are office accounts. There is no separate role in the database.
+// Their sign-in name starts with "PM" (PM - Helias, PM Salvation). Those
+// logins do not download the pipeline.
+function _isPmLogin(){
+  const names=[];
+  const acct=_sessionAccount();
+  if(acct){
+    if(acct.display_name) names.push(acct.display_name);
+    if(String(acct.office_id||'').trim().toLowerCase()==='pm') return true;
+  }
+  try{ const n=localStorage.getItem('fpOfficeUser'); if(n) names.push(n); }catch(e){}
+  return names.some(n=>/^pm\b/i.test(String(n).trim()));
+}
+function _canLoadLeads(){
+  if(!_isOwnerSession()) return false;
+  if(_isPmLogin()) return false;
+  return true;
+}
 // A crew login must not keep wages, prices, or another person's file in memory from a
 // previous owner session in this tab. The database is what actually blocks the read;
 // this only clears what the page already had. Called before the loaders run.
@@ -2609,15 +2652,17 @@ function currentActorName(){
   const office=_currentOfficeUser(); if(office) return office;   // office staff sign-in (e.g. "Grok – Ops Manager")
   return 'Manager';
 }
-async function logAudit(action,entity,details){
+async function logAudit(action,entity,details,actor){
   // return=minimal: crew can insert an audit row but cannot read the log back.
   // Asking PostgREST to return the new row would fail that insert.
+  // actor is optional. A system maintenance write passes its own name so the
+  // row is not filed under whoever happened to have the page open.
   try{
     await fpEnsureSession();
     await _fetchWithTimeout(`${SUPABASE_URL}/rest/v1/audit_log`,{
       method:'POST',
       headers:{...sb.headers,'Prefer':'return=minimal'},
-      body:JSON.stringify({actor:currentActorName(),action,entity:entity||'',details:details||''})
+      body:JSON.stringify({actor:actor||currentActorName(),action,entity:entity||'',details:details||''})
     },25000);
   }catch(e){ console.error('logAudit failed:',e); }
 }
@@ -3185,7 +3230,8 @@ async function dbSaveLead(lead){
 async function dbDeleteLead(lead){if(lead.db_id){await sb.delete('leads',lead.db_id);logAudit('lead_deleted',lead.name||'Lead','');}}
 async function loadLeads(){
   _leadsLoadOk=false;
-  if(!_isOwnerSession()){ LEADS=[]; return; }
+  // Crew never see the pipeline. A PM login does not download leads either.
+  if(!_canLoadLeads()){ LEADS=[]; return; }
   const got=await sb.getResult('leads');
   if(!got.ok){ console.error('loadLeads: read failed — keeping leads already in memory'); return; }
   LEADS=got.rows.map(r=>({db_id:r.id,name:r.name,phone:r.phone,phone2:r.phone2||'',email:r.email,jobType:r.job_type,custType:r.cust_type,sqft:r.sqft,value:r.value,address:r.address,source:r.source,notes:r.notes,stage:r.stage,detail:r.detail,date:r.date_added}));
@@ -4380,7 +4426,9 @@ async function loadAllFromSupabase(){
     }
     HOLIDAYS=buildHolidayLookup();
     populateJobTypeDropdowns();
-    if(_isOwnerSession()&&_leadsLoadOk&&_leadQuotedDatesLoadOk) await autoMoveStaleQuotedLeads();
+    // Only the owner account moves Estimate Sent leads. An office, PM, or agent
+    // page load used to do it and file the audit row under that person's name.
+    if(_isRealOwnerSession()&&_leadsLoadOk&&_leadQuotedDatesLoadOk) await autoMoveStaleQuotedLeads();
     renderDashboard();
     renderTodos(); // must be after renderDashboard so todo-list element exists
     renderPipeline();
@@ -8182,7 +8230,9 @@ function jcResolveMatIdx(m){
 // future renames/deletes can't knock its price loose. Safe + idempotent — only fills a missing
 // matId from an exact current name match, and skips entirely if the price list didn't load.
 function jcBackfillMaterialIds(){
-  if(!_isOwnerSession()||!_jobRecordsLoadOk||!_materialsFromServer) return;
+  // One-time id stamp. Office, PM, and agent page loads must not rewrite job
+  // records (and file a job_updated row under their name) just by opening the app.
+  if(!_isRealOwnerSession()||!_jobRecordsLoadOk||!_materialsFromServer) return;
   if(!Array.isArray(JOB_RECORDS)||!Array.isArray(MATERIALS)||!MATERIALS.length) return;
   let changed=false;
   JOB_RECORDS.forEach(job=>{
@@ -8810,8 +8860,9 @@ async function loadMileageRates(){
     // First run after this feature shipped — seed the two tiers that were previously hardcoded
     // so behavior is unchanged until the owner edits the schedule themselves.
     // Only reached when the read succeeded and the stored list is actually empty.
+    // The list is kept in memory for this page. Only the owner writes it, once.
     MILEAGE_RATES.tiers=[{id:'mr_seed1',rate:'0.725',effective:'2000-01-01'},{id:'mr_seed2',rate:'0.76',effective:'2026-07-01'}];
-    await saveMileageRates();
+    if(_isRealOwnerSession()) await saveMileageRates();
   }
 }
 async function saveMileageRates(){ MILEAGE_RATES=await _saveKVMerged('mileage_rates',MILEAGE_RATES); }
@@ -14572,13 +14623,29 @@ function leadDupKeep(key){
   renderLeadDupModal();
 }
 
+// Stage-only, and only while the row is still Estimate Sent. A lead someone
+// already moved matches nothing, so this never writes the rest of the row
+// and never puts it back. Returns true only when this call changed the stage.
+async function _moveQuotedLeadToFollowUp(lead){
+  if(!lead||!lead.db_id) return false;
+  const url=`${SUPABASE_URL}/rest/v1/leads?id=eq.${encodeURIComponent(lead.db_id)}&stage=eq.quoted`;
+  const result=await _leadDbSend('PATCH', url, {stage:'followup'});
+  if(!result.ok) return false;
+  const row=Array.isArray(result.data)?result.data[0]:null;
+  if(!row) return false;
+  lead.stage='followup';
+  const name=lead.name||'Lead';
+  await logAudit('lead_updated', name, 'Stage: followup', 'System \u2013 auto Follow-Up after 7 days: '+name);
+  return true;
+}
 async function autoMoveStaleQuotedLeads(){
-  if(!_isOwnerSession()||!_leadsLoadOk||!_leadQuotedDatesLoadOk) return;
+  if(!_isRealOwnerSession()||!_leadsLoadOk||!_leadQuotedDatesLoadOk) return;
   const now=Date.now();
   const SEVEN_DAYS=7*24*60*60*1000;
   let changed=false, movedNames=[];
 
   for(const lead of LEADS){
+    if(!lead) continue;
     const key=String(lead.db_id||lead.name);
     if(lead.stage==='quoted'){
       if(!LEAD_QUOTED_DATES[key]){
@@ -14586,8 +14653,8 @@ async function autoMoveStaleQuotedLeads(){
         LEAD_QUOTED_DATES[key]=new Date().toISOString();
         changed=true;
       } else if(now-new Date(LEAD_QUOTED_DATES[key]).getTime()>=SEVEN_DAYS){
-        lead.stage='followup';
-        await dbSaveLead(lead);
+        const moved=await _moveQuotedLeadToFollowUp(lead);
+        if(!moved) continue;
         delete LEAD_QUOTED_DATES[key];
         movedNames.push(lead.name);
         changed=true;
@@ -16384,8 +16451,8 @@ function overheadAnnualTotal(){
 // The entry used for a day log is the latest one whose `effective` is on or before that WORK date
 // (same date twice: the later one in the list wins). Entries are never edited; a change is a new
 // entry. A "legacy" entry (only legacyOverheadPerHour) covers days logged before the direct-rate
-// model: their stored burdenedRate had that much overhead per hour baked in. Owner/office only
-// (the settings row policy lets crew read it but not write it).
+// model: their stored burdenedRate had that much overhead per hour baked in. Crew do not read it.
+// Office can read it. Only the owner account writes the first copy, and only when no row exists.
 const COSTING_SETTINGS_SEED={history:[
   {id:'cs_legacy',effective:'1900-01-01',legacyOverheadPerHour:4.83},
   {id:'cs_20261020',effective:'2026-10-20',utilization:0.90,paidHoursPerYear:2080,
@@ -16415,10 +16482,12 @@ async function loadCostingSettings(){
     _costingSettingsLoadOk=true;
     return;
   }
-  // No row yet: start from the seed, and have owner/office save it so every device shares one history.
+  // No row yet. This is the one-time seed so every device shares one history.
+  // Keep it in memory either way. Only the owner account writes it. An office,
+  // PM, or agent page load must not file "Starting rate sets saved".
   COSTING_SETTINGS=_jrClone(COSTING_SETTINGS_SEED);
   _costingSettingsLoadOk=true;
-  if(_isOwnerSession()) await saveCostingSettings('Starting rate sets saved (legacy overhead $4.83/hr; direct-rate model from 2026-10-20)');
+  if(_isRealOwnerSession()) await saveCostingSettings('Starting rate sets saved (legacy overhead $4.83/hr; direct-rate model from 2026-10-20)');
 }
 async function saveCostingSettings(summary){
   COSTING_SETTINGS=await _saveKVMerged('costing_settings',COSTING_SETTINGS);
