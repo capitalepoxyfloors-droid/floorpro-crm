@@ -1,20 +1,30 @@
--- Strip per-unit prices from job JSON before a crew login can read it.
+-- Hide per-unit prices from a crew login.
 --
--- REVIEW ONLY. Do not apply this on the live project from here.
--- It replaces private.fp_secret_key, which fp_crew_read_job_records and the
--- crew job-record save already call. It does not UPDATE, INSERT, or DELETE
--- any stored row. Prices already saved stay saved for the office.
+-- APPLY 20261110120000_preserve_secret_array_fields.sql FIRST.
+-- That file keeps stored unitCost on the matching material line and adds
+-- unitCost and amount to the secret list. This file refuses to run without
+-- that merge. Applying only this file would erase stored unitCost the next
+-- time a crew member saves a job.
 --
--- A read of the stored job_records keys showed unitCost on
--- dayLogs[].materialsUsed[] is the only cost-like key that is not already
--- removed with its parent. amount is the dollar field inside commissions and
--- supplierInvoices (those parents are already removed). It is listed too, so
--- a stray amount on a material line cannot come through either.
+-- If the preserve file is already applied, this file sets the same secret
+-- list again and checks that a crew read of the stored jobs has no cost keys.
+-- It does not UPDATE, INSERT, or DELETE any stored row.
+--
 -- unit and usageUnit are measures (Lbs, Gallon), not prices, and stay.
 --
--- Rollback: supabase/rollback/20261110123000_strip_crew_unit_cost.sql
+-- To undo both files, run
+-- supabase/rollback/20261110120000_preserve_secret_array_fields.sql
+-- Do not roll this file back by itself after the preserve file is applied.
 
 BEGIN;
+
+DO $guard$
+BEGIN
+  IF to_regprocedure('private.fp_merge_secret_array(jsonb,jsonb,text)') IS NULL THEN
+    RAISE EXCEPTION 'Apply supabase/migrations/20261110120000_preserve_secret_array_fields.sql first. Hiding unitCost without that merge would erase stored material costs on the next crew save.';
+  END IF;
+END
+$guard$;
 
 CREATE OR REPLACE FUNCTION private.fp_secret_key(k text)
 RETURNS boolean

@@ -1,29 +1,20 @@
--- Puts the crew price-key list back to the list from
--- 20261024193000_stamp_prior_wage_and_legacy_burden.sql.
--- Does not change settings.job_records.
+-- Do not run this after 20261110120000_preserve_secret_array_fields.sql.
+-- That file's rollback puts the merge and the secret list back together.
+-- Running only this rollback would stop treating unitCost as secret while the
+-- new merge is still installed, and a crew save that no longer sends unitCost
+-- would erase the stored prices.
 
 BEGIN;
 
-CREATE OR REPLACE FUNCTION private.fp_secret_key(k text)
-RETURNS boolean
-LANGUAGE sql
-IMMUTABLE
-SET search_path = ''
-AS $$
-  SELECT lower(coalesce(k, '')) IN (
-    'value', 'displayval', 'supplierinvoices',
-    'mileagerate', 'mileageoneway',
-    'prevailingwage', 'prevailingwagerate', 'prevailingwageburden',
-    'burdenedrate', 'directrate', 'otrate', 'baserate', 'statmult',
-    'overheadrate', 'rateversion', 'fieldoverride', 'rateestimated',
-    'overtimewage', 'cashwages',
-    'consumablespct', 'consumablespctset',
-    'costcategory', 'costlinkid', 'commissions',
-    'tmjob', 'tmlabormarkup', 'tmmaterialmarkup',
-    'price', 'hourly', 'wage'
-  );
-$$;
+DO $guard$
+BEGIN
+  IF to_regprocedure('private.fp_merge_secret_array(jsonb,jsonb,text)') IS NOT NULL THEN
+    RAISE EXCEPTION 'Run supabase/rollback/20261110120000_preserve_secret_array_fields.sql instead. Rolling back only the secret list would let a crew save drop stored unitCost.';
+  END IF;
+END
+$guard$;
 
-REVOKE ALL ON FUNCTION private.fp_secret_key(text) FROM PUBLIC;
+-- The preserve migration was not applied, so this file's apply guard never
+-- changed the database. There is nothing to undo.
 
 COMMIT;
