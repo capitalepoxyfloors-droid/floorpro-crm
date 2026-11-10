@@ -7559,7 +7559,11 @@ function jcRenderDayLogs(){
   days.forEach((ds,idx)=>{
     if(!job.dayLogs[ds]) job.dayLogs[ds]={crewPresent:[],task:'',materialsUsed:[],startTime:'',endTime:'',notes:''};
     const log=job.dayLogs[ds];
-    const _isOwnerView=localStorage.getItem('fpRole')!=='crew'&&!document.getElementById('page-crewview')?.classList.contains('active');
+    const _crewSession=localStorage.getItem('fpRole')==='crew';
+    // Wages and day controls stay off the Crew screen. The day's hour total is
+    // different: owner and office still see it there. A crew sign-in does not.
+    const _isOwnerView=!_crewSession&&!document.getElementById('page-crewview')?.classList.contains('active');
+    const _showDayTotal=!_crewSession;
     const _dayOT=(log.overtimeWage!==undefined)?!!log.overtimeWage:!!job.overtimeWage;
     const _dayCash=(log.cashWages!==undefined)?!!log.cashWages:!!job.cashWages;
     _jcMigrateCrewPresent(log);
@@ -7602,14 +7606,13 @@ function jcRenderDayLogs(){
             <input class="form-input" type="text" inputmode="numeric" placeholder="3:30 PM" value="${log.endTime||''}" oninput="jcLogSet('${ds}','endTime',this.value)" onblur="fmtTimeInput(this,'${ds}','endTime')" style="font-size:13px;"/>
           </div>
         </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-          ${_isOwnerView?`<button id="jcfd-${key}" onclick="jcToggleFullDay('${ds}')" style="font-size:12px;padding:3px 10px;border-radius:6px;border:1px solid var(--primary);cursor:pointer;transition:all .15s;background:${log.fullDay?'var(--primary)':'none'};color:${log.fullDay?'#fff':'var(--primary)'};">${log.fullDay?'✓ Full Day':'Full Day'}</button>`:''}
-          ${_isOwnerView?`<div style="display:flex;align-items:center;gap:6px;">
+        ${(_isOwnerView||_showDayTotal)?`<div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;">
+          ${_isOwnerView?`<button id="jcfd-${key}" onclick="jcToggleFullDay('${ds}')" style="font-size:12px;padding:3px 10px;border-radius:6px;border:1px solid var(--primary);cursor:pointer;transition:all .15s;background:${log.fullDay?'var(--primary)':'none'};color:${log.fullDay?'#fff':'var(--primary)'};margin-right:auto;">${log.fullDay?'✓ Full Day':'Full Day'}</button>`:''}
+          ${_showDayTotal?`<div style="display:flex;align-items:center;gap:6px;">
             <span style="font-size:12px;color:var(--text3);">Time on site:</span>
             <span id="jch-${key}" style="font-size:13px;font-weight:700;color:var(--accent);">${log.fullDay?'8.0 hrs':(log.startTime&&log.endTime?jcCalcHrs(log.startTime,log.endTime):'—')}</span>
-          </div>`:``}
-        </div>
-        ${(localStorage.getItem('fpRole')!=='crew'&&Array.isArray(log.hourAdjustments)&&log.hourAdjustments.length)?`<div style="font-size:11px;color:var(--text2);">Per-person credits are on the crew rows. They do not change the site clock or anyone else's hours.</div>`:''}
+          </div>`:''}
+        </div>`:''}
         ${_isOwnerView?`<div class="form-group jc-pay-fields" style="margin:0;">
           <label class="form-label">Pay for this day <span style="font-weight:400;color:var(--text3);font-size:10px;">(overrides the job default)</span></label>
           <div style="display:flex;gap:18px;flex-wrap:wrap;padding-top:2px;">
@@ -7869,6 +7872,17 @@ function _jcMigrateCrewPresent(log){
 // Rows a crew member's time has been expanded to edit this session, even before they've
 // typed anything (e.g. site time is still blank). Keyed 'ds|idx', in-memory only — not saved.
 const _jcExpandedCrewTime=new Set();
+// Office-only, this session. Opening Adjust hours does not write a credit.
+const _jcHourAdjustOpen=new Set();
+function jcCloseHourAdjust(){ _jcHourAdjustOpen.clear(); }
+function jcSetHourAdjustOpen(ds, idx, open){
+  const k=ds+'|'+idx;
+  if(open) _jcHourAdjustOpen.add(k); else _jcHourAdjustOpen.delete(k);
+  if(typeof jcRenderDayCrew==='function') jcRenderDayCrew(ds);
+}
+function jcToggleHourAdjust(ds, idx){
+  jcSetHourAdjustOpen(ds, idx, !_jcHourAdjustOpen.has(ds+'|'+idx));
+}
 
 function jcCrewBadgeText(c, log){
   const effS=(c&&c.startTime)||(log&&log.startTime)||'';
@@ -7876,77 +7890,38 @@ function jcCrewBadgeText(c, log){
   const adj=jcFindHourAdjustment(log, c);
   if(adj){
     const clock=effS&&effE?jcCalcHrs(effS,effE):'';
-    return clock&&clock!=='—'?clock+' clock':'';
+    return clock&&clock!=='—'?clock:'';
   }
   if(log&&log.fullDay) return '8.0 hrs';
   return effS&&effE?jcCalcHrs(effS,effE):'';
 }
 function jcHourCreditHtml(ds, i, c, log, isCrew){
+  // A crew sign-in sees the clock and Different time only. No counted hours and no credit.
+  if(isCrew) return '';
   const key=ds.replace(/-/g,'');
-  const effS=c.startTime||log.startTime||'';
-  const effE=c.endTime||log.endTime||'';
-  const spanMin=jcClockMinuteSpan(effS, effE);
-  const rowClock=jcClockHrsForRow(c, log);
-  const personRows=jcPersonRowsOnLog(log, c);
-  const counted=jcCountedHoursForPerson(personRows.length?personRows:[c], log);
-  const adj=counted.adjustment||jcFindHourAdjustment(log, c);
-  const roundingDiffers=spanMin!=null&&Math.abs(spanMin/60-rowClock)>0.001;
-  const clockLine=effS&&effE
-    ? ('Clock '+effS+' – '+effE+' ('+jcFormatClockMinutes(spanMin)+').')
-    : 'No clock on this row.';
-  const countLine=adj
-    ? ('This person\'s clocks on this job count as '+(counted.clockTenths/10).toFixed(1)+'h. Credited '+(adj.creditedTenths/10).toFixed(1)+'h for payroll and costing. The clock is unchanged.')
-    : ('Counted '+(counted.source==='fullDay'?'8.0':rowClock.toFixed(1))+'h'+(counted.source==='fullDay'?' because Full Day is on for the whole log.':' from the clock.'));
-  let extra='';
-  if(adj&&adj.balance&&Number.isInteger(adj.balance.otherJobsTenths)){
-    const other=(adj.balance.otherJobsTenths/10).toFixed(1);
-    const mine=(adj.creditedTenths/10).toFixed(1);
-    extra+=' Balanced so the counted day is 8.0h: other jobs '+other+'h + this credit '+mine+'h. ';
-    if(adj.creditedTenths===18&&adj.balance.otherJobsTenths===62){
-      extra+='That is 1.8h, not 1h 50m. 1h 50m is 1.8333h, and 1.8333 + 6.2 = 8.0333h.';
-    }
-  }
-  if(adj&&Number.isInteger(adj.requestedMinutes)){
-    const ex=jcExplainMinuteCredit(adj.requestedMinutes, adj.balance?adj.balance.otherJobsTenths:0);
-    extra+=' Typed '+jcFormatClockMinutes(adj.requestedMinutes)+' ('+jcFormatUnroundedHours(ex.exactHours)+'h) was not stored.';
-  }
-  if(roundingDiffers&&!adj){
-    extra+=' '+jcFormatClockMinutes(spanMin)+' is not '+(rowClock.toFixed(1))+'h. The 0.1h step is what payroll and costing use until a credit is saved.';
-  }
-  const meta=adj?(' Reason: '+adj.reason+(adj.by?' · '+adj.by:'')+(adj.at?' · '+adj.at:'')):'';
-  const summary=_ovhEsc(clockLine+' '+countLine+extra+meta);
-  if(isCrew){
-    // Hours worked follows the clock. A payroll credit stays on the office row and is not shown here.
-    const shown=(log&&log.fullDay)?'8.0':((effS&&effE)?rowClock.toFixed(1):'');
-    const line=shown?('Hours '+shown):(effS||effE?'Add both start and end.':'Add the site start and end.');
-    return `<div style="padding:6px 8px 8px;border-top:1px solid var(--border2);font-size:13px;color:var(--text);">${_ovhEsc(line)}</div>`;
-  }
-  const help='Credited hours use 0.1h steps, the same steps a clock already uses. 6h 10m counts as 6.2h. Balance sets this job so the person\'s counted day is 8.0h and leaves every other job\'s clocks and credits alone. The complement of 6.2h is 1.8h, not 1h 50m. 1h 50m is 1.8333h; 1.8333 + 6.2 = 8.0333, which is not saved as 8.0.';
-  return `<div style="padding:6px 8px 8px;border-top:1px solid var(--border2);display:flex;flex-direction:column;gap:6px;">
-    <div style="font-size:11px;line-height:1.45;color:var(--text2);">${summary}</div>
-    <div style="font-size:10.5px;line-height:1.4;color:var(--text3);">${help}</div>
-    <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
-      <label style="font-size:11px;color:var(--text2);">Credited hours
-        <input id="jcct-${key}-${i}" class="form-input" type="number" min="0" max="24" step="0.1" placeholder="1.8" value="${adj?(adj.creditedTenths/10).toFixed(1):''}" style="width:72px;font-size:12px;padding:3px 6px;margin-left:4px;">
-      </label>
-      <label style="font-size:11px;color:var(--text2);flex:1;min-width:140px;">Reason
-        <input id="jccr-${key}-${i}" class="form-input" type="text" placeholder="Why the credit differs from the clock" style="font-size:12px;padding:3px 6px;margin-left:4px;">
-      </label>
+  const adj=jcFindHourAdjustment(log, c);
+  const open=_jcHourAdjustOpen.has(ds+'|'+i);
+  const linkStyle='background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;text-decoration:underline;padding:6px 0;line-height:1.2;';
+  const result=(!open&&adj)?`<span style="font-size:12px;font-weight:700;color:var(--text);">Credited ${(adj.creditedTenths/10).toFixed(1)} hrs</span>`:'';
+  const bar=`<div style="padding:0 8px 4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;max-width:100%;">
+      ${result}
+      <button type="button" onclick="jcToggleHourAdjust('${ds}',${i})" style="${linkStyle}${result?'margin-left:auto;':''}">${open?'Close':'Adjust hours'}</button>
+    </div>`;
+  if(!open) return bar;
+  const btn='font-size:13px;padding:8px 12px;border-radius:6px;border:1px solid var(--border2);background:var(--surface);color:var(--text);cursor:pointer;white-space:nowrap;';
+  return bar+`<div style="padding:4px 8px 8px;border-top:1px solid var(--border2);display:flex;flex-direction:column;gap:8px;max-width:100%;">
+    <label style="font-size:12px;color:var(--text2);display:flex;flex-direction:column;align-items:flex-start;gap:4px;">Credited hours
+      <input id="jcct-${key}-${i}" class="form-input" type="number" min="0" max="24" step="0.1" inputmode="decimal" value="${adj?(adj.creditedTenths/10).toFixed(1):''}" style="width:100%;max-width:160px;font-size:16px;padding:8px;">
+    </label>
+    <label style="font-size:12px;color:var(--text2);display:flex;flex-direction:column;align-items:stretch;gap:4px;width:100%;">Reason
+      <input id="jccr-${key}-${i}" class="form-input" type="text" style="width:100%;font-size:16px;padding:8px;">
+    </label>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+      <button type="button" onclick="jcSaveHourCreditFromInputs('${ds}',${i})" style="${btn}border-color:var(--primary);background:var(--primary);color:#fff;">Save</button>
+      <button type="button" onclick="jcPreviewDayBalance('${ds}',${i})" style="${btn}">Balance today to 8.0h</button>
+      ${adj?`<button type="button" onclick="jcClearHourCredit('${ds}',${i})" style="${btn}background:none;color:var(--text3);">Remove credit</button>`:''}
     </div>
-    <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
-      <button type="button" onclick="jcSaveHourCreditFromInputs('${ds}',${i})" style="font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--primary);background:var(--primary);color:#fff;cursor:pointer;">Save credit</button>
-      <button type="button" onclick="jcPreviewDayBalance('${ds}',${i})" style="font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--border2);background:var(--surface);color:var(--text);cursor:pointer;">Balance today to 8.0h</button>
-      ${adj?`<button type="button" onclick="jcClearHourCredit('${ds}',${i})" style="font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--border2);background:none;color:var(--text3);cursor:pointer;">Remove credit</button>`:''}
-    </div>
-    <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
-      <label style="font-size:11px;color:var(--text2);">Check an exact duration
-        <input id="jccm-${key}-${i}" class="form-input" type="text" placeholder="1:50" style="width:72px;font-size:12px;padding:3px 6px;margin-left:4px;">
-      </label>
-      <button type="button" onclick="jcPreviewMinuteCredit('${ds}',${i})" style="font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--border2);background:var(--surface);color:var(--text);cursor:pointer;">Explain, don't save</button>
-      <button type="button" onclick="jcApplyLowerExplained('${ds}',${i})" style="font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--border2);background:var(--surface);color:var(--text);cursor:pointer;">Use lower 0.1h</button>
-      <button type="button" onclick="jcApplyUpperExplained('${ds}',${i})" style="font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--border2);background:var(--surface);color:var(--text);cursor:pointer;">Use higher 0.1h</button>
-    </div>
-    <div id="jccn-${key}-${i}" style="font-size:11px;line-height:1.45;color:var(--text);"></div>
+    <div id="jccn-${key}-${i}" style="font-size:12px;line-height:1.4;color:var(--text);"></div>
   </div>`;
 }
 function jcDayCrewHtml(ds,log){
@@ -7983,27 +7958,29 @@ function jcDayCrewHtml(ds,log){
           style="font-size:11px;padding:2px 5px;width:70px;flex:none;" />
         ${hrsSpan}
         <button onclick="jcClearCrewTime('${ds}',${i})" style="margin-left:auto;background:none;border:none;color:var(--text3);font-size:10.5px;cursor:pointer;text-decoration:underline;flex-shrink:0;white-space:nowrap;" title="Use the site start/end time for this person">Use site time</button>`
-      :`<span style="font-size:10px;color:var(--text3);flex-shrink:0;">⏱</span>
-        <span style="font-size:11.5px;color:var(--text2);">${effStart&&effEnd?effStart+' – '+effEnd:'Set site time above'}</span>
-        ${hrsSpan}
-        <button onclick="jcSetCustomCrewTime('${ds}',${i})" style="margin-left:auto;background:none;border:none;color:var(--accent);font-size:10.5px;cursor:pointer;text-decoration:underline;flex-shrink:0;white-space:nowrap;" title="Give this person a different start/end time">Different time?</button>`;
-    rows+=`<div style="margin-bottom:8px;background:var(--surface);border:1px solid var(--border2);border-radius:6px;overflow:hidden;">
-      <div style="display:flex;gap:6px;align-items:center;padding:5px 8px;">
-        <select class="form-input" style="flex:1;font-size:12px;padding:4px 6px;" onchange="jcLogPickCrewMember('${ds}',${i},this)">
+      :`<span style="display:inline-flex;align-items:center;gap:6px;min-width:0;flex:1 1 auto;">
+          <span style="font-size:10px;color:var(--text3);flex-shrink:0;">⏱</span>
+          <span style="font-size:11.5px;color:var(--text2);white-space:nowrap;">${effStart&&effEnd?effStart+' – '+effEnd:'Set site time above'}</span>
+          ${hrsSpan}
+        </span>
+        <button onclick="jcSetCustomCrewTime('${ds}',${i})" style="margin-left:auto;background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;text-decoration:underline;flex-shrink:0;white-space:nowrap;padding:6px 0;" title="Give this person a different start/end time">Different time?</button>`;
+    rows+=`<div style="margin-bottom:8px;background:var(--surface);border:1px solid var(--border2);border-radius:6px;overflow:hidden;max-width:100%;">
+      <div style="display:flex;gap:6px;align-items:center;padding:5px 8px;max-width:100%;">
+        <select class="form-input" style="flex:1;min-width:0;font-size:12px;padding:4px 6px;" onchange="jcLogPickCrewMember('${ds}',${i},this)">
           <option value="custom"${c.crewIdx===-1?' selected':''}>— Custom —</option>
           ${CREW_DATA.map((cd,ci)=>(isCrewInactive(ci)&&c.crewIdx!==ci)?'':`<option value="${ci}"${c.crewIdx===ci?' selected':''}>${cd.full}</option>`).join('')}
         </select>
         ${c.crewIdx===-1?`<input class="form-input" placeholder="Name" value="${(c.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetCrew('${ds}',${i},'name',this.value)" onblur="jcLogSetCrew('${ds}',${i},'name',this.value)" style="flex:1;font-size:12px;padding:4px 6px;"/>`:``}
         <button onclick="jcLogRemoveCrewMember('${ds}',${i})" style="background:none;border:none;cursor:pointer;color:var(--red);font-size:16px;line-height:1;width:32px;height:32px;display:flex;align-items:center;justify-content:center;flex-shrink:0;" title="Remove">×</button>
       </div>
-      <div style="display:flex;align-items:center;gap:5px;padding:3px 8px 5px;border-top:1px solid var(--border2);background:var(--surface2);${dimTime}">
+      <div style="display:flex;align-items:center;gap:6px 8px;flex-wrap:wrap;padding:4px 8px;border-top:1px solid var(--border2);background:var(--surface2);max-width:100%;${dimTime}">
         ${timeRow}
       </div>
       ${jcHourCreditHtml(ds, i, c, log, isCrew)}
     </div>`;
   });
-  return `<div id="jc-crew-${key}">`+
-    `<button onclick="jcLogAddCrewMember('${ds}')" style="font-size:12px;color:var(--accent);background:none;border:1px dashed var(--accent);border-radius:6px;padding:3px 10px;cursor:pointer;margin-bottom:6px;">+ Add Crew Member</button>`+
+  return `<div id="jc-crew-${key}" style="max-width:100%;min-width:0;">`+
+    `<button onclick="jcLogAddCrewMember('${ds}')" style="font-size:12px;color:var(--accent);background:none;border:1px dashed var(--accent);border-radius:6px;padding:6px 10px;cursor:pointer;margin-bottom:6px;max-width:100%;">+ Add Crew Member</button>`+
     rows+
   `</div>`;
 }
@@ -8606,31 +8583,21 @@ function jcBalanceHourCredit(ds, idx, reason){
 const _jcCreditUi=new Map();
 function _jcCreditUiKey(ds, idx){ return ds+'|'+idx; }
 function jcPreviewDayBalance(ds, idx){
-  const note=document.getElementById('jccn-'+ds.replace(/-/g,'')+'-'+idx);
-  const input=document.getElementById('jcct-'+ds.replace(/-/g,'')+'-'+idx);
+  const key=ds.replace(/-/g,'');
+  const note=document.getElementById('jccn-'+key+'-'+idx);
+  const input=document.getElementById('jcct-'+key+'-'+idx);
   const job=getJobRecord(_jcId);
   const log=job&&job.dayLogs&&job.dayLogs[ds];
   const c=log&&log.crewPresent&&log.crewPresent[idx];
-  if(!note||!c) return;
+  if(!c) return;
   const bal=jcBalanceCreditTenths(c, ds, job.id);
   _jcCreditUi.set(_jcCreditUiKey(ds, idx), {balanceArmed:true, requestedMinutes:null});
   if(bal.creditedTenths<0){
-    note.textContent='Other jobs already count '+(bal.otherTenths/10).toFixed(1)+'h. That is more than 8.0h, so this job cannot be balanced down to an exact 8.0h day.';
+    if(note) note.textContent='Other jobs are already over 8.0 hours.';
     return;
   }
   if(input) input.value=(bal.creditedTenths/10).toFixed(1);
-  const lines=[
-    'Other jobs today count '+(bal.otherTenths/10).toFixed(1)+'h.',
-    'This credit will be '+(bal.creditedTenths/10).toFixed(1)+'h. '+((bal.otherTenths/10).toFixed(1))+' + '+((bal.creditedTenths/10).toFixed(1))+' = 8.0 in 0.1h steps.',
-    'The clock on this row stays as entered.'
-  ];
-  if(bal.otherTenths===62&&bal.creditedTenths===18){
-    lines.push('1h 50m is 1.8333h. 1.8333 + 6.2 = 8.0333, which is not 8.0 and is not what this balance saves.');
-  }
-  if(bal.cashJobs&&bal.cashJobs.length){
-    lines.push('A cash job is still omitted from the payroll worksheet. Balancing does not put cash hours on that worksheet.');
-  }
-  note.textContent=lines.join(' ');
+  if(note) note.textContent='';
 }
 function jcPreviewMinuteCredit(ds, idx){
   const key=ds.replace(/-/g,'');
@@ -8687,7 +8654,7 @@ function jcSaveHourCreditFromInputs(ds, idx){
   const reason=(document.getElementById('jccr-'+key+'-'+idx)||{}).value;
   const ui=_jcCreditUi.get(_jcCreditUiKey(ds, idx))||{};
   if(tenths==null){
-    if(note) note.textContent='Credited hours must be a 0.1h step, such as 1.8 or 8.0. 1.83 and 1:50 are not saved as-is.';
+    if(note) note.textContent='Enter hours like 8.0.';
     return {ok:false, error:'tenths'};
   }
   const job=getJobRecord(_jcId);
@@ -8701,10 +8668,12 @@ function jcSaveHourCreditFromInputs(ds, idx){
   }
   const result=jcSetHourCredit(ds, idx, opts);
   if(!result.ok&&note){
-    const msg={reason:'A reason is required.', 'office-only':'Only the office can set a credit.', tenths:'Credited hours must be a 0.1h step.', 'not-a-tenth-choice':'That 0.1h step is not the one next to the duration you typed.', name:'Choose a person before crediting hours.', over:'Other jobs already total more than 8.0h.'};
+    const msg={reason:'A reason is required.', 'office-only':'Only the office can set a credit.', tenths:'Enter hours like 8.0.', 'not-a-tenth-choice':'That hours value was not saved.', name:'Choose a person first.', over:'Other jobs are already over 8.0 hours.'};
     note.textContent=msg[result.error]||'Credit was not saved.';
   } else if(result.ok){
     _jcCreditUi.delete(_jcCreditUiKey(ds, idx));
+    _jcHourAdjustOpen.delete(ds+'|'+idx);
+    jcRenderDayCrew(ds);
   }
   return result;
 }
