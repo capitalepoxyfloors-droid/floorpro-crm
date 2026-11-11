@@ -493,26 +493,35 @@ test('report: re-cost writes nothing, combined phases sum, worst-first sort', as
   assert.equal(r2(a.labor + a.overhead), r2(8 * 41.12), 'as recorded: same all-in cost as before');
 });
 
-test('data guard: a solo day offers "Owner on site?", which adds the owner at the override rate', async () => {
+test('a one-person day does not nag for an owner entry, and logged owner hours still cost', async () => {
   await freshCrewAndSettings();
-  putJob({ id: 'g1', customer: 'Solo', status: 'in_progress', jobType: 'flake-good', value: '3000', startDate: '2026-09-02', endDate: '2026-09-02',
-    dayLogs: { '2026-09-02': { startTime: '7:00 AM', endTime: '3:00 PM', crewPresent: [{ crewIdx: 4, name: 'Hunter Schuler', burdenedRate: '33.59' }] } } });
-  assert.deepEqual(lines('g1').soloDays, ['2026-09-02']);
-  ev(`document.body.insertAdjacentHTML('beforeend','<div id=jc-costing-content></div>'); renderJobCosting();`);
-  assert.ok(ev(`document.getElementById('jc-costing-content').textContent`).includes('Owner on site?'));
-  await ev(`jcAddOwnerToDay('2026-09-02')`);
-  const crew = plain(ev(`getJobRecord('g1').dayLogs['2026-09-02'].crewPresent`));
-  assert.equal(crew.length, 2);
-  assert.equal(crew[1].name, 'Will Bradford');
-  assert.equal(crew[1].directRate, 40.27);
-  assert.equal(crew[1].overheadRate, 4.83, 'an older day keeps that day\'s overhead');
+  putJob({ id: 'g1', customer: 'Solo', status: 'in_progress', jobType: 'flake-good', value: '3000', startDate: '2026-09-02', endDate: '2026-09-03',
+    dayLogs: {
+      '2026-09-02': { startTime: '7:00 AM', endTime: '3:00 PM', crewPresent: [{ crewIdx: 4, name: 'Hunter Schuler', burdenedRate: '33.59' }] },
+      '2026-09-03': { noWork: true, crewPresent: [] },
+    } });
+  ev(`document.body.insertAdjacentHTML('beforeend','<div id=jc-costing-content></div><div id=jc-cost-page-content></div>'); _jcId='g1'; renderJobCosting(); renderJobCostingPage();`);
+  const card = ev(`document.getElementById('jc-costing-content').textContent`);
+  const report = ev(`document.getElementById('jc-cost-page-content').textContent`);
+  assert.equal(card.includes('Owner on site?'), false);
+  assert.equal(card.includes('no owner entry'), false);
+  assert.equal(report.includes('solo day'), false);
+  assert.ok(card.includes('No Work Completed'));
+  const before = lines('g1');
+  assert.equal(before.ownerHours, 0);
+  // Will logged himself the normal way. His hours still cost at the stamped field rate.
+  ev(`getJobRecord('g1').dayLogs['2026-09-02'].crewPresent.push({crewIdx:2,name:'Will Bradford',startTime:'7:00 AM',endTime:'3:00 PM',directRate:'40.27',overheadRate:'4.83'});`);
   const L = lines('g1');
-  assert.deepEqual(L.soloDays, []);
   assert.equal(L.ownerHours, 8);
+  assert.equal(L.labor, r2(before.labor + 8 * 40.27));
+  assert.equal(L.overhead, r2(before.overhead + 8 * 4.83));
+  ev('renderJobCosting();');
   const unfinished = ev(`document.getElementById('jc-costing-content').textContent`);
+  assert.equal(unfinished.includes('Owner on site?'), false);
   assert.equal(unfinished.includes('Minimum GM to break even'), false);
   assert.ok(unfinished.includes('Net profit'));
   assert.ok(unfinished.includes('Pricing guide for similar jobs'));
+  assert.ok(unfinished.includes('Will Bradford'));
 });
 
 test('saving a crew member writes back every existing column value', async () => {
