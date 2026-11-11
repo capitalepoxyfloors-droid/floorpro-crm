@@ -8080,24 +8080,6 @@ function jcLogPickCrewMember(ds,idx,sel){
   saveJobRecords();
 }
 
-// Data guard "Owner on site?": add the owner to a day where only one person was logged, with that
-// person's times, costed at the owner's field rate (a direct-rate stamp even on an older day).
-async function jcAddOwnerToDay(ds){
-  const job=getJobRecord(_jcId); if(!job||!job.dayLogs||!job.dayLogs[ds]) return;
-  const oi=jcOwnerIdx(); if(oi<0||!CREW_DATA[oi]) return;
-  const log=job.dayLogs[ds];
-  _jcMigrateCrewPresent(log);
-  if(log.crewPresent.some(c=>parseInt(c.crewIdx)===oi)) return;
-  const solo=log.crewPresent.find(c=>c&&(c.name||c.crewIdx>=0))||{};
-  const c={crewIdx:oi,name:CREW_DATA[oi].full,startTime:solo.startTime||'',endTime:solo.endTime||''};
-  jcStampEntryRates(c,ds,{forceDirect:true});
-  log.crewPresent.push(c);
-  await saveJobRecords();
-  renderJobCosting();
-  if(document.getElementById('jc-day-logs')) jcRenderDayLogs();
-  showToast('✓ Added '+CREW_DATA[oi].full+' on '+jcFmtDate(ds));
-}
-
 function jcLogSetCrew(ds,idx,field,val){
   const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
   _jcMigrateCrewPresent(job.dayLogs[ds]);
@@ -9441,7 +9423,7 @@ function jcJobCostLines(job,mode){
   // ── LABOR + OVERHEAD (per person per day; a split shift is one person with two rows) ──
   const laborRows=[];
   let labor=0, overhead=0, hours=0, ownerHours=0, cashHrs=0, pwHrs=0, legacyOhHrs=0, estimatedRows=0;
-  const cashDays=new Set(), soloDays=[], noWorkDays=[], ohByRate={};
+  const cashDays=new Set(), noWorkDays=[], ohByRate={};
   allDates.forEach(ds=>{
     const log=logs[ds]; if(!log) return;
     if(log.noWork){ noWorkDays.push(ds); return; } // crew pulled off — a deliberate zero
@@ -9453,7 +9435,6 @@ function jcJobCostLines(job,mode){
       if(!grouped.has(k)) grouped.set(k,{name:nm,rows:[]});
       grouped.get(k).rows.push(c);
     });
-    let dayPeople=0, dayHasOwner=false;
     grouped.forEach(({name,rows})=>{
       // A credit replaces this person's rows. Full Day is still 8 once per person with no
       // credit. Otherwise the rows add, including a split shift.
@@ -9466,7 +9447,6 @@ function jcJobCostLines(job,mode){
       const estimated=!recost&&_jcShowEstimated(c);
       if(estimated) estimatedRows++;
       const isOwner=ownerIdx>=0&&parseInt(c.crewIdx)===ownerIdx;
-      dayPeople++; if(isOwner) dayHasOwner=true;
       labor+=cost; overhead+=oh; hours+=hrs;
       if(isOwner) ownerHours+=hrs;
       if(r.kind==='cash'){ cashHrs+=hrs; cashDays.add(ds); }
@@ -9475,7 +9455,6 @@ function jcJobCostLines(job,mode){
       const rk=r.overhead.toFixed(2); ohByRate[rk]=(ohByRate[rk]||0)+hrs;
       laborRows.push({ds,name,hrs,tenths:counted.tenths,clockTenths:counted.clockTenths,credited:counted.source==='credit',rate:r.labor,cost,ohRate:r.overhead,ohCost:oh,kind:r.kind,ot:r.ot,cash:r.cash,isOwner,estimated});
     });
-    if(dayPeople===1&&!dayHasOwner&&ownerIdx>=0) soloDays.push(ds);
   });
   labor=Math.round(labor*100)/100; overhead=Math.round(overhead*100)/100;
   const countedTenths=laborRows.reduce((s,r)=>s+(r.tenths||0),0);
@@ -9564,7 +9543,7 @@ function jcJobCostLines(job,mode){
   });
   const finishDate=[...(job.endDate?[job.endDate]:[]),...(job.extraDays||[]),...Object.keys(logs)].reduce((mx,d)=>(d>mx?d:mx),'');
   return {mode:recost?'recost':'recorded',allDates,laborRows,labor,overhead,hours:Math.round(hours*10)/10,ownerHours,ohByRate,estimatedRows,
-    cashHrs,cashDays:[...cashDays].sort(),pwHrs,legacyOhHrs,soloDays,noWorkDays,missingTimeDates,
+    cashHrs,cashDays:[...cashDays].sort(),pwHrs,legacyOhHrs,noWorkDays,missingTimeDates,
     matRows:Object.values(matTotals),supplierInvoices,supplierInvTotal,materials,
     consPct:cons.pct,consSource:cons.source,consSys:cons.sys,consumables,
     workDays,workDates,mileageOneWay,mileCustomRate,totalMiles,mileage,
@@ -9601,7 +9580,7 @@ function _jcSumCostRows(members){
   return {revenue,labor:r2(sum('labor')),materials:r2(sum('materials')),consumables:r2(sum('consumables')),mileage:r2(sum('mileage')),
     commissions:r2(sum('commissions')),directCost,grossProfit,gmPct:pct(grossProfit),overhead,netProfit,netPct,
     flag:revenue>0?jcProfitFlag(netPct):null,ownerCost,trueNet:r2(netProfit-ownerCost),hours:Math.round(sum('hours')*10)/10,
-    workDays:sum('workDays'),cashDayCount:cnt('cashDays'),soloDayCount:cnt('soloDays'),noWorkCount:cnt('noWorkDays'),
+    workDays:sum('workDays'),cashDayCount:cnt('cashDays'),noWorkCount:cnt('noWorkDays'),
     missingTimeCount:cnt('missingTimeDates'),estimatedRows:sum('estimatedRows'),legacyOhHrs:sum('legacyOhHrs'),pwHrs:sum('pwHrs'),sqft:sq,
     breakEven:r2(sum('breakEven')),isTM:members.some(m=>m.tmJob)};
 }
@@ -9674,7 +9653,6 @@ function renderJobCostingPage(){
       r.noWorkCount?chip('🚫 '+r.noWorkCount+' no-work day'+(r.noWorkCount!==1?'s':''),'var(--text2)','var(--surface3)','Marked No Work Completed — no labor or overhead'):'',
       r.cashDayCount?chip('💵 '+r.cashDayCount+' cash day'+(r.cashDayCount!==1?'s':''),'#059669','#05966922','Paid in cash — costed at base pay'+(_jcrRecost&&costingCurrentModel().entry.cashDayBurden==='statutory'?' plus SS/Medicare/WC':'')):'',
       r.pwHrs?chip('PW','#d97706','#d9770622','Prevailing wage hours'):'',
-      r.soloDayCount?chip('👤 '+r.soloDayCount+' solo day'+(r.soloDayCount!==1?'s':''),'#d97706','#d9770622','One person logged and no owner entry — was the owner on site?'):'',
       r.sqft?'':chip('no sq ft','var(--text3)','var(--surface3)','Add square feet on the Costing tab'),
     ].filter(Boolean).join('');
     const perDay=r.workDays>0&&r.revenue>0?Math.round(r.netProfit/r.workDays*100)/100:null;
@@ -10041,15 +10019,9 @@ function renderJobCosting(){
       <div style="font-size:11.5px;color:var(--text2);margin-top:3px;">${missingTimeDates.map(fmtD).join(', ')}. Enter a start/end time or check "Full Day" on the Daily Log tab for ${missingTimeDates.length!==1?'these days':'this day'} to include ${missingTimeDates.length!==1?'them':'it'} here.</div>
     </div>`;
   }
-  // Data guards: days with only one person and no owner entry, no-work days, and no square feet.
+  // Data guards: no-work days, and no square feet.
   {
     const warn=(color,bg,inner)=>`<div style="background:${bg};border:1px solid ${color};border-radius:var(--radius-sm);padding:9px 14px;margin-bottom:10px;font-size:12px;color:var(--text2);">${inner}</div>`;
-    const ownerIdx=jcOwnerIdx(), owner=ownerIdx>=0?CREW_DATA[ownerIdx]:null;
-    if(L.soloDays.length&&owner){
-      html+=warn('#d97706','#d9770614',`<div style="font-size:13px;font-weight:600;color:#b45309;margin-bottom:4px;">👤 ${L.soloDays.length} day${L.soloDays.length!==1?'s':''} with one person logged and no owner entry</div>
-        <div style="margin-bottom:6px;">Owner on site? Adding ${_ovhEsc(owner.name||owner.full)}'s hours (same times as the person logged) costs those hours at the owner's field rate.</div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px;">${L.soloDays.map(ds=>`<button class="btn btn-ghost" onclick="jcAddOwnerToDay('${ds}')" style="font-size:11px;padding:3px 9px;">+ ${_ovhEsc(owner.name||owner.full)} on ${jcFmtDate(ds)}</button>`).join('')}</div>`);
-    }
     if(L.noWorkDays.length) html+=warn('var(--border2)','var(--surface2)',`🚫 ${L.noWorkDays.length} day${L.noWorkDays.length!==1?'s':''} marked No Work Completed (${L.noWorkDays.map(jcFmtDate).join(', ')}) — no labor, overhead or mileage counted.`);
     if(!L.sqft) html+=warn('var(--border2)','var(--surface2)',`📐 No square feet on this job yet — add it under Report Details below so $/sq ft can be tracked.`);
   }
