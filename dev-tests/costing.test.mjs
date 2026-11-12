@@ -282,6 +282,41 @@ test('a missing stamp uses the rate on the work date, and a full day with no tim
   ev('CREW_HISTORY={};');
 });
 
+test('a new $20 overhead set leaves a stamped $15.66 day and prices the next day at $20', async () => {
+  await freshCrewAndSettings();
+  ev(`window.__base={id:'cs_1566',effective:'2026-10-20',utilization:0.9,paidHoursPerYear:2080,overheadMode:'pool',excludeOwnerFromDivisor:true,ownerCostPerHour:17.25,targetNetPct:15,cashDayBurden:'none',consumablesDefaultPct:19,consumablesBySystem:{flake:16,epoxy:16,metallic:16,overlay:16,clean_seal:16,polish:51}};`);
+  ev(`window.__base.overheadPool=overheadPoolForTargetRate(window.__base, 15.66);`);
+  ev(`window.__next=Object.assign({}, window.__base, {id:'cs_20261109_oh20', effective:'2026-11-09'}); window.__next.overheadPool=overheadPoolForTargetRate(window.__next, 20);`);
+  ev(`COSTING_SETTINGS={history:[{id:'cs_legacy',effective:'1900-01-01',legacyOverheadPerHour:4.83}, window.__base, window.__next]}; _costingSettingsLoadOk=true;`);
+  assert.equal(r2(ev(`overheadPerHour(costingSetFor('2026-11-08').entry)`)), 15.66);
+  assert.equal(r2(ev(`overheadPerHour(costingCurrentModel().entry)`)), 20);
+  assert.equal(ev(`costingSetFor('2026-11-09').entry.ownerCostPerHour`), 17.25);
+  assert.equal(ev(`costingSetFor('2026-11-08').version`), 'cs_1566');
+  assert.equal(ev(`costingSetFor('2026-11-09').version`), 'cs_20261109_oh20');
+  putJob({
+    id: 'oh20', customer: 'Overhead proof', status: 'in_progress', value: '1000', jobType: 'flake-good',
+    startDate: '2026-11-08', endDate: '2026-11-09',
+    dayLogs: {
+      '2026-11-08': { fullDay: true, crewPresent: [{ crewIdx: 0, name: 'Seth West', directRate: 40.27, overheadRate: 15.66, rateVersion: 'cs_1566', burdenedRate: '55.93' }] },
+      '2026-11-09': { fullDay: true, crewPresent: [{ crewIdx: 0, name: 'Seth West' }] },
+    },
+  });
+  assert.equal(ev('_jcStampMissingRates()'), 1, 'only the unstamped day is filled');
+  const oldDay = plain(ev(`getJobRecord('oh20').dayLogs['2026-11-08'].crewPresent[0]`));
+  const newDay = plain(ev(`getJobRecord('oh20').dayLogs['2026-11-09'].crewPresent[0]`));
+  assert.equal(oldDay.overheadRate, 15.66);
+  assert.equal(oldDay.rateVersion, 'cs_1566');
+  assert.equal(oldDay.directRate, 40.27);
+  assert.equal(newDay.overheadRate, 20);
+  assert.equal(newDay.rateVersion, 'cs_20261109_oh20');
+  assert.equal(ev(`jcEntryRate(getJobRecord('oh20').dayLogs['2026-11-08'].crewPresent[0], getJobRecord('oh20'), {}, '2026-11-08', 'recorded').overhead`), 15.66);
+  assert.equal(ev(`jcEntryRate(getJobRecord('oh20').dayLogs['2026-11-09'].crewPresent[0], getJobRecord('oh20'), {}, '2026-11-09', 'recorded').overhead`), 20);
+  // A trailing 12-month expense total is a rate input. It is not pulled from Wave.
+  assert.equal(r2(ev('overheadRateFromRolling12(112320, 5616)')), 20);
+  assert.equal(ev('overheadPoolForRolling12(window.__next, 112320, 5616)'), ev('overheadPoolForTargetRate(window.__next, 20)'));
+  assert.equal(ev('overheadRateFromRolling12(1000, 0)'), 0);
+});
+
 test('a pre-model fill matches the all-in the page wrote before 2026-10-20', async () => {
   await freshCrewAndSettings();
   ev(`window.__cs=JSON.parse(JSON.stringify(COSTING_SETTINGS)); window.__oh=JSON.parse(JSON.stringify(OVERHEAD));`);
