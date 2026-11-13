@@ -119,11 +119,11 @@ const call = (name, ...args) => {
   return w.eval(name + '.apply(undefined, window.__fpArgs)');
 };
 
-function arm(serverJob) {
+function arm(serverJob, localJob) {
   state.patchCalls = [];
   calls.length = 0;
   state.jobs = [JSON.parse(JSON.stringify(serverJob))];
-  const local = baseJob();
+  const local = JSON.parse(JSON.stringify(localJob || baseJob()));
   lex('JOB_RECORDS').splice(0, lex('JOB_RECORDS').length, JSON.parse(JSON.stringify(local)));
   setLex('_jrBaseline', [JSON.parse(JSON.stringify(local))]);
   setLex('_jcUserEdited', false);
@@ -304,6 +304,110 @@ test('a network failure tells them to tap Save again and keeps the note', async 
   assert.equal(w.document.getElementById('save-alert'), null);
   assert.ok(w.document.getElementById('jc-save-banner'));
   assert.equal(box.value, NOTE);
+});
+
+function localISO(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function notesBox(ds) {
+  const sec = w.document.getElementById('jcday-' + ds.replace(/-/g, ''));
+  assert.ok(sec, 'day section ' + ds);
+  const box = [...sec.querySelectorAll('textarea')].find(el => (el.getAttribute('placeholder') || '').includes('Anything worth noting'));
+  assert.ok(box, 'notes on ' + ds);
+  return box;
+}
+function pillOn() {
+  return w.document.getElementById('jc-unsaved-pill').style.display === 'inline-flex';
+}
+function spanDays() {
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
+  const future = new Date(today);
+  do { future.setDate(future.getDate() + 1); } while (future.getDay() !== 1);
+  return { today: localISO(today), future: localISO(future) };
+}
+// Save blurs the notes field. That blur used to mark the card unsaved again
+// even when the text was already stored, including after the card was reopened.
+async function saveNoteAndLeaveIt(ds, text) {
+  call('openJobCard', JOB);
+  call('jcTab', 'log');
+  const box = notesBox(ds);
+  typeNote(box, text);
+  assert.equal(pillOn(), true, 'typing marks Unsaved');
+  await call('saveJobCard');
+  assert.equal(state.jobs[0].dayLogs[ds].notes, text);
+  assert.equal(pillOn(), false, 'a successful save clears Unsaved');
+  assert.equal(w.document.getElementById('save-alert'), null);
+  box.dispatchEvent(new w.Event('blur', { bubbles: true }));
+  box.dispatchEvent(new w.Event('input', { bubbles: true }));
+  assert.equal(pillOn(), false, 'blur or input of the saved note does not bring Unsaved back');
+  call('openJobCard', JOB);
+  call('jcTab', 'log');
+  const again = notesBox(ds);
+  assert.equal(again.value, text);
+  assert.equal(pillOn(), false, 'reopening the saved card does not show Unsaved');
+  typeNote(again, text + ' More.');
+  assert.equal(pillOn(), true, 'a new edit shows Unsaved again');
+  return again;
+}
+
+test('a normal save of today clears Unsaved, and a failed save keeps it', async () => {
+  state.mode = 'ok';
+  const { today, future } = spanDays();
+  const job = baseJob({
+    startDate: today,
+    endDate: future,
+    dayLogs: { [today]: { notes: '', task: '', materialsUsed: [], crewPresent: [], startTime: '', endTime: '' } },
+  });
+  arm(job, job);
+  await saveNoteAndLeaveIt(today, NOTE);
+  state.mode = 'network';
+  state.patchCalls = [];
+  call('openJobCard', JOB);
+  call('jcTab', 'log');
+  const box = notesBox(today);
+  await call('saveJobCard');
+  assert.equal(pillOn(), true, 'a failed save leaves Unsaved');
+  assert.ok(w.document.getElementById('jc-save-banner'));
+  box.dispatchEvent(new w.Event('blur', { bubbles: true }));
+  assert.equal(pillOn(), true);
+  assert.equal(w.document.getElementById('modal-jobcard').classList.contains('open'), true);
+});
+
+test('a normal save of a later day clears Unsaved', async () => {
+  state.mode = 'ok';
+  const { today, future } = spanDays();
+  const job = baseJob({
+    startDate: today,
+    endDate: future,
+    dayLogs: { [today]: { notes: 'already logged', task: '', materialsUsed: [], crewPresent: [], startTime: '', endTime: '' } },
+  });
+  arm(job, job);
+  await saveNoteAndLeaveIt(future, NOTE);
+  assert.equal(state.jobs[0].dayLogs[today].notes, 'already logged');
+  assert.equal(patchBodies().length, 1, 'the first save is not a retry');
+});
+
+test('a save that auto-retries still clears Unsaved', async () => {
+  state.mode = 'safe';
+  const { today, future } = spanDays();
+  const loaded = baseJob({
+    startDate: today,
+    endDate: future,
+    dayLogs: { [future]: { notes: '', task: '', materialsUsed: [], crewPresent: [], startTime: '', endTime: '' } },
+  });
+  const server = baseJob({
+    startDate: today,
+    endDate: future,
+    updated_at: SERVER_STAMP,
+    crewDays: { 'Seth West': [today], 'Brendon Bennett': [future] },
+    dayLogs: { [future]: { notes: '', task: '', materialsUsed: [], crewPresent: [], startTime: '', endTime: '' } },
+  });
+  arm(server, loaded);
+  await saveNoteAndLeaveIt(future, NOTE);
+  assert.equal(patchBodies().length, 2);
+  assert.equal(stampOf(patchBodies()[1][0].expected.updated_at), SERVER_STAMP);
+  assert.deepEqual(state.jobs[0].crewDays['Brendon Bennett'], [future]);
 });
 
 test('crew still do not see hours or dollar amounts on the log', () => {
