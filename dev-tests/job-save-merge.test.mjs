@@ -179,7 +179,12 @@ test('a stale edit of the same notes is refused and Zimmerman stays', async () =
   assert.equal(saved, false);
   assert.equal(state.settings.job_records, before);
   assert.equal(zimm(storedJobs()).crewDays['Brendon Bennett'][0], '2026-10-28');
-  assert.match(w.document.getElementById('sync-status').textContent, /nothing was saved/i);
+  assert.equal(lex('JOB_RECORDS').find(j => j.id === GBH).dayLogs['2026-10-28'].notes, 'my newer note');
+  const alert = w.document.getElementById('save-alert');
+  assert.ok(alert, 'a failed save stays on screen');
+  assert.match(alert.textContent, /Not saved/i);
+  assert.match(alert.textContent, /changed by someone else/i);
+  assert.doesNotMatch(alert.textContent, /stale_job|P0001|updated_at/);
 });
 
 test('focus refresh picks up Brendon before the next save', async () => {

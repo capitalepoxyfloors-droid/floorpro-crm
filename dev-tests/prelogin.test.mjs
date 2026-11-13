@@ -202,7 +202,7 @@ test('pre-login safety fixes against a mocked backend', async () => {
   assert.equal(settingsPostsFor('job_records').length, postsBefore, 'failed re-read must not POST job_records');
   assert.equal(lex('JOB_RECORDS')[0].notes, 'typed on this phone');
   assert.equal(lex('_jrBaseline')[0].notes, 'server notes', 'baseline must stay put when the write did not happen');
-  assert.match(syncStatus(), /nothing was saved/i);
+  assert.match(w.document.getElementById('save-alert').textContent, /Not saved/i);
   assert.doesNotMatch(syncStatus(), /✓ Saved/);
 
   // ── Failed write does not show Saved and does not move the baseline ──
@@ -214,7 +214,7 @@ test('pre-login safety fixes against a mocked backend', async () => {
   assert.equal(JSON.stringify(lex('_jrBaseline')), baselineSnap);
   assert.equal(lex('JOB_RECORDS')[0].notes, 'typed on this phone');
   assert.doesNotMatch(syncStatus(), /✓ Saved/);
-  assert.match(syncStatus(), /still here/i);
+  assert.match(w.document.getElementById('save-alert').textContent, /Not saved\. Check your signal and tap Save again\./);
   assert.equal(settingsDeletes().length, 0, 'setKV must not delete-then-insert');
 
   // Job card Save uses the same result and must not flash Saved.
