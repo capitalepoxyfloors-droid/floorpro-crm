@@ -5532,9 +5532,19 @@ function jcPaintUnsaved(){
   const pill=document.getElementById('jc-unsaved-pill');
   if(pill) pill.style.display=on?'inline-flex':'none';
 }
+function _jcRecordDirty(){
+  if(_jcId==null||_jcId==='') return false;
+  return _jrDirtyKeys(_jrBaseline, JOB_RECORDS).has(String(_jcId));
+}
 function jcMarkUnsaved(){
   _jcUserEdited=true;
   jcPaintUnsaved();
+}
+// A replayed input or blur (Save steals focus after the note is already stored) must not
+// turn the marker back on. A real change, a failed save, or an edit still on the form does.
+function jcNoteFormEdit(){
+  if(_jcSaveIssue||_jcInfoFormDirty()||_jcRecordDirty()) jcMarkUnsaved();
+  else { _jcUserEdited=false; jcPaintUnsaved(); }
 }
 function jcClearUnsaved(){
   _jcUserEdited=false;
@@ -5595,11 +5605,9 @@ function _jrFailSave(kind, detail){
 }
 function _jrNoteOpenJobSaved(patchedIds){
   if(!_jcId||!(patchedIds||[]).some(id=>String(id)===String(_jcId))) return;
-  if(_jrDirtyKeys(_jrBaseline, JOB_RECORDS).has(String(_jcId))||_jcInfoFormDirty()){
-    jcPaintUnsaved();
-    return;
-  }
   jcClearUnsaved();
+  // Info typed in the form and not copied onto the job by this save stays unsaved.
+  if(_jcInfoFormDirty()) jcMarkUnsaved();
 }
 // A stale_job from the whole-record timestamp is safe when every field this patch
 // writes still equals the value the page loaded. dayLogs is one field: compare the
@@ -6777,6 +6785,10 @@ function openJobCard(jobId){
   jcRenderJobDocs();
   jcTab('info');
   openModal('jobcard');
+  // Opening the card can add an empty list (supplier invoices). That is not an edit.
+  // A marker left by blurring a note that is already stored drops off when nothing is unsaved.
+  // A failed save, or a note still only in memory, keeps Unsaved.
+  if(!_jcSaveIssue&&!_jcRecordDirty()) _jcUserEdited=false;
   jcPaintUnsaved();
   // Apply lock state after modal is open so elements exist
   setTimeout(()=>jcApplyLockState(job),0);
@@ -8151,6 +8163,7 @@ function jcLogSet(ds,field,val){
   const job=getJobRecord(_jcId); if(!job) return;
   if(!job.dayLogs) job.dayLogs={};
   if(!job.dayLogs[ds]) job.dayLogs[ds]={};
+  if(job.dayLogs[ds][field]===val) return;
   job.dayLogs[ds][field]=val;
   jcMarkUnsaved();
   if(field==='startTime'||field==='endTime'){
@@ -8352,6 +8365,7 @@ function jcLogSetCrew(ds,idx,field,val){
   const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
   _jcMigrateCrewPresent(job.dayLogs[ds]);
   const c=job.dayLogs[ds].crewPresent[idx]; if(!c) return;
+  if(c[field]===val) return;
   c[field]=val;
   jcMarkUnsaved();
 }
@@ -8551,9 +8565,10 @@ function jcLogSetMaterial(ds,idx,field,val){
   const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
   _jcMigrateMats(job.dayLogs[ds]);
   const m=job.dayLogs[ds].materialsUsed[idx]; if(!m) return;
+  const changed=m[field]!==val;
   m[field]=val;
   if(field==='qty') _jcCaptureUnitCost(m);
-  jcMarkUnsaved();
+  if(changed) jcMarkUnsaved();
 }
 
 function jcParseClockMinutes(t){
@@ -21390,15 +21405,15 @@ async function deleteMaintEntry(id){
     <!-- Info Pane -->
     <div id="jc-pane-info" class="modal-body">
       <div class="form-row">
-        <div class="form-group"><label class="form-label">Customer Name</label><input class="form-input" id="jc-customer" placeholder="Customer name" oninput="jcMarkUnsaved()"/></div>
-        <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="jc-phone" type="tel" placeholder="(314) 555-0100" oninput="fmtPhone(this);jcMarkUnsaved()"/></div>
+        <div class="form-group"><label class="form-label">Customer Name</label><input class="form-input" id="jc-customer" placeholder="Customer name" oninput="jcNoteFormEdit()"/></div>
+        <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="jc-phone" type="tel" placeholder="(314) 555-0100" oninput="fmtPhone(this);jcNoteFormEdit()"/></div>
       </div>
       <div class="form-group">
         <label class="form-label">Job Site Address</label>
         <div style="display:flex;gap:8px;align-items:flex-start;">
           <div style="position:relative;flex:1;">
             <input class="form-input" id="jc-address" placeholder="123 Main St, City, MO" style="width:100%;"
-              oninput="jcAddrInput(this.value);jcMarkUnsaved()"
+              oninput="jcAddrInput(this.value);jcNoteFormEdit()"
               onblur="setTimeout(()=>{const d=document.getElementById('jc-addr-drop');if(d)d.style.display='none';},200)"
               autocomplete="off"/>
             <div id="jc-addr-drop" class="addr-drop" style="display:none;"></div>
@@ -21408,18 +21423,18 @@ async function deleteMaintEntry(id){
       </div>
       <div class="form-group">
         <label class="form-label">Scope / Notes</label>
-        <textarea class="form-textarea" id="jc-scope" placeholder="Sq footage, what's included, what's excluded, surface conditions, access codes, parking..." oninput="jcMarkUnsaved();this.style.height='auto';this.style.height=this.scrollHeight+'px'" style="overflow-y:auto;resize:none;min-height:120px;"></textarea>
+        <textarea class="form-textarea" id="jc-scope" placeholder="Sq footage, what's included, what's excluded, surface conditions, access codes, parking..." oninput="jcNoteFormEdit();this.style.height='auto';this.style.height=this.scrollHeight+'px'" style="overflow-y:auto;resize:none;min-height:120px;"></textarea>
       </div>
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Job Type</label>
-          <select class="form-select" id="jc-jobtype" onchange="jcMarkUnsaved()"></select>
+          <select class="form-select" id="jc-jobtype" onchange="jcNoteFormEdit()"></select>
         </div>
         <div class="form-group" id="jc-value-group">
           <label class="form-label">Job Value ($)</label>
           <div style="position:relative;">
             <span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text2);font-weight:600;">$</span>
-            <input class="form-input" id="jc-value" type="number" placeholder="0" style="padding-left:26px;" oninput="jcMarkUnsaved()"/>
+            <input class="form-input" id="jc-value" type="number" placeholder="0" style="padding-left:26px;" oninput="jcNoteFormEdit()"/>
           </div>
         </div>
       </div>
