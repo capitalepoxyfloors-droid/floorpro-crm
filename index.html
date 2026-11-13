@@ -67,6 +67,16 @@
   .btn-primary{background:var(--accent);color:#fff;}
   .btn-primary:hover{background:var(--accent2);}
   .btn-primary:disabled{background:var(--surface3);color:var(--text3);cursor:not-allowed;}
+  /* Save Log failure — large, red, and tappable on a phone. Stays until dismissed. */
+  #jc-unsaved-pill{display:none;align-items:center;font-size:13px;font-weight:800;letter-spacing:.2px;color:#fff;background:var(--red);border-radius:999px;padding:5px 10px;line-height:1.2;flex:0 0 auto;}
+  #jc-save-banner{background:var(--red-dim);color:#9b1c1c;border:2px solid var(--red);border-radius:12px;padding:14px;margin:0 0 12px;}
+  #jc-save-banner .jc-save-banner-text{font-size:16.5px;line-height:1.4;font-weight:700;}
+  #jc-save-banner button{display:block;width:100%;min-height:48px;margin-top:12px;font-size:17px;font-weight:800;border:none;border-radius:10px;background:var(--red);color:#fff;cursor:pointer;font-family:'DM Sans',sans-serif;}
+  #save-alert{position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px;}
+  #save-alert .save-alert-card{background:#fff;color:#9b1c1c;border:3px solid var(--red);border-radius:18px;padding:22px 16px 16px;width:100%;max-width:420px;box-shadow:0 18px 50px rgba(0,0,0,.35);font-family:'DM Sans',sans-serif;}
+  #save-alert .save-alert-title{font-size:28px;font-weight:800;line-height:1.1;color:var(--red);}
+  #save-alert .save-alert-body{font-size:18px;line-height:1.4;font-weight:650;margin-top:10px;}
+  #save-alert button{display:block;width:100%;min-height:52px;margin-top:16px;font-size:18px;font-weight:800;border:none;border-radius:12px;background:var(--red);color:#fff;cursor:pointer;font-family:'DM Sans',sans-serif;}
   .btn-ghost{background:var(--surface2);color:var(--text2);border:1px solid var(--border);}
   .btn-ghost:hover{color:var(--text);border-color:var(--border2);}
   .btn-green{background:var(--green);color:#fff;}
@@ -5489,9 +5499,240 @@ function _jrInstallSavedJobs(serverJobs, patchedIds){
   });
   _jrBaseline=next;
 }
+const JR_CONFLICT_MSG='Not saved. This job was just changed by someone else. Copy your note, tap Reload, then save again.';
+const JR_NETWORK_MSG='Not saved. Check your signal and tap Save again.';
+let _jcUserEdited=false;
+let _jcSaveIssue=null; // 'conflict' | 'network' until a successful save of this card
+function _jcCardOpen(){
+  const card=document.getElementById('modal-jobcard');
+  return !!(card&&card.classList.contains('open'));
+}
+function _jcInfoFormDirty(){
+  const job=getJobRecord(_jcId);
+  if(!job||!_jcCardOpen()) return false;
+  const diff=(id,cur)=>{
+    const el=document.getElementById(id);
+    if(!el) return false;
+    return (el.value||'').trim()!==String(cur||'').trim();
+  };
+  if(diff('jc-customer', job.customer)) return true;
+  if(diff('jc-phone', job.phone)) return true;
+  if(diff('jc-address', job.address)) return true;
+  if(diff('jc-scope', job.scope)) return true;
+  const typeEl=document.getElementById('jc-jobtype');
+  if(typeEl&&typeEl.options&&typeEl.options.length&&typeEl.value!==(job.jobType||'epoxy')) return true;
+  if(_isOwnerSession()){
+    const v=document.getElementById('jc-value');
+    if(v&&String(v.value||'')!==String(job.value||'')) return true;
+  }
+  return false;
+}
+function jcPaintUnsaved(){
+  const on=!!(_jcUserEdited||_jcSaveIssue);
+  const pill=document.getElementById('jc-unsaved-pill');
+  if(pill) pill.style.display=on?'inline-flex':'none';
+}
+function jcMarkUnsaved(){
+  _jcUserEdited=true;
+  jcPaintUnsaved();
+}
+function jcClearUnsaved(){
+  _jcUserEdited=false;
+  _jcSaveIssue=null;
+  jcPaintUnsaved();
+  const banner=document.getElementById('jc-save-banner');
+  if(banner) banner.remove();
+  const alert=document.getElementById('save-alert');
+  if(alert) alert.remove();
+}
+function _jrClearSyncPill(){
+  const old=document.getElementById('sync-status');
+  if(old){ clearTimeout(old._t); old.remove(); }
+}
+function _jrShowBlockingAlert(msg){
+  const old=document.getElementById('save-alert');
+  if(old) old.remove();
+  const el=document.createElement('div');
+  el.id='save-alert';
+  el.setAttribute('role','alertdialog');
+  el.innerHTML='<div class="save-alert-card"><div class="save-alert-title">Not saved</div><div class="save-alert-body"></div><button type="button">OK</button></div>';
+  el.querySelector('.save-alert-body').textContent=msg;
+  const close=()=>el.remove();
+  el.querySelector('button').onclick=close;
+  el.addEventListener('click',e=>{ if(e.target===el) close(); });
+  document.body.appendChild(el);
+}
+function jcShowSaveBanner(){
+  if(!_jcSaveIssue||!_jcCardOpen()) return;
+  const host=document.getElementById('jc-day-logs');
+  if(!host) return;
+  let el=document.getElementById('jc-save-banner');
+  if(!el){
+    el=document.createElement('div');
+    el.id='jc-save-banner';
+    el.setAttribute('role','alert');
+    const btn=host.querySelector('button[onclick="saveJobCard()"]');
+    const wrap=btn&&btn.parentElement;
+    if(wrap) host.insertBefore(el, wrap);
+    else host.insertBefore(el, host.firstChild);
+  }
+  const conflict=_jcSaveIssue==='conflict';
+  el.innerHTML='<div class="jc-save-banner-text"></div>'+(conflict?'<button type="button" onclick="jcReloadOpenJob()">Reload</button>':'');
+  el.querySelector('.jc-save-banner-text').textContent=conflict?JR_CONFLICT_MSG:JR_NETWORK_MSG;
+  if(el.scrollIntoView){ try{ el.scrollIntoView({block:'center'}); }catch(e){} }
+}
+function _jrFailSave(kind, detail){
+  const conflict=kind==='conflict';
+  if(conflict) console.warn('job save rejected — a field this save changes was also changed', detail||'');
+  else console.error('job save failed', detail||'');
+  _jrClearSyncPill();
+  _jcSaveIssue=conflict?'conflict':'network';
+  _jcUserEdited=true;
+  const msg=conflict?(_jcCardOpen()?JR_CONFLICT_MSG:'Not saved. This job was just changed by someone else. Reload the page, then try again.'):JR_NETWORK_MSG;
+  _jrShowBlockingAlert(msg);
+  jcShowSaveBanner();
+  jcPaintUnsaved();
+}
+function _jrNoteOpenJobSaved(patchedIds){
+  if(!_jcId||!(patchedIds||[]).some(id=>String(id)===String(_jcId))) return;
+  if(_jrDirtyKeys(_jrBaseline, JOB_RECORDS).has(String(_jcId))||_jcInfoFormDirty()){
+    jcPaintUnsaved();
+    return;
+  }
+  jcClearUnsaved();
+}
+// A stale_job from the whole-record timestamp is safe when every field this patch
+// writes still equals the value the page loaded. dayLogs is one field: compare the
+// whole object. A real overlap (or a retry that fails) is not saved.
+function _jrChangedFieldsSafe(serverJob, p){
+  if(!serverJob||p.op==='insert') return false;
+  const exp=p.expected||{};
+  const keys=new Set([...Object.keys(p.patch||{}), ...(p.drop||[])]);
+  for(const k of keys){
+    if(k==='id'||k==='updated_at') continue;
+    const serverVal=_jrHas(serverJob,k)?serverJob[k]:null;
+    const expVal=_jrHas(exp,k)?exp[k]:null;
+    if(!_jrEqCanon(serverVal, expVal)) return false;
+  }
+  if(p.op==='delete'){
+    if(!p.basis) return true;
+    const server=_jrCanon(serverJob); delete server.updated_at;
+    const basis=_jrCanon(p.basis); delete basis.updated_at;
+    return JSON.stringify(server)===JSON.stringify(basis);
+  }
+  return true;
+}
+function _jrAdoptUntouched(p, serverJob){
+  const touched=new Set([...Object.keys(p.patch||{}), ...(p.drop||[])]);
+  const id=String(p.id);
+  const apply=rec=>{
+    if(!rec) return;
+    Object.keys(serverJob).forEach(k=>{
+      if(k==='id') return;
+      if(k!=='updated_at'&&touched.has(k)) return;
+      rec[k]=_jrClone(serverJob[k]);
+    });
+    Object.keys(rec).forEach(k=>{
+      if(k==='id'||k==='updated_at'||touched.has(k)) return;
+      if(!_jrHas(serverJob,k)) delete rec[k];
+    });
+    if(_jrHas(serverJob,'updated_at')) rec.updated_at=serverJob.updated_at;
+    else delete rec.updated_at;
+  };
+  apply((JOB_RECORDS||[]).find(j=>String(j.id)===id));
+  apply((_jrBaseline||[]).find(j=>String(j.id)===id));
+}
+function _jrRebasePatches(patches, serverArr){
+  const by=new Map((serverArr||[]).map(j=>[String(j&&j.id), j]));
+  let moved=false;
+  const plan=[];
+  for(const p of patches){
+    const server=by.get(String(p.id));
+    if(p.op==='delete'&&!server){ plan.push({copy:_jrClone(p), server:null, adopt:false}); continue; }
+    if(!_jrChangedFieldsSafe(server, p)) return null;
+    const copy=_jrClone(p);
+    if(!copy.expected) copy.expected={};
+    const nextStamp=server.updated_at??null;
+    if(_jrStamp(nextStamp)!==_jrStamp(copy.expected.updated_at)){
+      copy.expected.updated_at=nextStamp;
+      moved=true;
+      plan.push({copy, server, adopt:true});
+    }else{
+      plan.push({copy, server:null, adopt:false});
+    }
+  }
+  if(!moved) return null;
+  plan.forEach(({copy, server, adopt})=>{ if(adopt&&server) _jrAdoptUntouched(copy, server); });
+  return plan.map(x=>x.copy);
+}
+async function _jrReadServerJobs(){
+  const read=await _jobRecordsRead();
+  if(!read.ok) return {ok:false, jobs:null};
+  if(read.value==null) return {ok:true, jobs:[]};
+  try{
+    const jobs=JSON.parse(read.value);
+    if(!Array.isArray(jobs)) return {ok:false, jobs:null};
+    return {ok:true, jobs};
+  }catch(e){
+    console.error('job re-read was not valid JSON', e);
+    return {ok:false, jobs:null};
+  }
+}
+async function _jrRecoverStale(patches, serverArr){
+  let jobs=serverArr;
+  if(!jobs){
+    const read=await _jrReadServerJobs();
+    if(!read.ok) return {kind:'network'};
+    jobs=read.jobs;
+  }
+  const rebased=_jrRebasePatches(patches, jobs);
+  if(!rebased) return {kind:'conflict'};
+  return {kind:'retry', patches:rebased};
+}
+async function jcReloadOpenJob(){
+  const id=_jcId;
+  const job=getJobRecord(id);
+  if(!job) return;
+  const keepLogs=_jrClone(job.dayLogs||null);
+  const keepForm={
+    customer:document.getElementById('jc-customer')?.value,
+    phone:document.getElementById('jc-phone')?.value,
+    address:document.getElementById('jc-address')?.value,
+    scope:document.getElementById('jc-scope')?.value,
+    jobType:document.getElementById('jc-jobtype')?.value
+  };
+  const read=await _jrReadServerJobs();
+  if(!read.ok){ _jrFailSave('network', 'reload read failed'); return; }
+  const server=(read.jobs||[]).find(j=>String(j.id)===String(id));
+  if(!server){ _jrFailSave('conflict', 'reload: job missing'); return; }
+  const snap=_jrClone(server);
+  const bi=(_jrBaseline||[]).findIndex(j=>String(j.id)===String(id));
+  if(bi>=0) _jrBaseline[bi]=_jrClone(snap); else _jrBaseline.push(_jrClone(snap));
+  const merged=_jrClone(snap);
+  if(keepLogs) merged.dayLogs=keepLogs;
+  const li=JOB_RECORDS.findIndex(j=>String(j.id)===String(id));
+  if(li>=0) _jrCopyOnto(JOB_RECORDS[li], merged); else JOB_RECORDS.push(merged);
+  const set=(elId,v)=>{ const el=document.getElementById(elId); if(el&&v!=null) el.value=v; };
+  set('jc-customer', keepForm.customer);
+  set('jc-phone', keepForm.phone);
+  set('jc-address', keepForm.address);
+  set('jc-scope', keepForm.scope);
+  if(keepForm.jobType!=null) set('jc-jobtype', keepForm.jobType);
+  const nameEl=document.getElementById('jc-name');
+  if(nameEl) nameEl.textContent=(keepForm.customer||'').trim()||server.customer||'Unnamed Job';
+  try{ jcRenderCrewPicker(); }catch(e){ console.error('crew picker refresh skipped', e); }
+  try{ jcRenderDayLogs(); }catch(e){ console.error('day log refresh skipped', e); }
+  _jcSaveIssue=null;
+  const alert=document.getElementById('save-alert');
+  if(alert) alert.remove();
+  const banner=document.getElementById('jc-save-banner');
+  if(banner) banner.remove();
+  _jcUserEdited=true;
+  jcPaintUnsaved();
+  if(typeof showToast==='function') showToast('Reloaded. Tap Save again.');
+}
 function _jrStaleSaveMessage(){
-  showSyncStatus('⚠ This job was changed somewhere else — nothing was saved. Reload the page, then save again. Your edits are still here.','var(--red)');
-  if(typeof showToast==='function') showToast('This job changed on another screen. Reload before saving.');
+  _jrFailSave('conflict');
 }
 function _jrPatchResultOk(data){
   return !!(data&&data.ok===true&&Array.isArray(data.jobs)&&_jobRecordsLookReal(data.jobs));
@@ -5510,29 +5751,37 @@ async function _saveJobRecordsNow(onlyId){
     const priorBaseline=_jrClone(_jrBaseline);
     const only=onlyId!=null&&onlyId!==''?new Set([String(onlyId)]):null;
     try{ _jcStampMissingRates(only); }catch(e){ console.error('rate stamping skipped:',e); }
-    const patches=_jrBuildPatches(priorBaseline, JOB_RECORDS, onlyId!=null&&onlyId!==''?onlyId:null);
+    let patches=_jrBuildPatches(priorBaseline, JOB_RECORDS, onlyId!=null&&onlyId!==''?onlyId:null);
     if(!patches.length){
       showSyncStatus('✓ Saved');
+      _jrNoteOpenJobSaved(only?[...only]:[]);
       return true;
     }
-    const rpc=await sb.rpc('fp_patch_job_records',{patches});
-    if(_jrPatchResultOk(rpc.data)){
+    const finish=(stored)=>{
       _jrDataGen++;
-      _jrInstallSavedJobs(rpc.data.jobs, patches.map(p=>p.id));
+      _jrInstallSavedJobs(stored, patches.map(p=>p.id));
       _jrLogFieldChanges(priorBaseline, preLocal);
+      _jrNoteOpenJobSaved(patches.map(p=>p.id));
       showSyncStatus('✓ Saved');
       return true;
-    }
+    };
+    let retried=false;
+    let rpc=await sb.rpc('fp_patch_job_records',{patches});
     if(rpc.stale){
-      _jrStaleSaveMessage();
-      return false;
+      const rec=await _jrRecoverStale(patches, null);
+      retried=true;
+      if(rec.kind!=='retry'){ _jrFailSave(rec.kind, rpc.error); return false; }
+      patches=rec.patches;
+      rpc=await sb.rpc('fp_patch_job_records',{patches});
+      if(rpc.stale){ _jrFailSave('conflict', rpc.error); return false; }
     }
+    if(_jrPatchResultOk(rpc.data)) return finish(rpc.data.jobs);
     // A real refusal (not signed in, or the function said no) must not fall through
     // to a blob write. A missing function, or a test double that isn't this RPC,
     // still uses the re-read-and-patch path.
     const unrecognized=rpc.ok&&!_jrPatchResultOk(rpc.data);
     if(!rpc.missing&&!unrecognized){
-      showSyncStatus('⚠ Save failed — check your connection. Your edits are still here; try again.','var(--red)');
+      _jrFailSave('network', rpc.error||rpc.status);
       return false;
     }
     if(!_isOwnerSession()){
@@ -5545,7 +5794,7 @@ async function _saveJobRecordsNow(onlyId){
       }).filter(Boolean);
       const r=await sb.rpc('fp_crew_write_job_records',{payload});
       if(!r.ok){
-        showSyncStatus('⚠ Save failed — check your connection. Your edits are still here; try again.','var(--red)');
+        _jrFailSave('network', r.error);
         return false;
       }
       _jrDataGen++;
@@ -5559,12 +5808,14 @@ async function _saveJobRecordsNow(onlyId){
         if(idx>=0) next[idx]=_jrClone(local); else next.push(_jrClone(local));
       });
       _jrBaseline=next;
+      _jrNoteOpenJobSaved([...patchedIds]);
       showSyncStatus('✓ Saved');
       return true;
     }
     const read=await _jobRecordsRead();
     if(!read.ok){
-      showSyncStatus('⚠ Could not re-read the server copy — nothing was saved. Your edits are still here; try again.','var(--red)');
+      console.error('job re-read failed — nothing was saved');
+      _jrFailSave('network', 're-read failed');
       return false;
     }
     let serverArr=[];
@@ -5574,26 +5825,39 @@ async function _saveJobRecordsNow(onlyId){
         if(!Array.isArray(serverArr)) throw new Error('job_records is not an array');
       }catch(e){
         console.error('job_records re-read was not valid JSON — refusing to overwrite:',e);
-        showSyncStatus('⚠ Server copy looks damaged — nothing was saved. Your edits are still here; try again.','var(--red)');
+        _jrFailSave('network', e);
         return false;
       }
     }
     let patched;
     try{ patched=_jrApplyPatchesToServer(serverArr, patches); }
     catch(e){
-      if(e&&e.stale){ _jrStaleSaveMessage(); return false; }
-      console.error('job_records patch failed — nothing was saved:',e);
-      showSyncStatus('⚠ Could not merge with the server copy — nothing was saved. Your edits are still here; try again.','var(--red)');
-      return false;
+      if(!(e&&e.stale)){
+        console.error('job_records patch failed — nothing was saved:',e);
+        _jrFailSave('network', e);
+        return false;
+      }
+      if(retried){ _jrFailSave('conflict', e); return false; }
+      const rec=await _jrRecoverStale(patches, serverArr);
+      retried=true;
+      if(rec.kind!=='retry'){ _jrFailSave(rec.kind, e); return false; }
+      patches=rec.patches;
+      try{ patched=_jrApplyPatchesToServer(serverArr, patches); }
+      catch(e2){
+        console.error('job save retry failed', e2);
+        _jrFailSave(e2&&e2.stale?'conflict':'network', e2);
+        return false;
+      }
     }
     let wrote;
     try{ wrote=await sb.setKV('job_records', JSON.stringify(patched)); }
     catch(e){
-      showSyncStatus('⚠ '+((e&&e.message)||'Save failed')+' Your edits are still here; try again.','var(--red)');
+      console.error('job save write failed', e);
+      _jrFailSave('network', e);
       return false;
     }
     if(!wrote){
-      showSyncStatus('⚠ Save failed — check your connection. Your edits are still here; try again.','var(--red)');
+      _jrFailSave('network', 'write failed');
       return false;
     }
     let stored=patched;
@@ -5601,11 +5865,7 @@ async function _saveJobRecordsNow(onlyId){
     if(row&&typeof row.value==='string'){
       try{ const parsed=JSON.parse(row.value); if(Array.isArray(parsed)) stored=parsed; }catch(e){}
     }
-    _jrDataGen++;
-    _jrInstallSavedJobs(stored, patches.map(p=>p.id));
-    _jrLogFieldChanges(priorBaseline, preLocal);
-    showSyncStatus('✓ Saved');
-    return true;
+    return finish(stored);
   }finally{
     _jrSaving=false;
   }
@@ -6474,6 +6734,7 @@ function jcFmtDate(ds){ return new Date(ds+'T00:00:00').toLocaleDateString('en-U
 
 function openJobCard(jobId){
   const job=getJobRecord(jobId); if(!job) return;
+  if(String(jobId)!==String(_jcId)){ _jcUserEdited=false; _jcSaveIssue=null; }
   _jcId=jobId;
   _jcConflicts=[];  // clear any stale conflicts from previous card
   _jcUpdateConflictWarn();
@@ -6516,6 +6777,7 @@ function openJobCard(jobId){
   jcRenderJobDocs();
   jcTab('info');
   openModal('jobcard');
+  jcPaintUnsaved();
   // Apply lock state after modal is open so elements exist
   setTimeout(()=>jcApplyLockState(job),0);
 }
@@ -7578,7 +7840,9 @@ function jcRenderDayLogs(){
   const container=document.getElementById('jc-day-logs');
   container.innerHTML='';
   if(!job.startDate||!job.endDate){
-    container.innerHTML='<div style="text-align:center;color:var(--text3);font-size:13px;padding:24px;">No dates set for this job.</div>'; return;
+    container.innerHTML='<div style="text-align:center;color:var(--text3);font-size:13px;padding:24px;">No dates set for this job.</div>';
+    jcShowSaveBanner();
+    return;
   }
   if(!job.dayLogs) job.dayLogs={};
   if(!job.extraDays) job.extraDays=[];
@@ -7690,9 +7954,12 @@ function jcRenderDayLogs(){
   // Inline save button — always visible on mobile without needing to scroll to the modal footer
   const saveWrap=document.createElement('div');
   saveWrap.style.cssText='padding:16px 0 4px;';
-  saveWrap.innerHTML=`<button onclick="saveJobCard()" class="btn btn-primary" style="width:100%;font-size:15px;padding:13px;border-radius:10px;letter-spacing:.3px;">💾 Save Log</button>`;
+  saveWrap.innerHTML=`<button onclick="saveJobCard()" class="btn btn-primary" style="width:100%;font-size:15px;padding:13px;border-radius:10px;letter-spacing:.3px;min-height:48px;">💾 Save Log</button>`;
   container.appendChild(saveWrap);
-  // Scroll to today's day section if it's in the job's date range
+  jcShowSaveBanner();
+  // Scroll to today's day section if it's in the job's date range.
+  // A failed save has its own banner; don't scroll that off the screen.
+  if(_jcSaveIssue) return;
   const _todayKey=new Date().toISOString().slice(0,10).replace(/-/g,'');
   const _todayEl=document.getElementById('jcday-'+_todayKey);
   if(_todayEl) setTimeout(()=>_todayEl.scrollIntoView({behavior:'smooth',block:'start'}),60);
@@ -7885,6 +8152,7 @@ function jcLogSet(ds,field,val){
   if(!job.dayLogs) job.dayLogs={};
   if(!job.dayLogs[ds]) job.dayLogs[ds]={};
   job.dayLogs[ds][field]=val;
+  jcMarkUnsaved();
   if(field==='startTime'||field==='endTime'){
     jcHours(ds.replace(/-/g,''),ds);
     // Re-render crew rows so anyone still inheriting the site time (no override of
@@ -8085,6 +8353,7 @@ function jcLogSetCrew(ds,idx,field,val){
   _jcMigrateCrewPresent(job.dayLogs[ds]);
   const c=job.dayLogs[ds].crewPresent[idx]; if(!c) return;
   c[field]=val;
+  jcMarkUnsaved();
 }
 
 // Format a crew member's time input (same smart-parse as fmtTimeInput but saves to crewPresent)
@@ -8284,6 +8553,7 @@ function jcLogSetMaterial(ds,idx,field,val){
   const m=job.dayLogs[ds].materialsUsed[idx]; if(!m) return;
   m[field]=val;
   if(field==='qty') _jcCaptureUnitCost(m);
+  jcMarkUnsaved();
 }
 
 function jcParseClockMinutes(t){
@@ -10480,7 +10750,8 @@ async function saveJobCard(){
   }
   document.getElementById('jc-name').textContent=job.customer||'Unnamed Job';
   const _saved=await saveJobRecords(job.id);
-  if(!_saved) return;
+  if(!_saved){ jcPaintUnsaved(); return; }
+  jcClearUnsaved();
   // ── Sync value back to the board card ────────────────────────────────────
   // Reconciles against the loaded data cache (_lastJobRows), NOT the DOM — matching by raw
   // `.lead-name` textContent breaks whenever the board customer field carries a baked-in
@@ -21096,6 +21367,7 @@ async function deleteMaintEntry(id){
       <div style="flex:1;min-width:0;">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <div class="modal-title" id="jc-name" style="font-size:17px;"></div>
+          <span id="jc-unsaved-pill">Unsaved</span>
           <select id="jc-status-sel" onchange="jcSetStatus(this.value)" style="font-size:10px;font-family:'DM Mono',monospace;padding:3px 10px;border-radius:20px;cursor:pointer;font-weight:700;background:transparent;outline:none;letter-spacing:.5px;border:1px solid;"></select>
         </div>
         <div id="jc-meta" style="font-size:11.5px;color:var(--text3);margin-top:5px;font-family:'DM Mono',monospace;"></div>
@@ -21118,15 +21390,15 @@ async function deleteMaintEntry(id){
     <!-- Info Pane -->
     <div id="jc-pane-info" class="modal-body">
       <div class="form-row">
-        <div class="form-group"><label class="form-label">Customer Name</label><input class="form-input" id="jc-customer" placeholder="Customer name"/></div>
-        <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="jc-phone" type="tel" placeholder="(314) 555-0100" oninput="fmtPhone(this)"/></div>
+        <div class="form-group"><label class="form-label">Customer Name</label><input class="form-input" id="jc-customer" placeholder="Customer name" oninput="jcMarkUnsaved()"/></div>
+        <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="jc-phone" type="tel" placeholder="(314) 555-0100" oninput="fmtPhone(this);jcMarkUnsaved()"/></div>
       </div>
       <div class="form-group">
         <label class="form-label">Job Site Address</label>
         <div style="display:flex;gap:8px;align-items:flex-start;">
           <div style="position:relative;flex:1;">
             <input class="form-input" id="jc-address" placeholder="123 Main St, City, MO" style="width:100%;"
-              oninput="jcAddrInput(this.value)"
+              oninput="jcAddrInput(this.value);jcMarkUnsaved()"
               onblur="setTimeout(()=>{const d=document.getElementById('jc-addr-drop');if(d)d.style.display='none';},200)"
               autocomplete="off"/>
             <div id="jc-addr-drop" class="addr-drop" style="display:none;"></div>
@@ -21136,18 +21408,18 @@ async function deleteMaintEntry(id){
       </div>
       <div class="form-group">
         <label class="form-label">Scope / Notes</label>
-        <textarea class="form-textarea" id="jc-scope" placeholder="Sq footage, what's included, what's excluded, surface conditions, access codes, parking..." oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'" style="overflow-y:auto;resize:none;min-height:120px;"></textarea>
+        <textarea class="form-textarea" id="jc-scope" placeholder="Sq footage, what's included, what's excluded, surface conditions, access codes, parking..." oninput="jcMarkUnsaved();this.style.height='auto';this.style.height=this.scrollHeight+'px'" style="overflow-y:auto;resize:none;min-height:120px;"></textarea>
       </div>
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Job Type</label>
-          <select class="form-select" id="jc-jobtype"></select>
+          <select class="form-select" id="jc-jobtype" onchange="jcMarkUnsaved()"></select>
         </div>
         <div class="form-group" id="jc-value-group">
           <label class="form-label">Job Value ($)</label>
           <div style="position:relative;">
             <span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text2);font-weight:600;">$</span>
-            <input class="form-input" id="jc-value" type="number" placeholder="0" style="padding-left:26px;"/>
+            <input class="form-input" id="jc-value" type="number" placeholder="0" style="padding-left:26px;" oninput="jcMarkUnsaved()"/>
           </div>
         </div>
       </div>
