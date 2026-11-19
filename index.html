@@ -265,6 +265,9 @@
   .form-input,.form-select,.form-textarea{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 12px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13.5px;outline:none;transition:border-color .15s;}
   .form-input:focus,.form-select:focus,.form-textarea:focus{border-color:var(--accent);}
   .form-select{cursor:pointer;}
+  .form-input.lead-bad,.form-select.lead-bad{border-color:var(--red);background:var(--red-dim);}
+  .lead-field-msg{font-size:12.5px;color:var(--red);margin-top:5px;line-height:1.35;}
+  .lead-legacy{font-size:12.5px;color:var(--text2);margin-top:6px;line-height:1.35;}
   .form-textarea{resize:vertical;min-height:70px;}
   .form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
   /* Job Card → Materials tab planned-materials row (product / qty / unit / remove) */
@@ -2266,7 +2269,7 @@
 
 <div class="modal-overlay" id="modal-lead">
   <div class="modal">
-    <div class="modal-header"><div class="modal-title">Add New Lead</div><button class="modal-close" onclick="closeModal('lead');editingLeadIdx=null;document.querySelector('#modal-lead .modal-title').textContent='Add New Lead';document.querySelector('#modal-lead .btn-primary').textContent='Save Lead';">×</button></div>
+    <div class="modal-header"><div class="modal-title">Add New Lead</div><button class="modal-close" onclick="closeModal('lead');editingLeadIdx=null;document.querySelector('#modal-lead .modal-title').textContent='Add New Lead';document.querySelector('#modal-lead .modal-footer .btn-primary').textContent='Save Lead';">×</button></div>
     <div class="modal-body">
       <!-- ✨ Quick smart entry — paste freeform info and auto-fill the fields below -->
       <div style="background:var(--surface2);border:1px dashed var(--border2);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:16px;">
@@ -2294,7 +2297,28 @@
         <div id="lead-address-suggestions" style="display:none;background:var(--surface2);border:1px solid var(--border2);border-radius:0 0 var(--radius-sm) var(--radius-sm);margin-top:-1px;overflow:hidden;z-index:50;position:relative;"></div>
         <div id="lead-address-verified" style="display:none;font-size:11.5px;color:var(--green);margin-top:5px;font-family:'DM Mono',monospace;">✓ Address verified</div>
       </div>
-      <div class="form-group"><label class="form-label">Source</label><select class="form-select" id="lead-source"><option>Facebook / Social</option><option>Google / Website</option><option>Referral</option><option>Door Hanger / Flyer</option><option>Repeat Customer</option><option>Other</option></select></div>
+      <div class="form-group" id="lead-source-group">
+        <label class="form-label" for="lead-source">Source</label>
+        <select class="form-select" id="lead-source" onchange="leadSourceChanged(true)">
+          <option value="">Select a source</option>
+          <option>Google Maps/GBP</option>
+          <option>Google search/website</option>
+          <option>AI assistant (ChatGPT, Gemini, etc.)</option>
+          <option>Facebook/Instagram</option>
+          <option>Yelp/Angi/other directory</option>
+          <option>Referral (name who)</option>
+          <option>Repeat customer</option>
+          <option>Truck/yard sign</option>
+          <option>Other (describe)</option>
+        </select>
+        <div id="lead-source-legacy" class="lead-legacy" hidden></div>
+        <div id="lead-source-err" class="lead-field-msg" hidden>Pick a source.</div>
+      </div>
+      <div class="form-group" id="lead-source-detail-wrap" hidden>
+        <label class="form-label" id="lead-source-detail-label" for="lead-source-detail">Who referred them</label>
+        <input class="form-input" id="lead-source-detail" placeholder="Name" autocomplete="off" oninput="clearLeadField('lead-source-detail','lead-source-detail-err')"/>
+        <div id="lead-source-detail-err" class="lead-field-msg" hidden>Name who referred them.</div>
+      </div>
       <div class="form-group"><label class="form-label">Notes</label><textarea class="form-textarea" id="lead-notes" placeholder="Details, scope, special requests..."></textarea></div>
     </div>
     <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal('lead')">Cancel</button><button class="btn btn-primary" onclick="saveLead()">Save Lead</button></div>
@@ -3158,16 +3182,22 @@ async function loadTodos(){
 }
 
 // ── SUPABASE SYNC FUNCTIONS ────────────────────────────────────────────────────
-// Secondary phone is optional. If the leads table has no phone2 column yet, PostgREST
-// rejects the write — retry once without it so the rest of the lead still saves.
+// Secondary phone and the referral/other note are optional columns. If the leads
+// table does not have one yet, PostgREST rejects the write — retry once without
+// that column so the rest of the lead still saves. source itself is always sent.
 let _leadsPhone2Ok=true;
-function _leadDbRow(lead, includePhone2){
+let _leadsSourceDetailOk=true;
+function _leadDbRow(lead, includePhone2, includeSourceDetail){
   const row={name:lead.name,phone:lead.phone||'',email:lead.email||'',job_type:lead.jobType||'',cust_type:lead.custType||'',sqft:lead.sqft||'',value:lead.value||'',address:lead.address||'',source:lead.source||'',notes:lead.notes||'',stage:lead.stage||'new',detail:lead.detail||'',date_added:lead.date||''};
   if(includePhone2) row.phone2=lead.phone2||'';
+  if(includeSourceDetail) row.source_detail=lead.sourceDetail?String(lead.sourceDetail):null;
   return row;
 }
-function _phone2ColumnMissing(status, text){
-  return (status===400||status===404) && /phone2/i.test(text||'') && /(column|schema cache|PGRST204|does not exist)/i.test(text||'');
+function _leadColumnMissing(status, text, column){
+  if(status!==400&&status!==404) return false;
+  const body=text||'';
+  if(!/(column|schema cache|PGRST204|does not exist)/i.test(body)) return false;
+  return body.toLowerCase().indexOf(String(column).toLowerCase())!==-1;
 }
 async function _leadDbSend(method, url, row){
   await fpEnsureSession();
@@ -3180,15 +3210,25 @@ async function _leadDbSend(method, url, row){
 async function dbSaveLead(lead){
   const isNew=!lead.db_id;
   let includePhone2=_leadsPhone2Ok!==false;
-  let row=_leadDbRow(lead, includePhone2);
+  let includeSourceDetail=_leadsSourceDetailOk!==false;
   const url=lead.db_id?`${SUPABASE_URL}/rest/v1/leads?id=eq.${lead.db_id}`:`${SUPABASE_URL}/rest/v1/leads`;
   const method=lead.db_id?'PATCH':'POST';
-  let result=await _leadDbSend(method, url, row);
-  if(!result.ok && includePhone2 && _phone2ColumnMissing(result.status, result.text)){
-    _leadsPhone2Ok=false;
-    includePhone2=false;
-    row=_leadDbRow(lead, false);
-    result=await _leadDbSend(method, url, row);
+  const send=()=>_leadDbSend(method, url, _leadDbRow(lead, includePhone2, includeSourceDetail));
+  let result=await send();
+  for(let i=0;i<2 && !result.ok;i++){
+    if(includePhone2 && _leadColumnMissing(result.status, result.text, 'phone2')){
+      _leadsPhone2Ok=false;
+      includePhone2=false;
+      result=await send();
+      continue;
+    }
+    if(includeSourceDetail && _leadColumnMissing(result.status, result.text, 'source_detail')){
+      _leadsSourceDetailOk=false;
+      includeSourceDetail=false;
+      result=await send();
+      continue;
+    }
+    break;
   }
   if(lead.db_id){
     if(!result.ok){ showSyncStatus('⚠ Save failed – check connection','var(--red)'); return false; }
@@ -3198,6 +3238,7 @@ async function dbSaveLead(lead){
     lead.db_id=created.id;
   }
   if(includePhone2) _leadsPhone2Ok=true;
+  if(includeSourceDetail) _leadsSourceDetailOk=true;
   logAudit(isNew?'lead_created':'lead_updated',lead.name||'Lead',lead.stage?('Stage: '+lead.stage):'');
   showSyncStatus('✓ Synced');
   return true;
@@ -3208,7 +3249,7 @@ async function loadLeads(){
   if(!_isOwnerSession()){ LEADS=[]; return; }
   const got=await sb.getResult('leads');
   if(!got.ok){ console.error('loadLeads: read failed — keeping leads already in memory'); return; }
-  LEADS=got.rows.map(r=>({db_id:r.id,name:r.name,phone:r.phone,phone2:r.phone2||'',email:r.email,jobType:r.job_type,custType:r.cust_type,sqft:r.sqft,value:r.value,address:r.address,source:r.source,notes:r.notes,stage:r.stage,detail:r.detail,date:r.date_added}));
+  LEADS=got.rows.map(r=>({db_id:r.id,name:r.name,phone:r.phone,phone2:r.phone2||'',email:r.email,jobType:r.job_type,custType:r.cust_type,sqft:r.sqft,value:r.value,address:r.address,source:r.source,sourceDetail:r.source_detail||'',notes:r.notes,stage:r.stage,detail:r.detail,date:r.date_added}));
   _leadsLoadOk=true;
 }
 
@@ -14530,6 +14571,89 @@ function leadSmartParse(){
   if(st){ if(filled.length){ st.textContent='✓ Filled '+filled.join(', ')+' — review below'; st.style.color='var(--green)'; } else { st.textContent='Couldn’t detect fields — please fill them in manually'; st.style.color='var(--text3)'; } }
 }
 
+const LEAD_SOURCES=[
+  'Google Maps/GBP',
+  'Google search/website',
+  'AI assistant (ChatGPT, Gemini, etc.)',
+  'Facebook/Instagram',
+  'Yelp/Angi/other directory',
+  'Referral (name who)',
+  'Repeat customer',
+  'Truck/yard sign',
+  'Other (describe)',
+];
+function _leadSourceDetailSpec(source){
+  if(source==='Referral (name who)') return {label:'Who referred them', placeholder:'Name', missing:'Name who referred them.'};
+  if(source==='Other (describe)') return {label:'Describe the source', placeholder:'Short description', missing:'Describe this source.'};
+  return null;
+}
+function clearLeadField(inputId, msgId){
+  const el=document.getElementById(inputId);
+  const msg=document.getElementById(msgId);
+  if(el) el.classList.remove('lead-bad');
+  if(msg) msg.hidden=true;
+}
+function _markLeadField(inputId, msgId, text){
+  const el=document.getElementById(inputId);
+  const msg=document.getElementById(msgId);
+  if(el) el.classList.add('lead-bad');
+  if(msg){ msg.hidden=false; if(text) msg.textContent=text; }
+}
+function leadSourceChanged(fromUser){
+  const source=document.getElementById('lead-source')?.value||'';
+  const spec=_leadSourceDetailSpec(source);
+  const wrap=document.getElementById('lead-source-detail-wrap');
+  if(wrap) wrap.hidden=!spec;
+  if(spec){
+    const lab=document.getElementById('lead-source-detail-label');
+    const inp=document.getElementById('lead-source-detail');
+    if(lab) lab.textContent=spec.label;
+    if(inp) inp.placeholder=spec.placeholder;
+    if(fromUser&&inp) inp.value='';
+  }
+  clearLeadField('lead-source','lead-source-err');
+  if(fromUser) clearLeadField('lead-source-detail','lead-source-detail-err');
+}
+function setLeadSourceForm(source, detail, showLegacy){
+  clearLeadField('lead-source','lead-source-err');
+  clearLeadField('lead-source-detail','lead-source-detail-err');
+  const sel=document.getElementById('lead-source');
+  const legacy=document.getElementById('lead-source-legacy');
+  const stored=source==null?'':String(source);
+  const known=LEAD_SOURCES.indexOf(stored)!==-1;
+  if(sel) sel.value=known?stored:'';
+  if(legacy){
+    if(!showLegacy||known){ legacy.hidden=true; legacy.textContent=''; }
+    else { legacy.hidden=false; legacy.textContent=stored.trim()?('Legacy: '+stored):'Legacy: (blank)'; }
+  }
+  const inp=document.getElementById('lead-source-detail');
+  if(inp) inp.value=known?(detail||''):'';
+  leadSourceChanged(false);
+}
+function readLeadSource(){
+  const sel=document.getElementById('lead-source');
+  const source=(sel?.value||'').trim();
+  clearLeadField('lead-source','lead-source-err');
+  clearLeadField('lead-source-detail','lead-source-detail-err');
+  if(LEAD_SOURCES.indexOf(source)===-1){
+    _markLeadField('lead-source','lead-source-err','Pick a source.');
+    try{ sel&&sel.focus(); }catch(e){}
+    return null;
+  }
+  const spec=_leadSourceDetailSpec(source);
+  let sourceDetail='';
+  if(spec){
+    const inp=document.getElementById('lead-source-detail');
+    sourceDetail=(inp?.value||'').trim();
+    if(!sourceDetail){
+      _markLeadField('lead-source-detail','lead-source-detail-err',spec.missing);
+      try{ inp&&inp.focus(); }catch(e){}
+      return null;
+    }
+  }
+  return {source, sourceDetail};
+}
+
 let _targetStage = 'new';
 function openLeadModalForStage(stage){
   _targetStage = stage;
@@ -14538,11 +14662,12 @@ function openLeadModalForStage(stage){
   ['lead-name','lead-phone','lead-phone2','lead-email','lead-sqft','lead-value','lead-address','lead-notes','lead-smart'].forEach(id=>{
     const el=document.getElementById(id); if(el) el.value='';
   });
+  setLeadSourceForm('','');
   const _ss=document.getElementById('lead-smart-status'); if(_ss) _ss.textContent='';
   const lv=document.getElementById('lead-address-verified');
   if(lv) lv.style.display='none';
   document.querySelector('#modal-lead .modal-title').textContent = 'Add Lead — '+stageLabelFull(stage);
-  document.querySelector('#modal-lead .btn-primary').textContent = 'Save Lead';
+  document.querySelector('#modal-lead .modal-footer .btn-primary').textContent = 'Save Lead';
   openModal('lead');
 }
 
@@ -15149,11 +15274,11 @@ function editLead(idx){
   document.getElementById('lead-sqft').value    = l.sqft    || '';
   document.getElementById('lead-value').value   = l.value   || '';
   document.getElementById('lead-address').value = l.address || '';
-  document.getElementById('lead-source').value  = l.source  || 'Facebook / Social';
+  setLeadSourceForm(l.source, l.sourceDetail, true);
   document.getElementById('lead-notes').value   = l.notes   || '';
   // Change modal title and save button label
   document.querySelector('#modal-lead .modal-title').textContent = 'Edit Lead';
-  document.querySelector('#modal-lead .btn-primary').textContent = 'Save Changes';
+  document.querySelector('#modal-lead .modal-footer .btn-primary').textContent = 'Save Changes';
   openModal('lead');
 }
 
@@ -16058,14 +16183,17 @@ function saveLead(){
   const sqft  = document.getElementById('lead-sqft')?.value.trim();
   const value = document.getElementById('lead-value')?.value.trim();
   const address = document.getElementById('lead-address')?.value.trim();
-  const source= document.getElementById('lead-source')?.value;
   const notes = document.getElementById('lead-notes')?.value.trim();
 
   if(!name){ showToast('Please enter a customer name.'); return; }
+  const picked=readLeadSource();
+  if(!picked) return;
+  const source=picked.source;
+  const sourceDetail=picked.sourceDetail;
 
   const leadObj = {
-    name, phone, phone2, email, jobType, custType, sqft, value, address, source, notes,
-    detail: [sqft?sqft+' sqft':'', address?address.split(',')[0]:'', source].filter(Boolean).join(' · '),
+    name, phone, phone2, email, jobType, custType, sqft, value, address, source, sourceDetail, notes,
+    detail: [sqft?sqft+' sqft':'', address?address.split(',')[0]:'', source, sourceDetail].filter(Boolean).join(' · '),
     date: editingLeadIdx!==null ? LEADS[editingLeadIdx].date : 'Added '+new Date().toLocaleDateString('en-US',{month:'short',day:'numeric'}),
     stage: editingLeadIdx!==null ? LEADS[editingLeadIdx].stage : (_targetStage||'new'),
   };
@@ -16087,10 +16215,11 @@ function saveLead(){
   ['lead-name','lead-phone','lead-phone2','lead-email','lead-sqft','lead-value','lead-address','lead-notes'].forEach(id=>{
     const el=document.getElementById(id); if(el) el.value='';
   });
+  setLeadSourceForm('','');
   const lv = document.getElementById('lead-address-verified');
   if(lv) lv.style.display='none';
   document.querySelector('#modal-lead .modal-title').textContent = 'Add New Lead';
-  document.querySelector('#modal-lead .btn-primary').textContent = 'Save Lead';
+  document.querySelector('#modal-lead .modal-footer .btn-primary').textContent = 'Save Lead';
 
   _targetStage = 'new';
   closeModal('lead');
