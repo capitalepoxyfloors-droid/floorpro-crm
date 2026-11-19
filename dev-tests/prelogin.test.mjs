@@ -22,6 +22,7 @@ const state = {
   failSettingsWrite: false,
   failSlotsRead: false,
   phone2Column: true,
+  sourceDetailColumn: true,
   nextLeadId: 1,
   nextSlotId: 1,
 };
@@ -97,6 +98,13 @@ function mockFetch(url, opts = {}) {
     return Promise.resolve(jsonResponse(state.leads));
   }
   if (table === 'leads' && (method === 'POST' || method === 'PATCH')) {
+    const sentDetail = body && Object.prototype.hasOwnProperty.call(body, 'source_detail');
+    if (sentDetail && state.sourceDetailColumn === false) {
+      return Promise.resolve(jsonResponse({
+        code: 'PGRST204',
+        message: "Could not find the 'source_detail' column of 'leads' in the schema cache",
+      }, 400));
+    }
     const sentPhone2 = body && Object.prototype.hasOwnProperty.call(body, 'phone2');
     if (sentPhone2 && !state.phone2Column) {
       return Promise.resolve(jsonResponse({
@@ -451,6 +459,146 @@ test('pre-login safety fixes against a mocked backend', async () => {
   assert.equal(Object.prototype.hasOwnProperty.call(leadPosts[1].body, 'phone2'), false);
   assert.equal(state.leads[0].name, 'Sam Example');
   assert.equal(state.leads[0].phone, '314-555-0102');
+
+  // ── Source is a required choice. Legacy values stay until a new one is saved. ──
+  state.phone2Column = true;
+  state.sourceDetailColumn = true;
+  setLex('_leadsPhone2Ok', true);
+  setLex('_leadsSourceDetailOk', true);
+  assert.match(w.document.querySelector('label[for="lead-source"]').textContent, /Source\s*\*/);
+  const sourceOptions = [...w.document.getElementById('lead-source').options].map(o => o.value);
+  assert.deepEqual(sourceOptions, ['', ...lex('LEAD_SOURCES')]);
+  assert.deepEqual([...lex('LEAD_SOURCES')], [
+    'Google Maps/GBP',
+    'Google search/website',
+    'AI assistant (ChatGPT, Gemini, etc.)',
+    'Facebook/Instagram',
+    'Yelp/Angi/other directory',
+    'Referral (name who)',
+    'Repeat customer',
+    'Truck/yard sign',
+    'Other (describe)',
+  ]);
+
+  const leadsBefore = lex('LEADS').length;
+  call('openLeadModalForStage', 'new');
+  w.document.getElementById('lead-name').value = 'No Source';
+  assert.equal(w.document.getElementById('lead-source').value, '');
+  assert.equal(w.document.getElementById('lead-source-legacy').hidden, true);
+  assert.equal(w.document.getElementById('lead-source-detail-wrap').hidden, true);
+  call('saveLead');
+  assert.equal(lex('LEADS').length, leadsBefore);
+  assert.equal(w.document.getElementById('modal-lead').classList.contains('open'), true);
+  assert.equal(w.document.getElementById('lead-source').classList.contains('lead-bad'), true);
+  assert.equal(w.document.getElementById('lead-source-err').hidden, false);
+  assert.equal(w.document.getElementById('lead-source-err').textContent, 'Pick a source.');
+
+  w.document.getElementById('lead-source').value = 'Referral (name who)';
+  call('leadSourceChanged', true);
+  assert.equal(w.document.getElementById('lead-source-detail-wrap').hidden, false);
+  assert.equal(w.document.getElementById('lead-source-detail-label').textContent, 'Who referred them');
+  call('saveLead');
+  assert.equal(lex('LEADS').length, leadsBefore);
+  assert.equal(w.document.getElementById('lead-source-detail').classList.contains('lead-bad'), true);
+  assert.equal(w.document.getElementById('lead-source-detail-err').textContent, 'Name who referred them.');
+
+  w.document.getElementById('lead-source').value = 'Other (describe)';
+  call('leadSourceChanged', true);
+  assert.equal(w.document.getElementById('lead-source-detail-label').textContent, 'Describe the source');
+  assert.equal(w.document.getElementById('lead-source-detail').value, '');
+  call('saveLead');
+  assert.equal(w.document.getElementById('lead-source-detail-err').textContent, 'Describe this source.');
+
+  w.document.getElementById('lead-source-detail').value = '  saw the truck  ';
+  const detailMark = calls.length;
+  call('saveLead');
+  assert.equal(lex('LEADS').length, leadsBefore + 1);
+  const added = lex('LEADS')[lex('LEADS').length - 1];
+  assert.equal(added.source, 'Other (describe)');
+  assert.equal(added.sourceDetail, 'saw the truck');
+  assert.equal(w.document.getElementById('modal-lead').classList.contains('open'), false);
+  await new Promise(r => setTimeout(r, 40));
+  const detailPosts = calls.slice(detailMark).filter(c => c.url.includes('/rest/v1/leads') && c.method === 'POST');
+  assert.equal(detailPosts.length, 1);
+  assert.equal(detailPosts[0].body.source, 'Other (describe)');
+  assert.equal(detailPosts[0].body.source_detail, 'saw the truck');
+
+  call('openLeadModalForStage', 'new');
+  w.document.getElementById('lead-name').value = 'Referred';
+  w.document.getElementById('lead-source').value = 'Referral (name who)';
+  call('leadSourceChanged', true);
+  w.document.getElementById('lead-source-detail').value = 'Dana';
+  call('saveLead');
+  const referred = lex('LEADS')[lex('LEADS').length - 1];
+  assert.equal(referred.source, 'Referral (name who)');
+  assert.equal(referred.sourceDetail, 'Dana');
+
+  const legacyValues = ['Wave', 'Facebook / Social', 'Other', 'Google / Website', ''];
+  for (const legacySource of legacyValues) {
+    lex('LEADS').push({ name: 'Legacy ' + (legacySource || 'blank'), source: legacySource, sourceDetail: '', phone: '', phone2: '', email: '', stage: 'new', notes: '', detail: '', date: 'Added Nov 1' });
+    const idx = lex('LEADS').length - 1;
+    call('editLead', idx);
+    assert.equal(w.document.getElementById('lead-source').value, '', 'legacy value must not be selected: ' + JSON.stringify(legacySource));
+    assert.equal(w.document.getElementById('lead-source-legacy').hidden, false);
+    assert.equal(w.document.getElementById('lead-source-legacy').textContent, legacySource.trim() ? ('Old source: ' + legacySource.trim() + '. Pick a real source above.') : 'Old source: none. Pick a real source above.');
+    assert.equal(lex('LEADS')[idx].source, legacySource);
+    call('saveLead');
+    assert.equal(lex('LEADS')[idx].source, legacySource, 'saving without a new source must not change it');
+    assert.equal(w.document.getElementById('modal-lead').classList.contains('open'), true);
+  }
+  const waveIdx = lex('LEADS').findIndex(l => l.name === 'Legacy Wave');
+  call('editLead', waveIdx);
+  w.document.getElementById('lead-source').value = 'Google Maps/GBP';
+  call('leadSourceChanged', true);
+  call('saveLead');
+  assert.equal(lex('LEADS')[waveIdx].source, 'Google Maps/GBP');
+  assert.equal(lex('LEADS')[waveIdx].sourceDetail, '');
+
+  lex('LEADS').push({ name: 'Truck Lead', source: 'Truck/yard sign', sourceDetail: '', phone: '', phone2: '', stage: 'quoted', notes: '', detail: '', date: 'Added Nov 2' });
+  const truckIdx = lex('LEADS').length - 1;
+  call('editLead', truckIdx);
+  assert.equal(w.document.getElementById('lead-source').value, 'Truck/yard sign');
+  assert.equal(w.document.getElementById('lead-source-legacy').hidden, true);
+  assert.equal(w.document.getElementById('lead-source-detail-wrap').hidden, true);
+  setLex('editingLeadIdx', null);
+
+  await new Promise(r => setTimeout(r, 40));
+  state.sourceDetailColumn = false;
+  setLex('_leadsSourceDetailOk', true);
+  const dropped = { name: 'Detail Later', phone: '', phone2: '', email: '', stage: 'new', source: 'Referral (name who)', sourceDetail: 'Pat at the shop', notes: '', detail: '', date: '' };
+  const dropMark = calls.length;
+  const dropOk = await call('dbSaveLead', dropped);
+  assert.equal(dropOk, true);
+  const dropPosts = calls.slice(dropMark).filter(c => c.url.includes('/rest/v1/leads') && c.method === 'POST' && c.body && c.body.name === 'Detail Later');
+  assert.equal(dropPosts.length, 2, 'missing source_detail column should retry once');
+  assert.equal(dropPosts[0].body.source, 'Referral (name who)');
+  assert.equal(dropPosts[0].body.source_detail, 'Pat at the shop');
+  assert.equal(Object.prototype.hasOwnProperty.call(dropPosts[1].body, 'source_detail'), false);
+  assert.equal(dropPosts[1].body.source, 'Referral (name who)');
+  state.sourceDetailColumn = true;
+  setLex('_leadsSourceDetailOk', true);
+
+  // ── Needs source is a read-only marker and filter. It does not write. ──
+  lex('LEADS').push({ name: 'Known Source Lead', source: 'Repeat customer', sourceDetail: '', stage: 'new', phone: '', phone2: '', notes: '', detail: '', date: '' });
+  lex('LEADS').push({ name: 'Wave Needs', source: 'Wave', sourceDetail: '', stage: 'quoted', phone: '', phone2: '', notes: 'Wave #1 | test', detail: '', date: '' });
+  const waveBefore = lex('LEADS').find(l => l.name === 'Wave Needs').source;
+  call('renderPipeline');
+  const board = w.document.getElementById('pipeline-board');
+  const waveRow = [...board.querySelectorAll('.jlist-row')].find(row => row.textContent.includes('Wave Needs'));
+  const knownRow = [...board.querySelectorAll('.jlist-row')].find(row => row.textContent.includes('Known Source Lead'));
+  assert.ok(waveRow, 'legacy lead is on the list');
+  assert.match(waveRow.textContent, /Needs source/);
+  assert.ok(knownRow);
+  assert.doesNotMatch(knownRow.textContent, /Needs source/);
+  assert.match(w.document.getElementById('pipe-needs-source').textContent, /Needs source/);
+  call('togglePipeNeedsSource');
+  const filtered = w.document.getElementById('pipeline-board').textContent;
+  assert.match(filtered, /Wave Needs/);
+  assert.doesNotMatch(filtered, /Known Source Lead/);
+  assert.equal(w.document.getElementById('pipe-needs-source').classList.contains('is-on'), true);
+  assert.equal(lex('LEADS').find(l => l.name === 'Wave Needs').source, waveBefore);
+  call('togglePipeNeedsSource');
+  assert.equal(w.document.getElementById('pipe-needs-source').classList.contains('is-on'), false);
 
   // ── Main screens still render on the sample data ──
   call('renderSchedule');
