@@ -632,6 +632,140 @@ test('a saved unit cost of 0 is priced from the kit, and a blank crew price is n
   assert.equal(ev(`getJobRecord('zero-cost').dayLogs['${ds}'].materialsUsed[0].unitCost`), 700 / 15);
 });
 
+test('logged units convert into the priced unit, and a mismatch is not costed', async () => {
+  await freshCrewAndSettings();
+  const ds = '2026-11-18';
+  ev(`MATERIALS.splice(0, MATERIALS.length,
+    { db_id: 'rs', name: 'Rapid Set 100', unit: '2 Gallon', price: '93.32' },
+    { db_id: 'gal', name: 'Polyurea', unit: 'Gallon', price: '80' },
+    { db_id: 'kit', name: 'Urethane Kit', unit: '1.075 Gallon', price: '212.30' },
+    { db_id: 'stick', name: 'Wall Base', unit: '4-ft stick', price: '8' },
+    { db_id: 'sand', name: 'Broadcast Sand', unit: 'Lbs', price: '2.50' },
+    { db_id: 'e15', name: 'Epoxy 15', unit: '15 Gallon', price: '700' }
+  );`);
+  // 32 fl oz = 0.25 gal. $93.32 / 2 gal = $46.66/gal. 0.25 * 46.66 = $11.67.
+  assert.equal(ev(`jcFmtMeasure(32/128)`), '0.25');
+  assert.equal(ev(`jcFmtMeasure(22/4)`), '5.5');
+  const oz = plain(ev(`jcMaterialUsage(32, 'Oz', '2 Gallon')`));
+  assert.equal(oz.ok, true);
+  assert.equal(oz.baseQty, 0.25);
+  assert.equal(plain(ev(`jcMaterialUsage(1, 'Quart', 'Gallon')`)).baseQty, 0.25);
+  assert.equal(plain(ev(`jcMaterialUsage(1, 'Pint', 'Gallon')`)).baseQty, 0.125);
+  assert.equal(plain(ev(`jcMaterialUsage(1, 'Gallons ', '2 Gallon')`)).mode, 'plain');
+  assert.equal(plain(ev(`jcMaterialUsage(1, 'Kits', '1.075 Gallon')`)).mode, 'package');
+  assert.equal(plain(ev(`jcMaterialUsage(1, 'EA', '4-ft stick')`)).mode, 'package');
+  assert.equal(plain(ev(`jcMaterialUsage(8, 'Oz', 'Lbs')`)).ok, false);
+  assert.equal(plain(ev(`jcMaterialUsage(1, 'Ea', 'Gallon')`)).ok, false);
+
+  putJob({
+    id: 'units', customer: 'Wallace - Garage', status: 'complete', value: '4000',
+    startDate: ds, endDate: ds,
+    dayLogs: { [ds]: { materialsUsed: [
+      { matIdx: 0, name: 'Rapid Set 100', qty: '32', usageUnit: 'Oz', matId: 'rs', unitCost: 46.66 },
+      { matIdx: 0, name: 'Rapid Set 100', qty: '1', usageUnit: 'Gallon', matId: 'rs', unitCost: 46.66 },
+      { matIdx: 1, name: 'Polyurea', qty: '1', usageUnit: 'Quart', matId: 'gal' },
+      { matIdx: 1, name: 'Polyurea', qty: '1', usageUnit: 'Pint', matId: 'gal' },
+      { matIdx: 1, name: 'Polyurea', qty: '1', usageUnit: 'Gallons', matId: 'gal' },
+      { matIdx: 1, name: 'Polyurea', qty: '1', usageUnit: 'Gallons ', matId: 'gal' },
+      { matIdx: 3, name: 'Wall Base', qty: '22', usageUnit: 'LF', matId: 'stick' },
+      { matIdx: 3, name: 'Wall Base', qty: '22', usageUnit: 'LF', matId: 'stick' },
+      { matIdx: 3, name: 'Wall Base', qty: '30', usageUnit: 'LF', matId: 'stick' },
+      { matIdx: 3, name: 'Cove Base', qty: '1', usageUnit: 'Ea', matId: 'stick' },
+      { matIdx: 3, name: 'Cove Base', qty: '2', usageUnit: 'EA', matId: 'stick' },
+      { matIdx: 2, name: 'Urethane Kit', qty: '2', usageUnit: 'Kits', matId: 'kit', unitCost: 197.49 },
+      { matIdx: 4, name: 'Broadcast Sand', qty: '16', usageUnit: 'Oz', matId: 'sand', unitCost: 2.5 },
+      { matIdx: 5, name: 'Epoxy 15', qty: '6', usageUnit: 'Gallon', matId: 'e15', unitCost: 0 },
+    ] } },
+  });
+  const savedBefore = ev(`JSON.stringify(getJobRecord('units').dayLogs)`);
+  const L = lines('units');
+  assert.equal(ev(`JSON.stringify(getJobRecord('units').dayLogs)`), savedBefore, 'costing does not rewrite the log');
+  const row = (name, unit) => L.matRows.find(r => r.name === name && (unit == null || r.unit === unit));
+  const rapidOz = row('Rapid Set 100', 'Oz');
+  assert.equal(rapidOz.cost, 11.67);
+  assert.equal(rapidOz.note, '= 0.25 gal');
+  assert.equal(rapidOz.unitCost, 46.66);
+  assert.equal(row('Rapid Set 100', 'Gallon').cost, 46.66);
+  assert.equal(row('Polyurea', 'Quart').cost, 20);
+  assert.equal(row('Polyurea', 'Pint').cost, 10);
+  const gallons = L.matRows.find(r => r.name === 'Polyurea' && r.unit !== 'Quart' && r.unit !== 'Pint');
+  assert.equal(gallons.totalQty, 2);
+  assert.equal(gallons.cost, 160);
+  const wall = row('Wall Base');
+  assert.equal(wall.totalQty, 74);
+  assert.equal(wall.cost, 148);
+  assert.equal(wall.note, '= 18.5 sticks');
+  const cove = row('Cove Base');
+  assert.equal(cove.totalQty, 3);
+  assert.equal(cove.cost, 24);
+  assert.equal(row('Urethane Kit').cost, 424.6);
+  assert.equal(row('Urethane Kit').unitCost, 212.3);
+  const sand = row('Broadcast Sand');
+  assert.equal(sand.review, true);
+  assert.equal(sand.cost, 0);
+  assert.equal(row('Epoxy 15').cost, 280.02);
+  assert.equal(row('Epoxy 15').unitCost, 46.67);
+  const priced = L.matRows.filter(r => !r.review).reduce((s, r) => s + r.cost, 0);
+  assert.equal(L.materials, r2(priced));
+  assert.equal(L.matReviewCount, 1);
+  assert.ok(Math.abs(L.materials - (11.67 + 1493.12)) > 100, 'ounces are not priced as gallons');
+
+  ev(`MATERIALS[0].price='200';`);
+  const held = lines('units');
+  assert.equal(held.matRows.find(r => r.name === 'Rapid Set 100' && r.unit === 'Oz').cost, 11.67);
+  ev(`MATERIALS[0].price='93.32';`);
+
+  ev(`document.body.insertAdjacentHTML('beforeend','<div id=jc-costing-content></div><div id=jc-cost-page-content></div>');`);
+  ev(`_jcId='units'; renderJobCosting();`);
+  const card = ev(`document.getElementById('jc-costing-content').textContent`);
+  assert.match(card, /\$11\.67/);
+  assert.match(card, /0\.25 gal/);
+  assert.match(card, /18\.5 sticks/);
+  assert.match(card, /\$280\.02/);
+  assert.match(card, /needs a unit check/);
+  assert.match(card, /Review/);
+  assert.equal(card.includes('$1,493.12'), false);
+  assert.equal(card.includes('$46.66/Oz'), false);
+  assert.equal(card.includes('$2.50/Oz'), false);
+  ev(`renderJobCostingPage();`);
+  assert.match(ev(`document.getElementById('jc-cost-page-content').textContent`), /unit check/);
+
+  // No matId: still qty × the saved rate. Not converted from the catalog.
+  putJob({
+    id: 'nomid', customer: 'Unlinked', status: 'in_progress', value: '100',
+    startDate: ds, endDate: ds,
+    dayLogs: { [ds]: { materialsUsed: [
+      { matIdx: -1, name: 'Rapid Set 100', qty: '32', usageUnit: 'Oz', unitCost: 46.66 },
+    ] } },
+  });
+  const loose = lines('nomid');
+  assert.equal(loose.matRows[0].cost, r2(32 * 46.66));
+  assert.equal(loose.matReviewCount, 0);
+
+  const probe = plain(ev(`(function(){
+    const html = jcDayMatsHtml('${ds}', {materialsUsed:[
+      {matIdx:0,name:'Rapid Set 100',qty:'32',usageUnit:'Oz',matId:'rs'},
+      {matIdx:4,name:'Broadcast Sand',qty:'4',usageUnit:'Lbs',matId:'sand'},
+      {matIdx:-1,name:'Custom',qty:'1',usageUnit:'bucket'}
+    ]});
+    const wrap=document.createElement('div');
+    wrap.innerHTML=html;
+    const selects=[...wrap.querySelectorAll('select.jc-mat-unit')].map(s=>[...s.options].map(o=>o.textContent));
+    return {selects, dollars: html.includes('$'), custom: !!wrap.querySelector('input.jc-mat-unit')};
+  })()`));
+  assert.deepEqual(probe.selects[0], ['Gallon', 'Quart', 'Pint', 'Oz', 'Kit']);
+  assert.deepEqual(probe.selects[1], ['Lbs']);
+  assert.equal(probe.dollars, false);
+  assert.equal(probe.custom, true);
+
+  ev(`_jcId='units'; jcLogPickMaterial('${ds}', 0, {value:'0'});`);
+  assert.equal(ev(`getJobRecord('units').dayLogs['${ds}'].materialsUsed[0].usageUnit`), 'Gallon');
+  ev(`jcLogPickMaterial('${ds}', 0, {value:'3'});`);
+  const stickChoices = plain(ev(`jcUsageUnitChoices('4-ft stick')`));
+  assert.deepEqual(stickChoices, ['LF', 'Ea']);
+  assert.equal(ev(`getJobRecord('units').dayLogs['${ds}'].materialsUsed[0].usageUnit`), '4-ft stick');
+});
+
 test('no page errors', () => {
   assert.deepEqual(consoleErrors.filter(e => !/fetch|network|Not implemented|loadCostingSettings: saved value is not usable/i.test(e)), []);
 });

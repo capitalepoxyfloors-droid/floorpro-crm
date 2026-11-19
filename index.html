@@ -365,6 +365,15 @@
   .jc-pricing-guide{margin-top:14px;background:var(--accent-dim);border:1.5px dashed var(--accent);border-radius:var(--radius-sm);padding:12px 14px;}
   .jc-pricing-title{font-size:13px;font-weight:700;color:var(--accent);margin-bottom:2px;}
   .jc-pricing-note{font-size:11.5px;color:var(--text2);line-height:1.4;margin-bottom:10px;}
+  .jc-mat-row{flex-wrap:wrap;}
+  .jc-mat-row .jc-mat-pick{flex:1 1 150px;min-width:0;font-size:12px;padding:4px 6px;}
+  .jc-mat-row .jc-mat-name{flex:1 1 120px;min-width:0;font-size:12px;padding:4px 6px;}
+  .jc-mat-row .jc-mat-qty{width:72px;flex:none;font-size:12px;padding:4px 6px;}
+  .jc-mat-row .jc-mat-unit{width:108px;flex:none;font-size:12px;padding:4px 6px;}
+  .jc-mat-row .jc-mat-x{background:none;border:none;cursor:pointer;color:var(--danger,#e74c3c);font-size:16px;line-height:1;width:32px;height:32px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .jc-mat-cost-row{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--text2);padding:3px 0;flex-wrap:wrap;align-items:baseline;}
+  .jc-mat-cost-row .jc-mat-cost-name{min-width:0;flex:1 1 180px;}
+  .jc-mat-cost-row .jc-mat-cost-amt{font-family:'DM Mono',monospace;flex:none;}
   @media(max-width:960px){
     .sidebar{width:60px;}
     .logo-mark,.logo-sub,.user-name,.user-role,.nav-item span{display:none;}
@@ -403,6 +412,8 @@
     .jc-mat-plan-row>input:nth-child(2){grid-area:qty;}
     .jc-mat-plan-row>select:nth-child(3){grid-area:unit;}
     .jc-mat-plan-row>button:nth-child(4){grid-area:x;}
+    .jc-mat-row .form-input{min-height:44px;font-size:16px;}
+    .jc-mat-row .jc-mat-x{width:44px;height:44px;font-size:20px;}
     /* Materials price list → 2-column card */
     #page-materials .mat-head{display:none!important;}
     #materials-list .job-row{grid-template-columns:1fr auto!important;gap:3px 10px!important;padding:11px 14px!important;align-items:start!important;}
@@ -8570,14 +8581,14 @@ function jcDayMatsHtml(ds,log){
     const ri=jcResolveMatIdx(m);
     const selVal=ri>=0?ri:'custom';
     rows+=`<div class="jc-mat-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
-      <select class="form-input" style="flex:1;font-size:12px;padding:4px 6px;" onchange="jcLogPickMaterial('${ds}',${i},this)">
+      <select class="form-input jc-mat-pick" onchange="jcLogPickMaterial('${ds}',${i},this)">
         <option value="custom"${m.matIdx===-1?' selected':''}>— Custom —</option>
         ${MATERIALS.map((mat,mi)=>({mat,mi})).sort((a,b)=>a.mat.name.localeCompare(b.mat.name)).map(({mat,mi})=>`<option value="${mi}"${ri===mi?' selected':''}>${mat.name}</option>`).join('')}
       </select>
-      ${m.matIdx===-1?`<input class="form-input" placeholder="Material name" value="${(m.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetMaterial('${ds}',${i},'name',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'name',this.value)" style="flex:1;font-size:12px;padding:4px 6px;"/>`:``}
-      <input class="form-input" type="number" min="0" step="any" placeholder="Qty" value="${m.qty||''}" oninput="jcLogSetMaterial('${ds}',${i},'qty',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'qty',this.value)" style="width:65px;flex:none;font-size:12px;padding:4px 6px;" title="Amount actually used"/>
-      <input class="form-input" placeholder="Unit" value="${(m.usageUnit||'').replace(/"/g,'&quot;')}" oninput="jcLogSetMaterial('${ds}',${i},'usageUnit',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'usageUnit',this.value)" style="width:52px;flex:none;font-size:12px;padding:4px 6px;" title="e.g. Gal, Lbs, SF"/>
-      <button onclick="jcLogRemoveMat('${ds}',${i})" style="background:none;border:none;cursor:pointer;color:var(--danger,#e74c3c);font-size:16px;line-height:1;width:32px;height:32px;display:flex;align-items:center;justify-content:center;flex-shrink:0;" title="Remove">×</button>
+      ${m.matIdx===-1?`<input class="form-input jc-mat-name" placeholder="Material name" value="${(m.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetMaterial('${ds}',${i},'name',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'name',this.value)"/>`:``}
+      <input class="form-input jc-mat-qty" type="number" min="0" step="any" placeholder="Qty" value="${m.qty||''}" oninput="jcLogSetMaterial('${ds}',${i},'qty',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'qty',this.value)">
+      ${jcUsageUnitControl(ds,i,m)}
+      <button class="jc-mat-x" onclick="jcLogRemoveMat('${ds}',${i})" title="Remove">×</button>
     </div>`;
   });
   return `<div id="jc-mats-${ds.replace(/-/g,'')}">`+
@@ -8625,9 +8636,13 @@ function jcLogPickMaterial(ds,idx,sel){
     const mat=MATERIALS[mi];
     if(mat){
       m.matIdx=mi; m.name=mat.name; m.matId=(mat.db_id!=null?mat.db_id:null);   // anchor to permanent id
-      // Strip leading quantity from unit (e.g. "15 Gal" → "Gal", "2 Gallon" → "Gallon")
+      // A pack size is a number and a space ("2 Gallon" → "Gallon"). "4-ft stick" keeps
+      // its 4, because that number is the stick length, not a separate pack count.
       const rawUnit=mat.unit||'';
-      m.usageUnit=rawUnit.replace(/^\d+\.?\d*\s*/,'').trim()||rawUnit;
+      const stripped=rawUnit.replace(/^\d+\.?\d*\s+/,'').trim()||rawUnit;
+      const choices=jcUsageUnitChoices(rawUnit);
+      const canon=choices?jcCanonicalUsageChoice(stripped, choices, rawUnit):'';
+      m.usageUnit=canon||stripped;
       _jcCaptureUnitCost(m);
     }
   }
@@ -9834,6 +9849,11 @@ function jcJobCostLines(job,mode){
   const countedTenths=laborRows.reduce((s,r)=>s+(r.tenths||0),0);
   hours=countedTenths/10;
   // ── MATERIALS ──
+  // A saved unitCost is the price of ONE base unit (one gallon, one foot, one pound),
+  // captured as price ÷ pack size. Logged qty is often in a different unit (Oz, Quart,
+  // LF, Kit). Convert into that base, then multiply. A line whose unit cannot be
+  // converted is left out of the dollar total and marked for review. Lines with no
+  // matId stay on the old qty × rate path and are not re-priced from the catalog.
   let matCost=0;
   const matTotals={};
   allDates.forEach(ds=>{
@@ -9842,27 +9862,68 @@ function jcJobCostLines(job,mode){
       if(!m.name||!m.qty) return;
       const qty=parseFloat(m.qty)||0;
       const ri=jcResolveMatIdx(m);
-      let unitCost=0, pkgNote='';
+      const mat=(ri>=0&&MATERIALS[ri])?MATERIALS[ri]:null;
+      const linked=!!(m.matId!=null && mat && String(mat.unit||'').trim());
+      let unitCost=0, pkgNote='', review=false, baseQty=qty, mode='plain', rateUnit='', per=1, word='', stickPer=0;
       const storedNum=(m.unitCost!=null&&m.unitCost!==''&&!isNaN(parseFloat(m.unitCost)))?parseFloat(m.unitCost):null;
       // A saved 0 is not a captured price (crew used to stamp 0). Price it from
       // the list, same as a missing cost: price ÷ kit size (15 Gallon, 1.075 Gallon).
       const stored=(storedNum!=null&&storedNum>0)?storedNum:null;
-      if(stored!=null){
-        unitCost=Math.round(stored*100)/100;
-        if(ri>=0&&MATERIALS[ri]&&MATERIALS[ri].unit) pkgNote='$'+(parseFloat(MATERIALS[ri].price)||0).toFixed(2)+'/'+MATERIALS[ri].unit;
-      } else if(ri>=0&&MATERIALS[ri]){
-        const mat=MATERIALS[ri];
+      if(linked){
+        const conv=jcMaterialUsage(qty, m.usageUnit, mat.unit);
         const pkgQty=unitPackSize(mat.unit)||1;
-        unitCost=Math.round((parseFloat(mat.price)||0)/pkgQty*100)/100;
+        const perBase=stored!=null?Math.round(stored*100)/100:Math.round(((parseFloat(mat.price)||0)/pkgQty)*100)/100;
+        if(!conv.ok){
+          review=true;
+        } else if(conv.mode==='package'){
+          const pack=unitPackSize(mat.unit)||1;
+          unitCost=stored!=null
+            ? Math.round(perBase*pack*100)/100
+            : Math.round((parseFloat(mat.price)||0)*100)/100;
+          baseQty=conv.baseQty;
+          mode='package';
+          word=conv.word||'';
+          pkgNote=mat.unit?'$'+(parseFloat(mat.price)||0).toFixed(2)+'/'+mat.unit:'';
+        } else {
+          unitCost=perBase>0?perBase:0;
+          baseQty=conv.baseQty;
+          mode=conv.mode;
+          per=conv.per||1;
+          rateUnit=conv.rateUnit||'';
+          pkgNote=mat.unit?'$'+(parseFloat(mat.price)||0).toFixed(2)+'/'+mat.unit:'';
+          if(mode==='plain'){
+            const parsed=jcParseMeasure(mat.unit);
+            if(parsed&&parsed.family==='length'&&parsed.discrete&&parsed.per>1) stickPer=parsed.per;
+          }
+        }
+      } else if(stored!=null){
+        unitCost=Math.round(stored*100)/100;
+        if(mat&&mat.unit) pkgNote='$'+(parseFloat(mat.price)||0).toFixed(2)+'/'+mat.unit;
+      } else if(mat){
+        const pkgQty=unitPackSize(mat.unit)||1;
+        unitCost=Math.round(((parseFloat(mat.price)||0)/pkgQty)*100)/100;
         pkgNote=mat.unit?'$'+(parseFloat(mat.price)||0).toFixed(2)+'/'+mat.unit:'';
       }
-      const cost=Math.round(qty*unitCost*100)/100;
-      matCost+=cost;
-      const key=m.name;
-      if(!matTotals[key]) matTotals[key]={name:m.name,totalQty:0,unit:m.usageUnit||'',cost:0,unitCost,pkgNote};
-      matTotals[key].totalQty+=qty;
-      matTotals[key].cost+=cost;
+      const cost=review?0:Math.round(baseQty*unitCost*100)/100;
+      if(!review) matCost+=cost;
+      const group=review
+        ? 'review|'+jcNormUnitText(m.usageUnit)
+        : (!linked ? 'aslogged' : (mode==='package' ? 'pkg|'+(word||'') : mode==='plain' ? 'plain' : 'base|'+per));
+      const key=m.name+'|'+group;
+      if(!matTotals[key]) matTotals[key]={name:m.name,totalQty:0,baseQty:0,unit:(m.usageUnit||'').trim(),cost:0,unitCost,pkgNote:review?'':pkgNote,rateUnit,note:'',review,mode,priced:!review&&unitCost>0,mixedRate:false,priceUnit:review&&mat?mat.unit:'',stickPer:0};
+      const row=matTotals[key];
+      if(row.unitCost!==unitCost) row.mixedRate=true;
+      if(unitCost>0) row.priced=true;
+      row.totalQty+=qty;
+      row.baseQty+=baseQty;
+      row.cost=Math.round((row.cost+cost)*100)/100;
+      if(mode==='base'){ row.mode='base'; if(rateUnit) row.rateUnit=rateUnit; }
+      if(stickPer>1) row.stickPer=stickPer;
     });
+  });
+  Object.values(matTotals).forEach(r=>{
+    if(r.mode==='base'&&r.rateUnit) r.note='= '+jcFmtMeasure(r.baseQty)+' '+r.rateUnit;
+    else if(r.mode==='plain'&&r.stickPer>1) r.note='= '+jcFmtMeasure(r.baseQty/r.stickPer)+' sticks';
   });
   const supplierInvoices=(job.supplierInvoices||[]).filter(inv=>parseFloat(inv.amount)>0);
   const supplierInvTotal=Math.round(supplierInvoices.reduce((a,inv)=>a+(parseFloat(inv.amount)||0),0)*100)/100;
@@ -9918,7 +9979,7 @@ function jcJobCostLines(job,mode){
   const finishDate=[...(job.endDate?[job.endDate]:[]),...(job.extraDays||[]),...Object.keys(logs)].reduce((mx,d)=>(d>mx?d:mx),'');
   return {mode:recost?'recost':'recorded',allDates,laborRows,labor,overhead,hours:Math.round(hours*10)/10,ownerHours,ohByRate,estimatedRows,
     cashHrs,cashDays:[...cashDays].sort(),pwHrs,legacyOhHrs,noWorkDays,missingTimeDates,
-    matRows:Object.values(matTotals),supplierInvoices,supplierInvTotal,materials,
+    matRows:Object.values(matTotals),matReviewCount:Object.values(matTotals).filter(r=>r.review).length,supplierInvoices,supplierInvTotal,materials,
     consPct:cons.pct,consSource:cons.source,consSys:cons.sys,consumables,
     workDays,workDates,mileageOneWay,mileCustomRate,totalMiles,mileage,
     tmJob,tmLM,tmMM,tmLaborBasis,tmLaborBilled,tmMatBilled,tmBilledCons:asBilled?asBilled.tmBilledCons:billedCons,tmBilled,contract,revenue,commissions,
@@ -9956,6 +10017,7 @@ function _jcSumCostRows(members){
     flag:revenue>0?jcProfitFlag(netPct):null,ownerCost,trueNet:r2(netProfit-ownerCost),hours:Math.round(sum('hours')*10)/10,
     workDays:sum('workDays'),cashDayCount:cnt('cashDays'),noWorkCount:cnt('noWorkDays'),
     missingTimeCount:cnt('missingTimeDates'),estimatedRows:sum('estimatedRows'),legacyOhHrs:sum('legacyOhHrs'),pwHrs:sum('pwHrs'),sqft:sq,
+    matReviewCount:sum('matReviewCount'),
     breakEven:r2(sum('breakEven')),isTM:members.some(m=>m.tmJob)};
 }
 function renderJobCostingPage(){
@@ -10027,6 +10089,7 @@ function renderJobCostingPage(){
       r.noWorkCount?chip('🚫 '+r.noWorkCount+' no-work day'+(r.noWorkCount!==1?'s':''),'var(--text2)','var(--surface3)','Marked No Work Completed — no labor or overhead'):'',
       r.cashDayCount?chip('💵 '+r.cashDayCount+' cash day'+(r.cashDayCount!==1?'s':''),'#059669','#05966922','Paid in cash — costed at base pay'+(_jcrRecost&&costingCurrentModel().entry.cashDayBurden==='statutory'?' plus SS/Medicare/WC':'')):'',
       r.pwHrs?chip('PW','#d97706','#d9770622','Prevailing wage hours'):'',
+      r.matReviewCount?chip('⚠ '+r.matReviewCount+' unit check'+(r.matReviewCount!==1?'s':''),'#b45309','#d9770622','A logged unit does not match the material price. Open the job. Those lines are not in the material total.'):'',
       r.sqft?'':chip('no sq ft','var(--text3)','var(--surface3)','Add square feet on the Costing tab'),
     ].filter(Boolean).join('');
     const perDay=r.workDays>0&&r.revenue>0?Math.round(r.netProfit/r.workDays*100)/100:null;
@@ -10575,10 +10638,23 @@ function renderJobCosting(){
   if(matRows.length===0&&supplierInvoices.length===0){
     html+=`<div style="font-size:13px;color:var(--text3);">No materials logged yet — add them in the Daily Log or add a Supplier Invoice on the Materials tab.</div>`;
   } else {
+    const reviewN=matRows.filter(r=>r.review).length;
+    if(reviewN){
+      html+=`<div style="background:#d9770614;border:1px solid #d97706;border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:10px;">
+        <div style="font-size:13px;font-weight:600;color:#b45309;">${reviewN} material line${reviewN!==1?'s':''} need${reviewN===1?'s':''} a unit check</div>
+        <div style="font-size:11.5px;color:var(--text2);margin-top:3px;">The unit on the daily log doesn't match how that material is priced, so ${reviewN!==1?'those lines are':'that line is'} not in the total.</div>
+      </div>`;
+    }
     matRows.forEach(r=>{
-      html+=`<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);padding:3px 0;">
-        <span>${r.name} &nbsp;<span style="color:var(--text3);">${fmtQ(r.totalQty)} ${r.unit}${r.unitCost>0?' @ $'+r.unitCost.toFixed(2)+'/'+r.unit:''}${r.pkgNote?' ('+r.pkgNote+')':''}</span></span>
-        <span style="font-family:'DM Mono',monospace;">${r.unitCost>0?fmt(r.cost):'—'}</span>
+      const qtyBit=fmtQ(r.totalQty)+' '+(r.unit||'');
+      const rateUnit=r.note?(r.rateUnit||r.unit):r.unit;
+      const rate=(!r.review&&r.unitCost>0&&!r.mixedRate)?' @ $'+r.unitCost.toFixed(2)+'/'+rateUnit:'';
+      const note=r.note?(' '+r.note):'';
+      const pkg=(!r.review&&r.pkgNote)?' ('+r.pkgNote+')':'';
+      const reviewBit=r.review?(' · priced per '+jcEscText(r.priceUnit||'its list unit')):'';
+      html+=`<div class="jc-mat-cost-row">
+        <span class="jc-mat-cost-name">${jcEscText(r.name)} &nbsp;<span style="color:var(--text3);">${qtyBit}${note}${rate}${pkg}${reviewBit}</span></span>
+        <span class="jc-mat-cost-amt">${r.review?'<span style="color:#b45309;font-weight:700;">Review</span>':(r.unitCost>0?fmt(r.cost):'—')}</span>
       </div>`;
     });
     supplierInvoices.forEach(inv=>{
@@ -16491,8 +16567,136 @@ const CAT_COLORS = {
   'Misc':             'var(--text3)',
 };
 
+// Logged units and the price-list unit are different strings. "Oz" of a "2 Gallon"
+// kit is fluid ounces (128 per gallon). "LF" of a "4-ft stick" is feet (4 per stick).
+// "Kit" means one package. A pair that is not the same kind of measure does not convert.
+function jcNormUnitText(raw){
+  return String(raw==null?'':raw).trim().toLowerCase()
+    .replace(/\./g,'')
+    .replace(/(\d)\s*-\s*/g,'$1 ')
+    .replace(/[-_/]+/g,' ')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+function jcParseMeasure(raw){
+  const s=jcNormUnitText(raw);
+  if(!s) return null;
+  if(/^(kits?)$/.test(s)) return {family:'package',word:'kit'};
+  if(/^(ea|each|eaches)$/.test(s)) return {family:'package',word:'each'};
+  let m=s.match(/^(?:(\d+\.?\d*)\s+)?(?:fl|fluid)\s+(oz|ounce|ounces)$/);
+  if(m) return {family:'volume',per:(m[1]?parseFloat(m[1]):1)/128,discrete:!!m[1]};
+  const vol={gal:1,gals:1,gallon:1,gallons:1,qt:0.25,qts:0.25,quart:0.25,quarts:0.25,pt:0.125,pts:0.125,pint:0.125,pints:0.125,oz:1/128,ounce:1/128,ounces:1/128};
+  m=s.match(/^(?:(\d+\.?\d*)\s+)?(gal|gals|gallon|gallons|qt|qts|quart|quarts|pt|pts|pint|pints|oz|ounce|ounces)(?:\s+kits?)?$/);
+  if(m&&vol[m[2]]!=null) return {family:'volume',per:(m[1]?parseFloat(m[1]):1)*vol[m[2]],discrete:!!m[1]||/\skits?$/.test(s)};
+  if(/^(lf|ln ft|lin ft|linear ft|linear foot|linear feet|lineal ft|lineal foot|lineal feet)$/.test(s)) return {family:'length',per:1,discrete:false};
+  if(/^(ft|foot|feet)$/.test(s)) return {family:'length',per:1,discrete:false};
+  m=s.match(/^(\d+\.?\d*)\s+(ft|foot|feet)(?:\s+(sticks?|pcs?|pieces?|lengths?))?$/);
+  if(m) return {family:'length',per:parseFloat(m[1]),discrete:true};
+  m=s.match(/^(\d+\.?\d*)\s+(lb|lbs|pound|pounds)$/);
+  if(m) return {family:'weight',per:parseFloat(m[1]),discrete:true};
+  if(/^(lb|lbs|pound|pounds|#)$/.test(s)) return {family:'weight',per:1,discrete:false};
+  if(/^(sq ft|sqft|sf|square feet|square foot)$/.test(s)) return {family:'area',per:1,discrete:false};
+  m=s.match(/^(?:(\d+\.?\d*)\s+)?(containers?|bags?|sheets?|boxes|box|pails?|buckets?|cases?)$/);
+  if(m) return {family:'count',per:(m[1]?parseFloat(m[1]):1),discrete:true,word:m[2]};
+  return null;
+}
+function jcBaseLabel(family){
+  if(family==='volume') return 'gal';
+  if(family==='length') return 'ft';
+  if(family==='weight') return 'lb';
+  if(family==='area') return 'sq ft';
+  return 'ea';
+}
+function jcFmtMeasure(n){
+  if(!isFinite(n)) return '';
+  const r=Math.round(n*10000)/10000;
+  if(Math.abs(r-Math.round(r))<1e-8) return String(Math.round(r));
+  return r.toFixed(4).replace(/(\.\d*?)0+$/,'$1').replace(/\.$/,'');
+}
+// mode 'plain': qty is already in the price base (gallons, feet, pounds).
+// mode 'base': qty converted into that base (ounces → gallons).
+// mode 'package': qty is a count of sold packages (one Kit, or one Ea of a stick).
+function jcMaterialUsage(qty, usageUnit, priceUnit){
+  const q=parseFloat(qty);
+  if(!(q>=0)||!isFinite(q)) return {ok:false};
+  if(!String(usageUnit==null?'':usageUnit).trim()) return {ok:true,mode:'plain',baseQty:q,per:1};
+  const price=jcParseMeasure(priceUnit);
+  const usage=jcParseMeasure(usageUnit);
+  if(!price){
+    if(jcNormUnitText(usageUnit)&&jcNormUnitText(usageUnit)===jcNormUnitText(priceUnit))
+      return {ok:true,mode:'plain',baseQty:q,per:1};
+    return {ok:false};
+  }
+  if(usage&&usage.family==='package'){
+    if(price.family==='weight'||price.family==='area') return {ok:false};
+    if(usage.word==='each'){
+      if(price.family==='count'||(price.family==='length'&&price.discrete))
+        return {ok:true,mode:'package',baseQty:q,word:'each'};
+      return {ok:false};
+    }
+    if(usage.word==='kit'){
+      if(price.family==='length'&&!price.discrete) return {ok:false};
+      if(price.family==='volume'||price.family==='count'||price.discrete)
+        return {ok:true,mode:'package',baseQty:q,word:'kit'};
+      return {ok:false};
+    }
+    return {ok:false};
+  }
+  if(!usage||usage.family!==price.family) return {ok:false};
+  if(Math.abs(usage.per-1)<1e-12) return {ok:true,mode:'plain',baseQty:q,per:1,family:price.family};
+  return {ok:true,mode:'base',baseQty:q*usage.per,per:usage.per,family:price.family,rateUnit:jcBaseLabel(price.family)};
+}
+function jcUsageUnitChoices(priceUnit){
+  const p=jcParseMeasure(priceUnit);
+  if(!p) return null;
+  if(p.family==='volume') return ['Gallon','Quart','Pint','Oz','Kit'];
+  if(p.family==='length'&&p.discrete) return ['LF','Ea'];
+  if(p.family==='length') return ['LF'];
+  if(p.family==='weight') return ['Lbs'];
+  if(p.family==='area') return ['Sq Ft'];
+  if(p.family==='count'){
+    const s=jcNormUnitText(priceUnit);
+    if(/container/.test(s)) return ['Container','Ea'];
+    if(/bag/.test(s)) return ['Bag','Ea'];
+    if(/sheet/.test(s)) return ['Sheet','Ea'];
+    return ['Ea'];
+  }
+  return null;
+}
+function jcCanonicalUsageChoice(current, choices, priceUnit){
+  if(!choices||!choices.length) return '';
+  const cur=String(current||'').trim();
+  if(!cur) return choices[0];
+  const exact=choices.find(c=>c.toLowerCase()===cur.toLowerCase());
+  if(exact) return exact;
+  const a=jcMaterialUsage(1, cur, priceUnit);
+  if(!a.ok) return '';
+  for(const c of choices){
+    const b=jcMaterialUsage(1, c, priceUnit);
+    if(b.ok&&a.mode===b.mode&&Math.abs(a.baseQty-b.baseQty)<1e-9&&(a.mode!=='package'||a.word===b.word)) return c;
+  }
+  return '';
+}
+function jcEscAttr(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+function jcEscText(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function jcUsageUnitControl(ds,i,m){
+  const ri=jcResolveMatIdx(m);
+  const mat=(m.matId!=null&&ri>=0&&MATERIALS[ri])?MATERIALS[ri]:null;
+  const choices=mat?jcUsageUnitChoices(mat.unit):null;
+  const cur=String(m.usageUnit||'');
+  if(!choices){
+    return `<input class="form-input jc-mat-unit" placeholder="Unit" value="${jcEscAttr(cur)}" oninput="jcLogSetMaterial('${ds}',${i},'usageUnit',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'usageUnit',this.value)">`;
+  }
+  const canon=jcCanonicalUsageChoice(cur, choices, mat.unit);
+  let opts='';
+  if(cur.trim()&&!canon) opts+=`<option value="${jcEscAttr(cur)}" selected>${jcEscText(cur.trim())}</option>`;
+  choices.forEach(u=>{ opts+=`<option value="${jcEscAttr(u)}"${canon===u?' selected':''}>${jcEscText(u)}</option>`; });
+  return `<select class="form-input jc-mat-unit" onchange="jcLogSetMaterial('${ds}',${i},'usageUnit',this.value)">${opts}</select>`;
+}
+
 // Kit size written at the start of a unit. "1.075 Gallon" is 1.075, "5 Gallon" is 5,
 // and "Gallon" (no number) is 0 so callers that mean one gallon use || 1.
+// "4-ft stick" starts with 4, so the saved unit cost is the price per foot.
 function unitPackSize(unit){
   const n=parseFloat(String(unit||'').match(/^(\d+\.?\d*)/)?.[1]);
   return (isFinite(n)&&n>0)?n:0;
