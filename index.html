@@ -493,6 +493,14 @@
   body.crew-mode #dash-stale-notice,body.crew-mode #jobs-stale-notice,body.crew-mode #dash-name-link-notice,body.crew-mode #jobs-name-link-notice,body.crew-mode #wave-link-banner{display:none!important;}
   .crew-mode #jc-reschedule-btn{display:none!important;}
   .crew-mode #jc-crew-picker-group{display:none!important;}
+  /* Crew logins never see Photo OK. An owner preview of the crew calendar still does. */
+  body.crew-mode:not(.crew-preview) #jc-photo-ok-group{display:none!important;}
+  .jc-seg{display:flex;gap:6px;}
+  .jc-seg button{flex:1 1 0;min-height:40px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--surface2);color:var(--text2);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;padding:8px 4px;}
+  .jc-seg button[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-dim);color:var(--accent);}
+  .jc-seg button[data-photo-ok="yes"][aria-pressed="true"]{border-color:var(--green);background:var(--green-dim);color:var(--green);}
+  .jc-seg button[data-photo-ok="no"][aria-pressed="true"]{border-color:var(--red);background:var(--red-dim);color:var(--red);}
+  .jc-photo-hint{font-size:11px;color:var(--text3);margin-top:6px;line-height:1.4;}
   /* PIN login */
   @keyframes pin-shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-9px)}40%{transform:translateX(9px)}60%{transform:translateX(-6px)}80%{transform:translateX(6px)}}
   .pin-dot{width:14px;height:14px;border-radius:50%;border:2px solid var(--border2);background:transparent;transition:all .15s;}
@@ -537,6 +545,7 @@
     .modal{max-width:100vw!important;max-height:92vh;border-radius:16px 16px 0 0;margin:0;}
     #modal-jobcard.modal-overlay{align-items:stretch;padding:0;}
     #modal-jobcard .modal{width:100%;height:100dvh;max-height:100dvh;max-width:100vw!important;border-radius:0;margin:0;}
+    .jc-seg button{min-height:44px;font-size:14px;}
     #jc-pane-messages{max-height:none;}
     #sync-status{top:auto !important;bottom:14px;right:12px;}
     .cv-topbar{flex-direction:column;align-items:stretch;justify-content:flex-start;padding:8px 12px 10px;gap:8px;}
@@ -5613,6 +5622,9 @@ function _jcInfoFormDirty(){
   if(_isOwnerSession()){
     const v=document.getElementById('jc-value');
     if(v&&String(v.value||'')!==String(job.value||'')) return true;
+    const pressed=document.querySelector('#jc-photo-ok [aria-pressed="true"]');
+    const picked=pressed?String(pressed.getAttribute('data-photo-ok')||''):'';
+    if(picked!==jcPhotoOkStored(job)) return true;
   }
   return false;
 }
@@ -5791,12 +5803,14 @@ async function jcReloadOpenJob(){
   const job=getJobRecord(id);
   if(!job) return;
   const keepLogs=_jrClone(job.dayLogs||null);
+  const photoBtn=document.querySelector('#jc-photo-ok [aria-pressed="true"]');
   const keepForm={
     customer:document.getElementById('jc-customer')?.value,
     phone:document.getElementById('jc-phone')?.value,
     address:document.getElementById('jc-address')?.value,
     scope:document.getElementById('jc-scope')?.value,
-    jobType:document.getElementById('jc-jobtype')?.value
+    jobType:document.getElementById('jc-jobtype')?.value,
+    photoOk:photoBtn?String(photoBtn.getAttribute('data-photo-ok')||''):''
   };
   const read=await _jrReadServerJobs();
   if(!read.ok){ _jrFailSave('network', 'reload read failed'); return; }
@@ -5815,6 +5829,7 @@ async function jcReloadOpenJob(){
   set('jc-address', keepForm.address);
   set('jc-scope', keepForm.scope);
   if(keepForm.jobType!=null) set('jc-jobtype', keepForm.jobType);
+  if(keepForm.photoOk!=null) jcPaintPhotoOk({photoOk:keepForm.photoOk});
   const nameEl=document.getElementById('jc-name');
   if(nameEl) nameEl.textContent=(keepForm.customer||'').trim()||server.customer||'Unnamed Job';
   try{ jcRenderCrewPicker(); }catch(e){ console.error('crew picker refresh skipped', e); }
@@ -6030,6 +6045,11 @@ function _jrLogFieldChanges(baseline,localAfterEdits){
       if(k==='dayLogs'){ changes.push(..._jrDiffDayLogs(bRec.dayLogs||{},rec.dayLogs||{})); continue; }
       if(_jrEq(rec[k],bRec[k])) continue;
       if(k==='status'){ changes.push({label:'Status',from:_JR_STATUS_LABELS[bRec[k]]||_jrValStr(bRec[k]),to:_JR_STATUS_LABELS[rec[k]]||_jrValStr(rec[k])}); continue; }
+      if(k==='photoOk'){
+        const words=v=>v==='yes'?'Yes':v==='no'?'No':'Not yet asked';
+        changes.push({label:'Photo OK',from:words(bRec[k]),to:words(rec[k])});
+        continue;
+      }
       changes.push({label:_JR_FIELD_LABELS[k]||k,from:_jrValStr(bRec[k]),to:_jrValStr(rec[k])});
     }
     if(changes.length){
@@ -6829,6 +6849,40 @@ function jcAllDays(s,e){
 }
 function jcFmtDate(ds){ return new Date(ds+'T00:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}); }
 
+// photoOk on the job object is 'yes', 'no', or absent. Absent reads as not yet asked.
+function jcPhotoOkStored(job){
+  const v=job&&job.photoOk;
+  return v==='yes'||v==='no'?v:'';
+}
+function jcPaintPhotoOk(job){
+  const v=jcPhotoOkStored(job);
+  document.querySelectorAll('#jc-photo-ok [data-photo-ok]').forEach(btn=>{
+    btn.setAttribute('aria-pressed', btn.getAttribute('data-photo-ok')===v?'true':'false');
+  });
+}
+function jcShowPhotoOk(){
+  const group=document.getElementById('jc-photo-ok-group');
+  if(group) group.style.display=localStorage.getItem('fpRole')==='crew'?'none':'';
+}
+function jcPickPhotoOk(val){
+  if(localStorage.getItem('fpRole')==='crew') return;
+  const job=getJobRecord(_jcId);
+  if(job&&job.locked) return;
+  const next=val==='yes'||val==='no'?val:'';
+  document.querySelectorAll('#jc-photo-ok [data-photo-ok]').forEach(btn=>{
+    btn.setAttribute('aria-pressed', btn.getAttribute('data-photo-ok')===next?'true':'false');
+  });
+  jcNoteFormEdit();
+}
+function jcApplyPhotoOk(job){
+  if(!_isOwnerSession()||!job||!_jcCardOpen()) return;
+  const pressed=document.querySelector('#jc-photo-ok [aria-pressed="true"]');
+  if(!pressed) return;
+  const picked=String(pressed.getAttribute('data-photo-ok')||'');
+  if(picked==='yes'||picked==='no') job.photoOk=picked;
+  else delete job.photoOk;
+}
+
 function openJobCard(jobId){
   const job=getJobRecord(jobId); if(!job) return;
   if(String(jobId)!==String(_jcId)){ _jcUserEdited=false; _jcSaveIssue=null; }
@@ -6862,6 +6916,8 @@ function openJobCard(jobId){
   scopeEl.style.height='auto';
   scopeEl.style.height=scopeEl.scrollHeight+'px';
   document.getElementById('jc-jobtype').value=job.jobType||'epoxy';
+  jcShowPhotoOk();
+  jcPaintPhotoOk(job);
   // A hidden price box still sits in the page. Leave it empty for crew, and for
   // office or owner while the Crew screen is what opened the card.
   document.getElementById('jc-value').value=hideValue?'':(job.value||'');
@@ -10785,6 +10841,7 @@ async function saveJobCard(){
   job.jobType=document.getElementById('jc-jobtype').value;
   // The value box is hidden for crew and would otherwise save a blank over the price.
   if(_isOwnerSession()) job.value=document.getElementById('jc-value').value;
+  jcApplyPhotoOk(job);
   // Sync schedule slot labels if name changed
   if(job.customer&&job.customer!==oldName){
     Object.entries(SLOT_JOB_MAP).forEach(([key,jid])=>{
@@ -21649,6 +21706,15 @@ async function deleteMaintEntry(id){
             <input class="form-input" id="jc-value" type="number" placeholder="0" style="padding-left:26px;" oninput="jcNoteFormEdit()"/>
           </div>
         </div>
+      </div>
+      <div class="form-group" id="jc-photo-ok-group">
+        <label class="form-label" id="jc-photo-ok-label">Photo OK</label>
+        <div class="jc-seg" id="jc-photo-ok" role="group" aria-labelledby="jc-photo-ok-label">
+          <button type="button" data-photo-ok="" aria-pressed="true" onclick="jcPickPhotoOk('')">Not yet asked</button>
+          <button type="button" data-photo-ok="yes" aria-pressed="false" onclick="jcPickPhotoOk('yes')">Yes</button>
+          <button type="button" data-photo-ok="no" aria-pressed="false" onclick="jcPickPhotoOk('no')">No</button>
+        </div>
+        <div class="jc-photo-hint">Customer agreed photos of this job can be used in marketing.</div>
       </div>
       <div class="form-group" id="jc-crew-picker-group" style="margin-bottom:10px;">
         <label class="form-label">Crew on This Job</label>
