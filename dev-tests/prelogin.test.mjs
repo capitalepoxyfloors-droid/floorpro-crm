@@ -465,6 +465,7 @@ test('pre-login safety fixes against a mocked backend', async () => {
   state.sourceDetailColumn = true;
   setLex('_leadsPhone2Ok', true);
   setLex('_leadsSourceDetailOk', true);
+  assert.match(w.document.querySelector('label[for="lead-source"]').textContent, /Source\s*\*/);
   const sourceOptions = [...w.document.getElementById('lead-source').options].map(o => o.value);
   assert.deepEqual(sourceOptions, ['', ...lex('LEAD_SOURCES')]);
   assert.deepEqual([...lex('LEAD_SOURCES')], [
@@ -539,7 +540,7 @@ test('pre-login safety fixes against a mocked backend', async () => {
     call('editLead', idx);
     assert.equal(w.document.getElementById('lead-source').value, '', 'legacy value must not be selected: ' + JSON.stringify(legacySource));
     assert.equal(w.document.getElementById('lead-source-legacy').hidden, false);
-    assert.equal(w.document.getElementById('lead-source-legacy').textContent, legacySource.trim() ? ('Legacy: ' + legacySource) : 'Legacy: (blank)');
+    assert.equal(w.document.getElementById('lead-source-legacy').textContent, legacySource.trim() ? ('Old source: ' + legacySource.trim() + '. Pick a real source above.') : 'Old source: none. Pick a real source above.');
     assert.equal(lex('LEADS')[idx].source, legacySource);
     call('saveLead');
     assert.equal(lex('LEADS')[idx].source, legacySource, 'saving without a new source must not change it');
@@ -576,6 +577,28 @@ test('pre-login safety fixes against a mocked backend', async () => {
   assert.equal(dropPosts[1].body.source, 'Referral (name who)');
   state.sourceDetailColumn = true;
   setLex('_leadsSourceDetailOk', true);
+
+  // ── Needs source is a read-only marker and filter. It does not write. ──
+  lex('LEADS').push({ name: 'Known Source Lead', source: 'Repeat customer', sourceDetail: '', stage: 'new', phone: '', phone2: '', notes: '', detail: '', date: '' });
+  lex('LEADS').push({ name: 'Wave Needs', source: 'Wave', sourceDetail: '', stage: 'quoted', phone: '', phone2: '', notes: 'Wave #1 | test', detail: '', date: '' });
+  const waveBefore = lex('LEADS').find(l => l.name === 'Wave Needs').source;
+  call('renderPipeline');
+  const board = w.document.getElementById('pipeline-board');
+  const waveRow = [...board.querySelectorAll('.jlist-row')].find(row => row.textContent.includes('Wave Needs'));
+  const knownRow = [...board.querySelectorAll('.jlist-row')].find(row => row.textContent.includes('Known Source Lead'));
+  assert.ok(waveRow, 'legacy lead is on the list');
+  assert.match(waveRow.textContent, /Needs source/);
+  assert.ok(knownRow);
+  assert.doesNotMatch(knownRow.textContent, /Needs source/);
+  assert.match(w.document.getElementById('pipe-needs-source').textContent, /Needs source/);
+  call('togglePipeNeedsSource');
+  const filtered = w.document.getElementById('pipeline-board').textContent;
+  assert.match(filtered, /Wave Needs/);
+  assert.doesNotMatch(filtered, /Known Source Lead/);
+  assert.equal(w.document.getElementById('pipe-needs-source').classList.contains('is-on'), true);
+  assert.equal(lex('LEADS').find(l => l.name === 'Wave Needs').source, waveBefore);
+  call('togglePipeNeedsSource');
+  assert.equal(w.document.getElementById('pipe-needs-source').classList.contains('is-on'), false);
 
   // ── Main screens still render on the sample data ──
   call('renderSchedule');

@@ -267,7 +267,12 @@
   .form-select{cursor:pointer;}
   .form-input.lead-bad,.form-select.lead-bad{border-color:var(--red);background:var(--red-dim);}
   .lead-field-msg{font-size:12.5px;color:var(--red);margin-top:5px;line-height:1.35;}
-  .lead-legacy{font-size:12.5px;color:var(--text2);margin-top:6px;line-height:1.35;}
+  .lead-legacy{font-size:12px;color:var(--text3);margin-top:6px;line-height:1.35;}
+  .lead-notes-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;}
+  .lead-notes-head .form-label{margin-bottom:0;}
+  #lead-sync-slot{margin-left:auto;display:flex;align-items:center;min-height:0;}
+  #lead-sync-slot #sync-status{position:static !important;top:auto !important;right:auto !important;bottom:auto !important;z-index:1 !important;}
+  #pipe-needs-source.is-on{background:var(--surface3);color:var(--text);border-color:var(--border2);}
   .form-textarea{resize:vertical;min-height:70px;}
   .form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
   /* Job Card → Materials tab planned-materials row (product / qty / unit / remove) */
@@ -384,6 +389,11 @@
     .job-installer,.job-value{display:none;}
     .crew-picker{grid-template-columns:1fr;}
     .form-row{grid-template-columns:1fr;}
+    /* Stacked lead rows were 16px of field margin plus the row's 12px gap, so the
+       second field in each pair sat lower than the rest. One 16px step matches the
+       single fields. Desktop keeps the side-by-side row. */
+    #modal-lead .form-row{gap:16px;margin-bottom:16px;}
+    #modal-lead .form-row>.form-group{margin-bottom:0;}
     /* Job Card → Materials tab: stack product name on its own full-width row so crews can
        actually read it on a phone (was squeezed to a sliver by the fixed qty/unit columns) */
     .jc-mat-plan-row{grid-template-columns:80px 1fr 36px;grid-template-areas:"name name name" "qty unit x";row-gap:6px;}
@@ -891,7 +901,10 @@
     <div class="page" id="page-pipeline">
       <div class="topbar">
         <div class="page-title">Lead Pipeline</div>
-        <div class="topbar-actions"><button class="btn btn-primary" onclick="openLeadModalForStage('new')">+ Add Lead</button></div>
+        <div class="topbar-actions">
+          <button type="button" class="btn btn-ghost" id="pipe-needs-source" onclick="togglePipeNeedsSource()" style="font-size:12px;">Needs source</button>
+          <button class="btn btn-primary" onclick="openLeadModalForStage('new')">+ Add Lead</button>
+        </div>
       </div>
       <div class="content">
         <div id="pipeline-board"></div>
@@ -2298,7 +2311,7 @@
         <div id="lead-address-verified" style="display:none;font-size:11.5px;color:var(--green);margin-top:5px;font-family:'DM Mono',monospace;">✓ Address verified</div>
       </div>
       <div class="form-group" id="lead-source-group">
-        <label class="form-label" for="lead-source">Source</label>
+        <label class="form-label" for="lead-source">Source <span style="color:var(--red);">*</span></label>
         <select class="form-select" id="lead-source" onchange="leadSourceChanged(true)">
           <option value="">Select a source</option>
           <option>Google Maps/GBP</option>
@@ -2319,7 +2332,13 @@
         <input class="form-input" id="lead-source-detail" placeholder="Name" autocomplete="off" oninput="clearLeadField('lead-source-detail','lead-source-detail-err')"/>
         <div id="lead-source-detail-err" class="lead-field-msg" hidden>Name who referred them.</div>
       </div>
-      <div class="form-group"><label class="form-label">Notes</label><textarea class="form-textarea" id="lead-notes" placeholder="Details, scope, special requests..."></textarea></div>
+      <div class="form-group" id="lead-notes-group">
+        <div class="lead-notes-head">
+          <label class="form-label" for="lead-notes">Notes</label>
+          <span id="lead-sync-slot"></span>
+        </div>
+        <textarea class="form-textarea" id="lead-notes" placeholder="Details, scope, special requests..."></textarea>
+      </div>
     </div>
     <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal('lead')">Cancel</button><button class="btn btn-primary" onclick="saveLead()">Save Lead</button></div>
   </div>
@@ -2794,7 +2813,18 @@ function showSyncStatus(msg,color='var(--green)'){
   el.style.cssText='position:fixed;top:10px;right:14px;font-size:11px;font-family:"DM Mono",monospace;padding:4px 10px;border-radius:20px;z-index:9999;transition:opacity .5s;opacity:1;background:'+color+'22;color:'+color+';border:1px solid '+color+'44;';
   el.textContent=msg;
   document.body.appendChild(el);
+  _placeLeadSyncStatus();
   el._t=setTimeout(()=>{el.style.opacity='0';setTimeout(()=>el.remove(),500);},3000);
+}
+// The sync pill is fixed to a screen corner. On a phone that corner sits on the
+// lead form's Notes box. While that form is open, park the same pill on the Notes label.
+function _placeLeadSyncStatus(){
+  const el=document.getElementById('sync-status');
+  if(!el) return;
+  const open=document.getElementById('modal-lead')?.classList.contains('open');
+  const slot=document.getElementById('lead-sync-slot');
+  const home=open&&slot?slot:document.body;
+  if(el.parentElement!==home) home.appendChild(el);
 }
 // Large centered save badge — only shown on explicit user-triggered saves (job card Save / Save Log)
 function showSaveBadge(msg='Saved',color='var(--green)'){
@@ -14624,7 +14654,11 @@ function setLeadSourceForm(source, detail, showLegacy){
   if(sel) sel.value=known?stored:'';
   if(legacy){
     if(!showLegacy||known){ legacy.hidden=true; legacy.textContent=''; }
-    else { legacy.hidden=false; legacy.textContent=stored.trim()?('Legacy: '+stored):'Legacy: (blank)'; }
+    else {
+      legacy.hidden=false;
+      const shown=stored.trim();
+      legacy.textContent=shown?('Old source: '+shown+'. Pick a real source above.'):'Old source: none. Pick a real source above.';
+    }
   }
   const inp=document.getElementById('lead-source-detail');
   if(inp) inp.value=known?(detail||''):'';
@@ -15096,10 +15130,26 @@ const TAG_COLORS = {
 };
 
 let _pipeShowArchived=false;
+let _pipeNeedsSourceOnly=false;
+function leadNeedsSource(lead){
+  const stored=lead&&lead.source!=null?String(lead.source):'';
+  return LEAD_SOURCES.indexOf(stored)===-1;
+}
+function togglePipeNeedsSource(){
+  _pipeNeedsSourceOnly=!_pipeNeedsSourceOnly;
+  renderPipeline();
+}
 function renderPipeline(){
   const board = document.getElementById('pipeline-board');
   if(!board) return;
   const fmtT=t=>{if(!t)return '';const[h,m]=t.split(':');const hr=parseInt(h);return(hr%12||12)+':'+m+(hr<12?'am':'pm');};
+  const needsSource=LEADS.filter(leadNeedsSource);
+  const filt=document.getElementById('pipe-needs-source');
+  if(filt){
+    filt.textContent='Needs source'+(needsSource.length?' · '+needsSource.length:'');
+    filt.classList.toggle('is-on', _pipeNeedsSourceOnly);
+    filt.setAttribute('aria-pressed', _pipeNeedsSourceOnly?'true':'false');
+  }
 
   // Shared row renderer — used by both active stage sections and the Archived section
   function rowHtml(l, realIdx, barColor, note, actions){
@@ -15112,6 +15162,7 @@ function renderPipeline(){
       <div style="flex:1;padding:9px 14px;min-width:0;overflow:hidden;cursor:pointer;" onclick="editLead(${realIdx})" title="Click to edit lead">
         <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
           <span style="font-size:13.5px;font-weight:600;color:var(--text);">${l.name}</span>
+          ${leadNeedsSource(l)?'<span class="tag" style="font-size:9.5px;padding:1px 7px;background:var(--surface3);color:var(--text3);">Needs source</span>':''}
           ${l.jobType?`<span class="tag ${tagClass}" style="font-size:9.5px;padding:1px 7px;">${l.jobType}</span>`:''}
           ${l.custType?`<span class="tag ${custPill}" style="font-size:9.5px;padding:1px 7px;">${l.custType}</span>`:''}
         </div>
@@ -15127,8 +15178,11 @@ function renderPipeline(){
   const delBtn=ri=>`<button style="background:none;border:none;cursor:pointer;color:var(--text3);padding:4px 7px;font-size:13px;line-height:1;" title="Delete permanently" onclick="deleteLead(${ri})" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text3)'">✕</button>`;
 
   let html='<div style="display:flex;flex-direction:column;max-width:1120px;">';
+  let shown=0;
   PIPELINE_STAGES.forEach(stage=>{
-    const leads = LEADS.filter(l=>l.stage===stage.id);
+    const leads = LEADS.filter(l=>l.stage===stage.id && (!_pipeNeedsSourceOnly || leadNeedsSource(l)));
+    if(_pipeNeedsSourceOnly && !leads.length) return;
+    shown+=leads.length;
     html+=`<div style="display:flex;align-items:center;gap:10px;padding:14px 2px 6px;">
       <span style="font-size:10px;font-family:'DM Mono',monospace;color:${stage.color};text-transform:uppercase;letter-spacing:.7px;font-weight:700;">${stage.label} &nbsp;·&nbsp; ${leads.length}</span>
       <button onclick="openLeadModalForStage('${stage.id}')" style="background:none;border:none;cursor:pointer;color:var(--text3);font-size:11px;font-family:'DM Mono',monospace;padding:2px 4px;" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text3)'">+ Add lead</button>
@@ -15172,20 +15226,25 @@ function renderPipeline(){
     });
   });
 
-  // Archived (dead) leads — collapsible, only appears once at least one lead is archived
-  const archived = LEADS.filter(l=>l.stage==='lost');
+  // Archived (dead) leads — collapsible, only appears once at least one lead is archived.
+  // The Needs source filter shows its matches here without an extra tap, and does not save.
+  const archived = LEADS.filter(l=>l.stage==='lost' && (!_pipeNeedsSourceOnly || leadNeedsSource(l)));
   if(archived.length){
-    html+=`<div onclick="togglePipeArchived()" style="display:flex;align-items:center;gap:8px;padding:18px 2px 6px;cursor:pointer;border-top:1px solid var(--border2);margin-top:12px;">
+    shown+=_pipeNeedsSourceOnly?archived.length:0;
+    html+=`<div ${ _pipeNeedsSourceOnly?'': 'onclick="togglePipeArchived()"'} style="display:flex;align-items:center;gap:8px;padding:18px 2px 6px;${_pipeNeedsSourceOnly?'':'cursor:pointer;'}border-top:1px solid var(--border2);margin-top:12px;">
       <span style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);text-transform:uppercase;letter-spacing:.7px;font-weight:700;">🗄 Archived &nbsp;·&nbsp; ${archived.length}</span>
-      <span style="font-size:11px;color:var(--text3);">${_pipeShowArchived?'▲ Hide':'▼ Show'}</span>
+      ${_pipeNeedsSourceOnly?'':`<span style="font-size:11px;color:var(--text3);">${_pipeShowArchived?'▲ Hide':'▼ Show'}</span>`}
     </div>`;
-    if(_pipeShowArchived){
+    if(_pipeShowArchived || _pipeNeedsSourceOnly){
       archived.forEach(l=>{
         const realIdx=LEADS.indexOf(l);
         const actions=`<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;" title="Move back into the pipeline" onclick="restoreLead(${realIdx})">↩ Restore</button>`+editBtn(realIdx)+delBtn(realIdx);
         html+=rowHtml(l, realIdx, 'var(--text3)', '', actions);
       });
     }
+  }
+  if(_pipeNeedsSourceOnly && !shown){
+    html+=`<div style="padding:13px 16px;color:var(--text3);font-size:12px;">No leads need a source.</div>`;
   }
 
   html+='</div>';
@@ -16600,6 +16659,7 @@ function saveMaterial(){
 // Set today as default price date when opening add modal
 function openModal(id){
   document.getElementById('modal-'+id).classList.add('open');
+  if(id==='lead') _placeLeadSyncStatus();
   if(id==='pto'){
     const sel=document.getElementById('pto-crew');
     sel.innerHTML=CREW.map((c,i)=>isCrewInactive(i)?'':`<option value="${i}">${c.full}</option>`).join('');
@@ -18436,7 +18496,10 @@ If any field is not found, use an empty string.`
   }
 }
 
-function closeModal(id){document.getElementById('modal-'+id).classList.remove('open');}
+function closeModal(id){
+  document.getElementById('modal-'+id).classList.remove('open');
+  if(id==='lead') _placeLeadSyncStatus();
+}
 function showToast(msg){
   const t=document.createElement('div');
   t.style.cssText='position:fixed;bottom:24px;right:24px;background:#1a73e8;color:#fff;padding:11px 20px;border-radius:8px;font-size:13px;font-weight:500;z-index:9999;font-family:DM Sans,sans-serif;max-width:320px;box-shadow:0 4px 20px rgba(0,0,0,.18);';
@@ -18446,6 +18509,7 @@ document.addEventListener('click',e=>{
   const o=e.target;
   if(o.classList&&o.classList.contains('modal-overlay')&&o.classList.contains('open')){
     o.classList.remove('open');
+    if(o.id==='modal-lead') _placeLeadSyncStatus();
     if(o.id==='modal-schedulejob')sjReset();
   }
 });
