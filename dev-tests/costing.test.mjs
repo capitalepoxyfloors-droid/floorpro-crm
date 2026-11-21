@@ -742,21 +742,43 @@ test('logged units convert into the priced unit, and a mismatch is not costed', 
   assert.equal(loose.matRows[0].cost, r2(32 * 46.66));
   assert.equal(loose.matReviewCount, 0);
 
+  const legacyLine = { matIdx: -1, name: 'Custom', qty: '1', usageUnit: 'bucket' };
+  const legacyBefore = JSON.stringify(legacyLine);
   const probe = plain(ev(`(function(){
+    const line = ${legacyBefore};
     const html = jcDayMatsHtml('${ds}', {materialsUsed:[
       {matIdx:0,name:'Rapid Set 100',qty:'32',usageUnit:'Oz',matId:'rs'},
       {matIdx:4,name:'Broadcast Sand',qty:'4',usageUnit:'Lbs',matId:'sand'},
-      {matIdx:-1,name:'Custom',qty:'1',usageUnit:'bucket'}
+      line
     ]});
     const wrap=document.createElement('div');
     wrap.innerHTML=html;
     const selects=[...wrap.querySelectorAll('select.jc-mat-unit')].map(s=>[...s.options].map(o=>o.textContent));
-    return {selects, dollars: html.includes('$'), custom: !!wrap.querySelector('input.jc-mat-unit')};
+    const picks=[...wrap.querySelectorAll('select.jc-mat-pick')].map(s=>s.selectedOptions[0]&&s.selectedOptions[0].textContent);
+    return {
+      selects,
+      dollars: html.includes('$'),
+      custom: !!wrap.querySelector('input.jc-mat-unit'),
+      customOption: html.includes('— Custom —') || html.includes('value="custom"'),
+      nameBox: !!wrap.querySelector('input.jc-mat-name') || html.includes('Material name'),
+      placeholder: (wrap.querySelector('select.jc-mat-pick option[value=""]')||{}).textContent||'',
+      savedName: (wrap.querySelector('.jc-mat-saved')||{}).textContent||'',
+      picks,
+      prompts: wrap.querySelectorAll('.jc-mat-prompt').length,
+      line: line
+    };
   })()`));
   assert.deepEqual(probe.selects[0], ['Gallon', 'Quart', 'Pint', 'Oz', 'Kit']);
   assert.deepEqual(probe.selects[1], ['Lbs']);
   assert.equal(probe.dollars, false);
   assert.equal(probe.custom, true);
+  assert.equal(probe.customOption, false);
+  assert.equal(probe.nameBox, false);
+  assert.equal(probe.placeholder, 'Material Selection');
+  assert.equal(probe.savedName, 'Custom');
+  assert.deepEqual(probe.picks, ['Rapid Set 100', 'Broadcast Sand']);
+  assert.equal(probe.prompts, 0);
+  assert.equal(JSON.stringify(probe.line), legacyBefore);
 
   ev(`_jcId='units'; jcLogPickMaterial('${ds}', 0, {value:'0'});`);
   assert.equal(ev(`getJobRecord('units').dayLogs['${ds}'].materialsUsed[0].usageUnit`), 'Gallon');
@@ -764,6 +786,63 @@ test('logged units convert into the priced unit, and a mismatch is not costed', 
   const stickChoices = plain(ev(`jcUsageUnitChoices('4-ft stick')`));
   assert.deepEqual(stickChoices, ['LF', 'Ea']);
   assert.equal(ev(`getJobRecord('units').dayLogs['${ds}'].materialsUsed[0].usageUnit`), '4-ft stick');
+  const kept = ev(`JSON.stringify(getJobRecord('units').dayLogs['${ds}'].materialsUsed[0])`);
+  ev(`jcLogPickMaterial('${ds}', 0, {value:'custom'});`);
+  ev(`jcLogPickMaterial('${ds}', 0, {value:''});`);
+  assert.equal(ev(`JSON.stringify(getJobRecord('units').dayLogs['${ds}'].materialsUsed[0])`), kept);
+
+  // A new row is not a saved material until a list item is chosen. Save says so and writes nothing.
+  const beforeLogs = ev(`JSON.stringify(getJobRecord('units').dayLogs)`);
+  ev(`Object.keys(_jcMatDrafts).forEach(k=>delete _jcMatDrafts[k]);`);
+  ev(`jcLogAddMat('${ds}');`);
+  assert.equal(ev(`JSON.stringify(getJobRecord('units').dayLogs)`), beforeLogs);
+  assert.equal(ev(`jcJobHasMaterialDraft()`), true);
+  const draftHtml = ev(`jcDayMatsHtml('${ds}', getJobRecord('units').dayLogs['${ds}'])`);
+  assert.match(draftHtml, /Material Selection/);
+  assert.match(draftHtml, /Pick a material\./);
+  assert.equal(draftHtml.includes('— Custom —'), false);
+  assert.equal(draftHtml.includes('jc-mat-name'), false);
+  assert.equal(draftHtml.includes('$'), false);
+  await ev(`saveJobCard()`);
+  assert.equal(ev(`JSON.stringify(getJobRecord('units').dayLogs)`), beforeLogs);
+  assert.match(ev(`document.body.textContent`), /Pick a material\./);
+
+  const draftIdx = ev(`getJobRecord('units').dayLogs['${ds}'].materialsUsed.length`);
+  ev(`jcLogSetMaterial('${ds}', ${draftIdx}, 'qty', '3');`);
+  ev(`jcLogSetMaterial('${ds}', ${draftIdx}, 'name', 'typed name');`);
+  ev(`jcLogPickMaterial('${ds}', ${draftIdx}, {value:'0'});`);
+  const added = plain(ev(`getJobRecord('units').dayLogs['${ds}'].materialsUsed.slice(-1)[0]`));
+  assert.equal(added.name, 'Rapid Set 100');
+  assert.equal(added.matId, 'rs');
+  assert.equal(added.matIdx, 0);
+  assert.equal(added.qty, '3');
+  assert.equal(added.usageUnit, 'Gallon');
+  assert.equal(ev(`jcJobHasMaterialDraft()`), false);
+  assert.equal(ev(`getJobRecord('units').dayLogs['${ds}'].materialsUsed.some(m=>!String(m.name||'').trim())`), false);
+
+  // An already-saved free-typed name stays put, including when something tries to rename it.
+  putJob({
+    id: 'old-custom', customer: 'Old Custom', status: 'in_progress', value: '100',
+    startDate: ds, endDate: ds,
+    dayLogs: { [ds]: { materialsUsed: [
+      { matIdx: -1, name: 'Shop mix', qty: '2', usageUnit: 'bucket' }
+    ] } }
+  });
+  ev(`_jcId='old-custom'; jcLogSetMaterial('${ds}', 0, 'name', 'Renamed');`);
+  const oldLine = plain(ev(`getJobRecord('old-custom').dayLogs['${ds}'].materialsUsed[0]`));
+  assert.equal(oldLine.name, 'Shop mix');
+  assert.equal(oldLine.matIdx, -1);
+  assert.equal(oldLine.qty, '2');
+  assert.equal(oldLine.usageUnit, 'bucket');
+  assert.equal(oldLine.matId, undefined);
+  const oldHtml = ev(`jcDayMatsHtml('${ds}', getJobRecord('old-custom').dayLogs['${ds}'])`);
+  assert.match(oldHtml, /Shop mix/);
+  assert.equal(oldHtml.includes('— Custom —'), false);
+  assert.equal(oldHtml.includes('jc-mat-name'), false);
+  assert.equal(ev(`JSON.stringify(getJobRecord('old-custom').dayLogs['${ds}'].materialsUsed[0])`), JSON.stringify(oldLine));
+  const oldCost = lines('old-custom');
+  assert.equal(oldCost.matRows[0].name, 'Shop mix');
+  assert.equal(oldCost.matRows[0].review, false);
 });
 
 test('no page errors', () => {

@@ -365,12 +365,14 @@
   .jc-pricing-guide{margin-top:14px;background:var(--accent-dim);border:1.5px dashed var(--accent);border-radius:var(--radius-sm);padding:12px 14px;}
   .jc-pricing-title{font-size:13px;font-weight:700;color:var(--accent);margin-bottom:2px;}
   .jc-pricing-note{font-size:11.5px;color:var(--text2);line-height:1.4;margin-bottom:10px;}
-  .jc-mat-row{flex-wrap:wrap;}
-  .jc-mat-row .jc-mat-pick{flex:1 1 150px;min-width:0;font-size:12px;padding:4px 6px;}
-  .jc-mat-row .jc-mat-name{flex:1 1 120px;min-width:0;font-size:12px;padding:4px 6px;}
-  .jc-mat-row .jc-mat-qty{width:72px;flex:none;font-size:12px;padding:4px 6px;}
-  .jc-mat-row .jc-mat-unit{width:108px;flex:none;font-size:12px;padding:4px 6px;}
+  .jc-mat-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px;}
+  .jc-mat-row .jc-mat-pick{flex:1 1 160px;min-width:0;font-size:13px;padding:6px 8px;}
+  .jc-mat-row .jc-mat-saved{flex:1 1 160px;min-width:0;font-size:13px;line-height:1.3;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface2);color:var(--text);overflow-wrap:anywhere;}
+  .jc-mat-row .jc-mat-qty{width:72px;flex:none;font-size:13px;padding:6px 8px;}
+  .jc-mat-row .jc-mat-unit{width:108px;flex:none;font-size:13px;padding:6px 8px;}
   .jc-mat-row .jc-mat-x{background:none;border:none;cursor:pointer;color:var(--danger,#e74c3c);font-size:16px;line-height:1;width:32px;height:32px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .jc-mat-prompt{flex:1 1 100%;font-size:14px;font-weight:600;color:var(--text);line-height:1.3;padding:0 2px;}
+  .jc-mat-add{font-size:13px;color:var(--primary);background:none;border:1px dashed var(--primary);border-radius:6px;padding:8px 12px;cursor:pointer;margin-bottom:8px;}
   .jc-mat-cost-row{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--text2);padding:3px 0;flex-wrap:wrap;align-items:baseline;}
   .jc-mat-cost-row .jc-mat-cost-name{min-width:0;flex:1 1 180px;}
   .jc-mat-cost-row .jc-mat-cost-amt{font-family:'DM Mono',monospace;flex:none;}
@@ -412,8 +414,16 @@
     .jc-mat-plan-row>input:nth-child(2){grid-area:qty;}
     .jc-mat-plan-row>select:nth-child(3){grid-area:unit;}
     .jc-mat-plan-row>button:nth-child(4){grid-area:x;}
+    .jc-mat-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 44px;grid-template-areas:"pick pick pick" "qty unit x" "prompt prompt prompt";column-gap:8px;row-gap:8px;align-items:center;}
+    .jc-mat-row .jc-mat-pick,.jc-mat-row .jc-mat-saved{grid-area:pick;width:100%;}
+    .jc-mat-row .jc-mat-qty{grid-area:qty;width:100%;}
+    .jc-mat-row .jc-mat-unit{grid-area:unit;width:100%;}
+    .jc-mat-row .jc-mat-x{grid-area:x;justify-self:end;}
+    .jc-mat-row .jc-mat-prompt{grid-area:prompt;}
     .jc-mat-row .form-input{min-height:44px;font-size:16px;}
+    .jc-mat-row .jc-mat-saved{min-height:44px;display:flex;align-items:center;font-size:16px;}
     .jc-mat-row .jc-mat-x{width:44px;height:44px;font-size:20px;}
+    .jc-mat-add{min-height:44px;width:100%;font-size:15px;}
     /* Materials price list → 2-column card */
     #page-materials .mat-head{display:none!important;}
     #materials-list .job-row{grid-template-columns:1fr auto!important;gap:3px 10px!important;padding:11px 14px!important;align-items:start!important;}
@@ -8574,25 +8584,58 @@ function jcBackfillMaterialIds(){
   if(changed){ saveJobRecords(); console.log('✓ Anchored logged materials to permanent IDs.'); }
 }
 
+// A new "+ Add Material" row stays here until a list material is chosen. It is not part of
+// the day log, so Save cannot store it as a material entry. Keyed by job id + date.
+const _jcMatDrafts={};
+function _jcDraftKey(ds){ return String(_jcId)+'\n'+ds; }
+function _jcDraftsFor(ds){
+  const list=_jcMatDrafts[_jcDraftKey(ds)];
+  return Array.isArray(list)?list:[];
+}
+function jcJobHasMaterialDraft(jobId){
+  const id=String(jobId!=null?jobId:_jcId);
+  return Object.keys(_jcMatDrafts).some(k=>{
+    const cut=k.indexOf('\n');
+    return cut>0 && k.slice(0,cut)===id && Array.isArray(_jcMatDrafts[k]) && _jcMatDrafts[k].length>0;
+  });
+}
+// A name with no list match is an older free-typed line. Show it. Do not rename it.
+function jcMatRowIsLegacyCustom(m){
+  if(!m||jcResolveMatIdx(m)>=0) return false;
+  return !!String(m.name||'').trim();
+}
+function jcMatPickSelect(ds,i,selectedIdx){
+  const placeholder=`<option value="" disabled${selectedIdx<0?' selected':''}>Material Selection</option>`;
+  const opts=MATERIALS.map((mat,mi)=>({mat,mi}))
+    .sort((a,b)=>String(a.mat.name||'').localeCompare(String(b.mat.name||'')))
+    .map(({mat,mi})=>`<option value="${mi}"${selectedIdx===mi?' selected':''}>${jcEscText(mat.name)}</option>`)
+    .join('');
+  return `<select class="form-input jc-mat-pick" onchange="jcLogPickMaterial('${ds}',${i},this)">${placeholder}${opts}</select>`;
+}
 function jcDayMatsHtml(ds,log){
   const mats=log.materialsUsed||[];
+  const drafts=_jcDraftsFor(ds);
   let rows='';
-  mats.forEach((m,i)=>{
-    const ri=jcResolveMatIdx(m);
-    const selVal=ri>=0?ri:'custom';
-    rows+=`<div class="jc-mat-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
-      <select class="form-input jc-mat-pick" onchange="jcLogPickMaterial('${ds}',${i},this)">
-        <option value="custom"${m.matIdx===-1?' selected':''}>— Custom —</option>
-        ${MATERIALS.map((mat,mi)=>({mat,mi})).sort((a,b)=>a.mat.name.localeCompare(b.mat.name)).map(({mat,mi})=>`<option value="${mi}"${ri===mi?' selected':''}>${mat.name}</option>`).join('')}
-      </select>
-      ${m.matIdx===-1?`<input class="form-input jc-mat-name" placeholder="Material name" value="${(m.name||'').replace(/"/g,'&quot;')}" oninput="jcLogSetMaterial('${ds}',${i},'name',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'name',this.value)"/>`:``}
-      <input class="form-input jc-mat-qty" type="number" min="0" step="any" placeholder="Qty" value="${m.qty||''}" oninput="jcLogSetMaterial('${ds}',${i},'qty',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'qty',this.value)">
+  const one=(m,i,draft)=>{
+    const ri=draft?-1:jcResolveMatIdx(m);
+    const legacy=!draft && jcMatRowIsLegacyCustom(m);
+    const unpicked=!legacy && ri<0;
+    const pick=legacy
+      ? `<div class="jc-mat-saved">${jcEscText(String(m.name).trim())}</div>`
+      : jcMatPickSelect(ds,i,ri);
+    const prompt=unpicked?'<div class="jc-mat-prompt">Pick a material.</div>':'';
+    rows+=`<div class="jc-mat-row">
+      ${pick}
+      <input class="form-input jc-mat-qty" type="number" min="0" step="any" inputmode="decimal" placeholder="Qty" value="${jcEscAttr(m.qty||'')}" oninput="jcLogSetMaterial('${ds}',${i},'qty',this.value)" onblur="jcLogSetMaterial('${ds}',${i},'qty',this.value)">
       ${jcUsageUnitControl(ds,i,m)}
-      <button class="jc-mat-x" onclick="jcLogRemoveMat('${ds}',${i})" title="Remove">×</button>
+      <button type="button" class="jc-mat-x" onclick="jcLogRemoveMat('${ds}',${i})" title="Remove">×</button>
+      ${prompt}
     </div>`;
-  });
+  };
+  mats.forEach((m,i)=>one(m,i,false));
+  drafts.forEach((m,di)=>one(m,mats.length+di,true));
   return `<div id="jc-mats-${ds.replace(/-/g,'')}">`+
-    `<button onclick="jcLogAddMat('${ds}')" style="font-size:12px;color:var(--primary);background:none;border:1px dashed var(--primary);border-radius:6px;padding:3px 10px;cursor:pointer;margin-bottom:6px;">+ Add Material</button>`+
+    `<button type="button" class="jc-mat-add" onclick="jcLogAddMat('${ds}')">+ Add Material</button>`+
     rows+
   `</div>`;
 }
@@ -8612,41 +8655,65 @@ function jcLogAddMat(ds){
   if(!job.dayLogs) job.dayLogs={};
   if(!job.dayLogs[ds]) job.dayLogs[ds]={crewPresent:'',task:'',materialsUsed:[],startTime:'',endTime:'',notes:''};
   _jcMigrateMats(job.dayLogs[ds]);
-  job.dayLogs[ds].materialsUsed.push({matIdx:-1,name:'',qty:'',unit:''});
+  const key=_jcDraftKey(ds);
+  if(!_jcMatDrafts[key]) _jcMatDrafts[key]=[];
+  _jcMatDrafts[key].push({qty:'',usageUnit:''});
   jcRenderDayMats(ds);
 }
 
 function jcLogRemoveMat(ds,idx){
   const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
   _jcMigrateMats(job.dayLogs[ds]);
-  job.dayLogs[ds].materialsUsed.splice(idx,1);
+  const mats=job.dayLogs[ds].materialsUsed;
+  if(idx>=mats.length){
+    const drafts=_jcDraftsFor(ds);
+    drafts.splice(idx-mats.length,1);
+    if(!drafts.length) delete _jcMatDrafts[_jcDraftKey(ds)];
+    jcRenderDayMats(ds);
+    return;
+  }
+  mats.splice(idx,1);
   jcRenderDayMats(ds);
 }
 
+// Copy the list material onto a log row and set the usage unit the same way a pick always has:
+// pack size with a space ("2 Gallon") becomes "Gallon"; "4-ft stick" stays "4-ft stick".
+function _jcFillMaterialFromList(m, mi){
+  const mat=MATERIALS[mi];
+  if(!mat||!m) return false;
+  m.matIdx=mi; m.name=mat.name; m.matId=(mat.db_id!=null?mat.db_id:null);
+  const rawUnit=mat.unit||'';
+  const stripped=rawUnit.replace(/^\d+\.?\d*\s+/,'').trim()||rawUnit;
+  const choices=jcUsageUnitChoices(rawUnit);
+  const canon=choices?jcCanonicalUsageChoice(stripped, choices, rawUnit):'';
+  m.usageUnit=canon||stripped;
+  _jcCaptureUnitCost(m);
+  return true;
+}
 function jcLogPickMaterial(ds,idx,sel){
   const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
   _jcMigrateMats(job.dayLogs[ds]);
-  const m=job.dayLogs[ds].materialsUsed[idx]; if(!m) return;
-  const v=sel.value;
-  if(v==='custom'){
-    m.matIdx=-1; m.name=''; m.usageUnit=''; m.matId=null;
-    delete m.unitCost;
+  const mats=job.dayLogs[ds].materialsUsed;
+  const v=String(sel&&sel.value!=null?sel.value:'');
+  // "Material Selection" is only a placeholder. It is not a material, and there is no free-typed name.
+  if(v===''||v==='custom') return;
+  const mi=parseInt(v,10);
+  if(!Number.isInteger(mi)||mi<0||!MATERIALS[mi]) return;
+  if(idx>=mats.length){
+    const di=idx-mats.length;
+    const drafts=_jcDraftsFor(ds);
+    const draft=drafts[di]; if(!draft) return;
+    const m={matIdx:-1,name:'',qty:draft.qty||'',usageUnit:''};
+    if(!_jcFillMaterialFromList(m, mi)) return;
+    mats.push(m);
+    drafts.splice(di,1);
+    if(!drafts.length) delete _jcMatDrafts[_jcDraftKey(ds)];
   } else {
-    const mi=parseInt(v);
-    const mat=MATERIALS[mi];
-    if(mat){
-      m.matIdx=mi; m.name=mat.name; m.matId=(mat.db_id!=null?mat.db_id:null);   // anchor to permanent id
-      // A pack size is a number and a space ("2 Gallon" → "Gallon"). "4-ft stick" keeps
-      // its 4, because that number is the stick length, not a separate pack count.
-      const rawUnit=mat.unit||'';
-      const stripped=rawUnit.replace(/^\d+\.?\d*\s+/,'').trim()||rawUnit;
-      const choices=jcUsageUnitChoices(rawUnit);
-      const canon=choices?jcCanonicalUsageChoice(stripped, choices, rawUnit):'';
-      m.usageUnit=canon||stripped;
-      _jcCaptureUnitCost(m);
-    }
+    const m=mats[idx]; if(!m) return;
+    if(!_jcFillMaterialFromList(m, mi)) return;
   }
   jcRenderDayMats(ds);
+  jcMarkUnsaved();
 }
 
 function _jcCaptureUnitCost(m){
@@ -8668,7 +8735,17 @@ function _jcCaptureUnitCost(m){
 function jcLogSetMaterial(ds,idx,field,val){
   const job=getJobRecord(_jcId); if(!job||!job.dayLogs?.[ds]) return;
   _jcMigrateMats(job.dayLogs[ds]);
-  const m=job.dayLogs[ds].materialsUsed[idx]; if(!m) return;
+  const mats=job.dayLogs[ds].materialsUsed;
+  if(idx>=mats.length){
+    const d=_jcDraftsFor(ds)[idx-mats.length]; if(!d) return;
+    // A draft is not a saved line. Qty and unit wait here until a material is picked.
+    if(field==='name') return;
+    d[field]=val;
+    return;
+  }
+  const m=mats[idx]; if(!m) return;
+  // Names come from the materials list, or from a line that was already saved. Don't rename those.
+  if(field==='name') return;
   const changed=m[field]!==val;
   m[field]=val;
   if(field==='qty') _jcCaptureUnitCost(m);
@@ -10853,6 +10930,12 @@ async function jcToggleLock(){
 async function saveJobCard(){
   const job=getJobRecord(_jcId); if(!job) return;
   if(job.locked){showToast('Job is locked — unlock it first.');return;}
+  if(jcJobHasMaterialDraft()){
+    showToast('Pick a material.');
+    const prompt=document.querySelector('#jc-pane-log .jc-mat-prompt');
+    if(prompt&&prompt.scrollIntoView){ try{ prompt.scrollIntoView({block:'center'}); }catch(e){} }
+    return;
+  }
   const oldName=job.customer;
   job.customer=document.getElementById('jc-customer').value.trim();
   job.phone=document.getElementById('jc-phone').value.trim();
